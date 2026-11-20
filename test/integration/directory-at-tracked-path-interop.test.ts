@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { TsgitError } from '../../src/domain/index.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -92,8 +92,9 @@ const seedTwin = (
 
 type Replacement = 'directory' | 'exec-bit' | 'touch' | 'same-size-edit' | 'symlink' | 'none';
 
-/** git without nanosecond stat compares whole seconds: the change must land in a later second than the index entry's. */
+/** git without nanosecond stat compares whole seconds: a change must land in a later second than the index entry's. */
 const NEXT_SECOND_MS = 1100;
+const LATER_SECOND = new Date(Date.now() + 2 * NEXT_SECOND_MS);
 const sleepSync = (ms: number): void => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
@@ -105,12 +106,12 @@ const replaceAssumed = (dir: string, replacement: Replacement): void => {
     return;
   }
   if (replacement === 'touch') {
-    const now = new Date();
-    utimesSync(join(dir, TRACKED), now, now);
+    utimesSync(join(dir, TRACKED), LATER_SECOND, LATER_SECOND);
     return;
   }
   if (replacement === 'same-size-edit') {
     writeFileSync(join(dir, TRACKED), 'uno\n');
+    utimesSync(join(dir, TRACKED), LATER_SECOND, LATER_SECOND);
     return;
   }
   rmSync(join(dir, TRACKED));
@@ -147,6 +148,114 @@ const seedAssumeUnchanged = (
   sh(dir, 'commit', '-q', '-m', 'main2');
   sh(dir, 'update-index', '--assume-unchanged', TRACKED);
   replaceAssumed(dir, replacement);
+};
+
+type StatDrift = 'subsecond-mtime-aged' | 'subsecond-mtime-racy' | 'ctime-only' | 'owner-mode-only';
+
+interface StatRow {
+  readonly drift: StatDrift;
+  readonly config: ReadonlyArray<readonly [string, string]>;
+  readonly label: string;
+}
+
+/** The fields git's `ce_match_stat_basic` leaves out, so a drift there is no drift. */
+const STAT_ROWS: ReadonlyArray<StatRow> = [
+  {
+    drift: 'subsecond-mtime-aged',
+    config: [['core.trustctime', 'false']],
+    label: 'a sub-second mtime drift on an entry older than the index, core.trustctime=false',
+  },
+  {
+    drift: 'subsecond-mtime-racy',
+    config: [['core.trustctime', 'false']],
+    label: 'a sub-second mtime drift on a racy entry, core.trustctime=false',
+  },
+  {
+    drift: 'ctime-only',
+    config: [
+      ['core.trustctime', 'false'],
+      ['core.filemode', 'false'],
+    ],
+    label: 'a ctime-only drift, core.trustctime=false',
+  },
+  {
+    drift: 'owner-mode-only',
+    config: [['core.checkstat', 'minimal']],
+    label: 'a ctime-only drift from chmod, core.checkstat=minimal',
+  },
+  {
+    drift: 'ctime-only',
+    config: [
+      ['core.trustctime', 'false'],
+      ['core.trustctime', 'true'],
+      ['core.trustctime', 'false'],
+      ['core.filemode', 'false'],
+    ],
+    label: 'a ctime-only drift, core.trustctime false, true, false',
+  },
+];
+
+const AGED_SECONDS = 100;
+const SUBSECOND_AGED = 0.5;
+
+/** Same whole second as the entry's mtime, other fraction: only a nanosecond comparison sees it. */
+const driftWithinSecond = (dir: string): void => {
+  const mtimeMs = lstatSync(join(dir, TRACKED)).mtimeMs;
+  const second = Math.floor(mtimeMs / 1000);
+  const fraction = mtimeMs / 1000 - second < SUBSECOND_AGED ? 0.9 : 0.05;
+  utimesSync(join(dir, TRACKED), second + fraction, second + fraction);
+};
+
+/** The assume-unchanged entry's recorded mtime is moved well before the index file's own. */
+const ageEntry = (dir: string): void => {
+  const aged = Math.floor(Date.now() / 1000) - AGED_SECONDS;
+  sh(dir, 'update-index', '--no-assume-unchanged', TRACKED);
+  utimesSync(join(dir, TRACKED), aged, aged);
+  sh(dir, 'update-index', '--really-refresh');
+  sh(dir, 'update-index', '--assume-unchanged', TRACKED);
+};
+
+const seedStatDrift = (dir: string, ignoreCase: string, row: StatRow): void => {
+  seedAssumeUnchanged(dir, ignoreCase, 'true', true, 'none');
+  if (row.drift === 'subsecond-mtime-aged') ageEntry(dir);
+  for (const [key, value] of row.config) sh(dir, 'config', key, value);
+};
+
+const driftStat = (dir: string, drift: StatDrift): void => {
+  if (drift === 'subsecond-mtime-aged' || drift === 'subsecond-mtime-racy') driftWithinSecond(dir);
+  if (drift === 'ctime-only') chmodSync(join(dir, TRACKED), 0o755);
+  if (drift === 'owner-mode-only') chmodSync(join(dir, TRACKED), 0o600);
+};
+
+type Absence = 'deleted' | 'leading-symlink' | 'leading-directory-removed';
+const ABSENCES: ReadonlyArray<Absence> = [
+  'deleted',
+  'leading-symlink',
+  'leading-directory-removed',
+];
+const NESTED = 'sub/m';
+
+/** `sub/m` is assume-unchanged and then gone, below a symlink, or its directory removed; `side` rewrites it. */
+const seedAbsent = (dir: string, ignoreCase: string, absence: Absence): void => {
+  sh(dir, 'config', 'core.ignorecase', ignoreCase);
+  mkdirSync(join(dir, 'sub'));
+  mkdirSync(join(dir, 'other'));
+  writeFileSync(join(dir, NESTED), 'one\n');
+  writeFileSync(join(dir, 'other', 'm'), 'one\n');
+  writeFileSync(join(dir, 'base'), 'base\n');
+  sh(dir, 'add', '-A');
+  sh(dir, 'commit', '-q', '-m', 'base');
+  sh(dir, 'checkout', '-q', '-b', SIDE);
+  writeFileSync(join(dir, NESTED), 'two\n');
+  sh(dir, 'commit', '-q', '-a', '-m', 'side');
+  sh(dir, 'checkout', '-q', 'main');
+  sh(dir, 'update-index', '--assume-unchanged', NESTED);
+  if (absence === 'deleted') rmSync(join(dir, NESTED));
+  if (absence === 'leading-directory-removed') rmSync(join(dir, 'sub'), { recursive: true });
+  if (absence === 'leading-symlink') {
+    rmSync(join(dir, 'sub'), { recursive: true });
+    symlinkSync('other', join(dir, 'sub'));
+  }
 };
 
 const OVERWRITING_OPERATIONS = [
@@ -210,6 +319,44 @@ const attempt = async (run: () => Promise<unknown>): Promise<Attempt> => {
 const gitAttempt = (dir: string, ...args: ReadonlyArray<string>): 'ok' | 'refused' =>
   tryRunGitWithExit(['-C', dir, ...args], { env: COMMIT_ENV }).exitCode === 0 ? 'ok' : 'refused';
 
+const initTwins = async (slug: string): Promise<PeerPair> => {
+  const twins = await makePeerPair(slug);
+  for (const dir of [twins.peer, twins.ours]) {
+    runGit(['init', '-q', '-b', 'main', dir]);
+    sh(dir, 'config', 'user.name', 'Ada');
+    sh(dir, 'config', 'user.email', 'ada@example.com');
+  }
+  return twins;
+};
+
+/**
+ * Twins for rows that each run one mutating operation: seeded together, so a single wait for
+ * a later second covers every one of them, and looked up by the operation they are for.
+ */
+class TwinSet {
+  private readonly twins = new Map<string, PeerPair>();
+
+  async add(label: string): Promise<PeerPair> {
+    const added = await initTwins(`twin-${label}`);
+    this.twins.set(label, added);
+    return added;
+  }
+
+  all(): ReadonlyArray<PeerPair> {
+    return [...this.twins.values()];
+  }
+
+  of(label: string): PeerPair {
+    const found = this.twins.get(label);
+    if (found === undefined) throw new Error(`no twins seeded for ${label}`);
+    return found;
+  }
+
+  async dispose(): Promise<void> {
+    await Promise.all(this.all().map((twins) => twins.dispose()));
+  }
+}
+
 const onDisk = (dir: string): string => {
   const stat = lstatSync(join(dir, TRACKED));
   if (stat.isSymbolicLink()) return 'symlink';
@@ -221,12 +368,7 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
   let pair: PeerPair;
 
   beforeEach(async () => {
-    pair = await makePeerPair('directory-at-tracked-path');
-    for (const dir of [pair.peer, pair.ours]) {
-      runGit(['init', '-q', '-b', 'main', dir]);
-      sh(dir, 'config', 'user.name', 'Ada');
-      sh(dir, 'config', 'user.email', 'ada@example.com');
-    }
+    pair = await initTwins('directory-at-tracked-path');
   });
 
   afterEach(async () => {
@@ -525,27 +667,44 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
           ['same-size-edit', 'a same-size content edit', 'file'],
           ['symlink', 'a symlink swapped in', 'symlink'],
         ] as const)('and %s', (replacement, _label, shape) => {
-          const seedAssumed = (): void => {
-            seedAssumeUnchanged(pair.peer, ignoreCase, fileMode, true, 'none');
-            seedAssumeUnchanged(pair.ours, ignoreCase, fileMode, true, 'none');
-            sleepSync(NEXT_SECOND_MS);
-            replaceAssumed(pair.peer, replacement);
-            replaceAssumed(pair.ours, replacement);
-          };
+          // Reading rows leave the twins as seeded, so they share one pair; an overwriting
+          // operation can persist an index refresh in git, so each of those has its own.
+          const operations = new TwinSet();
+          let shared: PeerPair;
+
+          beforeAll(async () => {
+            shared = await operations.add('reading');
+            for (const { label } of OVERWRITING_OPERATIONS) await operations.add(label);
+            const everyTwin = operations.all();
+            for (const twins of everyTwin) {
+              for (const dir of [twins.peer, twins.ours]) {
+                seedAssumeUnchanged(dir, ignoreCase, fileMode, true, 'none');
+              }
+            }
+            // A ctime-only drift needs a later second than the entry's; every other change shows at once.
+            if (replacement === 'exec-bit' && fileMode === 'false') sleepSync(NEXT_SECOND_MS);
+            for (const twins of everyTwin) {
+              replaceAssumed(twins.peer, replacement);
+              replaceAssumed(twins.ours, replacement);
+            }
+          });
+
+          afterAll(async () => {
+            await operations.dispose();
+          });
 
           describe('When both tools report the status', () => {
             it(
               'Then both trust the entry and report nothing',
               async () => {
                 // Arrange
-                seedAssumed();
-                const sut = await open({ cwd: pair.ours });
+                const sut = await open({ cwd: shared.ours });
 
                 // Act
                 const result = await tsgitUnstagedRows(sut);
 
                 // Assert
-                expect(result).toEqual(gitUnstagedRows(pair.peer));
+                expect(result).toEqual(gitUnstagedRows(shared.peer));
                 expect(result).toEqual([]);
               },
               ROW_TIMEOUT,
@@ -557,22 +716,21 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
               'Then neither saves a stash and the work tree and index survive',
               async () => {
                 // Arrange
-                seedAssumed();
-                const sut = await open({ cwd: pair.ours });
-                const indexBefore = lsStage(pair.ours);
+                const sut = await open({ cwd: shared.ours });
+                const indexBefore = lsStage(shared.ours);
 
                 // Act
-                const gitRun = gitAttempt(pair.peer, 'stash', 'push');
+                const gitRun = gitAttempt(shared.peer, 'stash', 'push');
                 const result = await attempt(() => sut.stash.push({}));
 
                 // Assert
                 expect(result.status).toBe(gitRun);
-                expect(stashCount(pair.peer)).toBe(0);
-                expect(stashCount(pair.ours)).toBe(0);
-                expect(lsStage(pair.ours)).toBe(indexBefore);
-                expect(lsStage(pair.peer)).toBe(indexBefore);
-                expect(onDisk(pair.ours)).toBe(shape);
-                expect(onDisk(pair.peer)).toBe(shape);
+                expect(stashCount(shared.peer)).toBe(0);
+                expect(stashCount(shared.ours)).toBe(0);
+                expect(lsStage(shared.ours)).toBe(indexBefore);
+                expect(lsStage(shared.peer)).toBe(indexBefore);
+                expect(onDisk(shared.ours)).toBe(shape);
+                expect(onDisk(shared.peer)).toBe(shape);
               },
               ROW_TIMEOUT,
             );
@@ -580,25 +738,25 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
 
           describe.each(OVERWRITING_OPERATIONS)(
             'When both tools $label a branch rewriting the path',
-            ({ run, gitArgs, refusalCode }) => {
+            ({ label, run, gitArgs, refusalCode }) => {
               it(
                 'Then both refuse as the overwrite check ignores the assume-unchanged bit',
                 async () => {
                   // Arrange
-                  seedAssumed();
-                  const sut = await open({ cwd: pair.ours });
-                  const indexBefore = lsStage(pair.ours);
+                  const twins = operations.of(label);
+                  const sut = await open({ cwd: twins.ours });
+                  const indexBefore = lsStage(twins.ours);
 
                   // Act
-                  const gitRun = gitAttempt(pair.peer, ...gitArgs);
+                  const gitRun = gitAttempt(twins.peer, ...gitArgs);
                   const result = await attempt(() => run(sut));
 
                   // Assert
                   expect(gitRun).toBe('refused');
                   expect(result.status).toBe('refused');
                   expect(result.data).toMatchObject({ code: refusalCode, localChanges: [TRACKED] });
-                  expect(lsStage(pair.ours)).toBe(indexBefore);
-                  expect(onDisk(pair.ours)).toBe(onDisk(pair.peer));
+                  expect(lsStage(twins.ours)).toBe(indexBefore);
+                  expect(onDisk(twins.ours)).toBe(onDisk(twins.peer));
                 },
                 ROW_TIMEOUT,
               );
@@ -621,7 +779,6 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
                     seedAssumeUnchanged(dir, ignoreCase, fileMode, true, 'none');
                     if (!assumeUnchanged) sh(dir, 'update-index', '--no-assume-unchanged', TRACKED);
                   }
-                  sleepSync(NEXT_SECOND_MS);
                   replaceAssumed(pair.peer, replacement);
                   replaceAssumed(pair.ours, replacement);
                   const sut = await open({ cwd: pair.ours });
@@ -644,6 +801,122 @@ describe.skipIf(!GIT_AVAILABLE)('directory at a tracked path interop', () => {
         });
       },
     );
+
+    describe.each(STAT_ROWS)('Given an assume-unchanged file with $label', (row) => {
+      const operations = new TwinSet();
+      const rowOperations = OVERWRITING_OPERATIONS.filter(({ label }) => label !== 'cherry-pick');
+
+      beforeAll(async () => {
+        for (const { label } of rowOperations) await operations.add(label);
+        const everyDir = operations.all().flatMap((twins) => [twins.peer, twins.ours]);
+        for (const dir of everyDir) seedStatDrift(dir, ignoreCase, row);
+        if (row.drift === 'ctime-only' || row.drift === 'owner-mode-only') {
+          sleepSync(NEXT_SECOND_MS);
+        }
+        for (const dir of everyDir) driftStat(dir, row.drift);
+      });
+
+      afterAll(async () => {
+        await operations.dispose();
+      });
+
+      describe.each(rowOperations)(
+        'When both tools $label a branch rewriting the path',
+        ({ label, run, gitArgs }) => {
+          it(
+            'Then both switch as the drift is in no field git compares and the content is the index one',
+            async () => {
+              // Arrange
+              const twins = operations.of(label);
+              const sut = await open({ cwd: twins.ours });
+
+              // Act
+              const gitRun = gitAttempt(twins.peer, ...gitArgs);
+              const result = await attempt(() => run(sut));
+
+              // Assert
+              expect(gitRun).toBe('ok');
+              expect(result.status).toBe('ok');
+              expect(readFileSync(join(twins.ours, TRACKED), 'utf8')).toBe(
+                readFileSync(join(twins.peer, TRACKED), 'utf8'),
+              );
+              expect(lsStage(twins.ours)).toBe(lsStage(twins.peer));
+            },
+            ROW_TIMEOUT,
+          );
+        },
+      );
+    });
+
+    describe.each(ABSENCES)('Given an assume-unchanged file that is %s', (absence) => {
+      const seedAbsentBoth = (): void => {
+        seedAbsent(pair.peer, ignoreCase, absence);
+        seedAbsent(pair.ours, ignoreCase, absence);
+      };
+
+      describe('When both tools report the status', () => {
+        it(
+          'Then both trust the entry and report nothing',
+          async () => {
+            // Arrange
+            seedAbsentBoth();
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const result = await tsgitUnstagedRows(sut);
+
+            // Assert
+            expect(result).toEqual(gitUnstagedRows(pair.peer));
+            expect(result).toEqual([]);
+          },
+          ROW_TIMEOUT,
+        );
+      });
+
+      describe('When both tools stash push', () => {
+        it(
+          'Then neither saves a stash',
+          async () => {
+            // Arrange
+            seedAbsentBoth();
+            const sut = await open({ cwd: pair.ours });
+            const indexBefore = lsStage(pair.ours);
+
+            // Act
+            const gitRun = gitAttempt(pair.peer, 'stash', 'push');
+            const result = await attempt(() => sut.stash.push({}));
+
+            // Assert
+            expect(result.status).toBe(gitRun);
+            expect(stashCount(pair.peer)).toBe(0);
+            expect(stashCount(pair.ours)).toBe(0);
+            expect(lsStage(pair.ours)).toBe(indexBefore);
+            expect(lsStage(pair.peer)).toBe(indexBefore);
+          },
+          ROW_TIMEOUT,
+        );
+      });
+
+      describe('When both tools check out a branch rewriting the path', () => {
+        it(
+          'Then both switch as the overwrite check reads the missing path as clean',
+          async () => {
+            // Arrange
+            seedAbsentBoth();
+            const sut = await open({ cwd: pair.ours });
+
+            // Act
+            const gitRun = gitAttempt(pair.peer, 'checkout', SIDE);
+            const result = await attempt(() => sut.checkout({ rev: SIDE }));
+
+            // Assert
+            expect(result.status).toBe(gitRun);
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
 
     describe.each([
       ['a regular file stage', '100755'],
