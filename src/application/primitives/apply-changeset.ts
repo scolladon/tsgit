@@ -28,9 +28,20 @@ import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
-import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import {
+  type ExecutableBitTrust,
+  indexModeFromStat,
+  isRegularFileMode,
+} from '../../domain/objects/file-mode.js';
+import {
+  FILE_MODE,
+  type FileMode,
+  type FilePath,
+  type ObjectId,
+} from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { isStaleAssumedEntry } from './compare-working-tree-entry.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
@@ -78,6 +89,7 @@ import {
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
 import { everySourceLoadable } from './object-store.js';
+import { readExecutableBitTrust } from './read-executable-bit-trust.js';
 import { readIndex } from './read-index.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
@@ -128,12 +140,25 @@ const LINK_ENCODER = new TextEncoder();
 interface DirtyProbe {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 const buildDirtyProbe = async (ctx: Context): Promise<DirtyProbe> => ({
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
+  executableBit: await readExecutableBitTrust(ctx),
 });
+
+// A trusted exec bit that no longer matches the entry's mode is a local change git
+// refuses to overwrite, whatever the content says.
+const modeChanged = (
+  probe: DirtyProbe,
+  previousMode: FileMode | undefined,
+  stat: FileStat,
+): boolean =>
+  previousMode !== undefined &&
+  isRegularFileMode(previousMode) &&
+  indexModeFromStat(stat, previousMode, probe.executableBit) !== previousMode;
 
 const readWorkingBytes = async (
   ctx: Context,
@@ -256,6 +281,28 @@ const survivorClash = async (
   return (await holdsSurvivor(ctx, absPath, scope)) ? { class: 'untracked', path } : undefined;
 };
 
+// git's verify_uptodate ignores CE_VALID and refresh skips such an entry, so any drift of its
+// cached stat counts as a change before the content is looked at.
+const staleAssumedEntry = async (
+  ctx: Context,
+  scope: ClashScope,
+  path: FilePath,
+  stat: FileStat,
+): Promise<boolean> => {
+  const tracked = await scope.tracked(path);
+  return tracked !== undefined && (await isStaleAssumedEntry(ctx, tracked.entry, stat));
+};
+
+const changedBeforeContent = async (
+  ctx: Context,
+  probe: DirtyProbe,
+  entry: ChangesetEntry,
+  stat: FileStat,
+  scope: ClashScope,
+): Promise<boolean> =>
+  modeChanged(probe, entry.previousMode, stat) ||
+  (await staleAssumedEntry(ctx, scope, entry.path, stat));
+
 const evaluateChangedPath = async (
   ctx: Context,
   probe: () => Promise<DirtyProbe>,
@@ -272,14 +319,13 @@ const evaluateChangedPath = async (
   if (entry.previousMode === FILE_MODE.GITLINK) return undefined;
   const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
   if (verdict.kind !== 'compare-content') return verdictClash(verdict);
-  const matches = await blobMatches(
-    ctx,
-    await probe(),
-    entry.path,
-    joinPath(scope.workdir, entry.path),
-    previousId,
-  );
-  return matches ? undefined : { class: 'local-changes', path: entry.path };
+  const dirtyProbe = await probe();
+  const localChanges: OccupantClash = { class: 'local-changes', path: entry.path };
+  if (await changedBeforeContent(ctx, dirtyProbe, entry, verdict.stat, scope)) return localChanges;
+  const absPath = joinPath(scope.workdir, entry.path);
+  return (await blobMatches(ctx, dirtyProbe, entry.path, absPath, previousId))
+    ? undefined
+    : localChanges;
 };
 
 const evaluateDirtyPath = async (

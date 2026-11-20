@@ -26,7 +26,12 @@ import { isSameKind } from '../../domain/diff/mode-kind.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
-import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/objects/file-mode.js';
+import {
+  type ExecutableBitTrust,
+  FILE_MODE,
+  type FileMode,
+  indexModeFromStat,
+} from '../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -37,6 +42,7 @@ import {
   type IndexMtime,
   isEntryStatClean,
   matchesContentStat,
+  matchesStatFields,
   type RacyContentCheck,
 } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
@@ -52,6 +58,8 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
+import { readExecutableBitTrust } from './read-executable-bit-trust.js';
+import { readStatCheck } from './read-stat-check.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 
@@ -194,7 +202,13 @@ export interface ComparisonScope {
   readonly filterDriversConfigured?: boolean;
   /** The scan's shared leading-path memo; a comparison outside a scan builds its own. */
   readonly scanner?: LeadingPathScanner;
+  /** core.fileMode, resolved once per scan; a comparison outside a scan reads it. */
+  readonly executableBit?: ExecutableBitTrust;
+  /** git's `CE_MATCH_IGNORE_VALID`: `verify_uptodate` judges an assume-valid entry by its stat like any other. */
+  readonly ignoreAssumeValid?: true;
 }
+
+type ResolvedScope = ComparisonScope & { readonly executableBit: ExecutableBitTrust };
 
 /**
  * A comparison verdict plus, when the file is content-identical yet its stat
@@ -203,6 +217,12 @@ export interface ComparisonScope {
 export interface RefreshedComparison {
   readonly delta: WorkingTreeDelta;
   readonly refreshed?: IndexEntry;
+  /**
+   * A plain directory stands at a non-gitlink path. git's `check_removed` reads it as removed
+   * (the delta is `absent`), while `verify_uptodate` counts it as a change; this lets the
+   * overwrite check tell it from a path that is simply gone.
+   */
+  readonly directoryInPlace?: true;
 }
 
 /** A comparison scope from optional parts; a loop passes its one scanner so every entry shares the leading-path memo. */
@@ -273,20 +293,17 @@ export const checkedOutHead = async (
   }
 };
 
-const GITLINK_UNCHANGED: WorkingTreeDelta = {
-  status: 'unchanged',
-  worktreeMode: FILE_MODE.GITLINK,
-};
-
 const compareGitlink = async (
   ctx: Context,
   entry: IndexEntry,
   stat: FileStat,
-  scope: ComparisonScope,
+  scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> => {
-  // git's `CE_VALID`: an assume-valid entry is trusted without a probe once the stat cache is armed.
-  if (entry.flags.assumeValid && scope.indexMtime !== undefined) return GITLINK_UNCHANGED;
-  if (!stat.isDirectory) return { status: 'type-changed', worktreeMode: deriveWorkingMode(stat) };
+  if (!stat.isDirectory)
+    return {
+      status: 'type-changed',
+      worktreeMode: indexModeFromStat(stat, FILE_MODE.GITLINK, scope.executableBit),
+    };
   const head = await checkedOutHead(ctx, entry.path);
   const status = head === undefined || head === entry.id ? 'unchanged' : 'modified';
   return { status, worktreeMode: FILE_MODE.GITLINK };
@@ -310,9 +327,9 @@ export const compareFile = async (
   entry: IndexEntry,
   absPath: string,
   stat: FileStat,
-  scope: ComparisonScope,
+  scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> => {
-  const worktreeMode = deriveWorkingMode(stat);
+  const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
   const settled = statOnlyVerdict(entry, stat, worktreeMode, scope.indexMtime);
   return settled ?? (await compareContent(ctx, entry, absPath, stat, worktreeMode, scope));
 };
@@ -330,6 +347,74 @@ const belowSymlinkedDirectory = (
     .hasSymlinkedLeadingPath(entry.path)
     .catch(() => true);
 
+const isResolved = (scope: ComparisonScope): scope is ResolvedScope =>
+  scope.executableBit !== undefined;
+
+// A caller walking many entries resolves the trust once; only a bare scope pays the copy.
+const resolveScope = async (ctx: Context, scope: ComparisonScope): Promise<ResolvedScope> =>
+  isResolved(scope) ? scope : { ...scope, executableBit: await readExecutableBitTrust(ctx) };
+
+/**
+ * git's `CE_VALID`: once the stat cache is armed an assume-valid entry is trusted over any
+ * work-tree change — a mode, a kind, a directory, a missing path — without a probe or a read.
+ */
+export const isTrusted = (entry: IndexEntry, scope: ComparisonScope): boolean =>
+  entry.flags.assumeValid && scope.indexMtime !== undefined && scope.ignoreAssumeValid !== true;
+
+const withoutAssumeValid = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, assumeValid: false },
+});
+
+/**
+ * git's `verify_uptodate` on an assume-valid entry: refresh leaves its stat data stale, so
+ * `ie_match_stat` calls any drift of the stat fields git compares a change without reading
+ * the content. The config is read only for such an entry.
+ */
+export const isStaleAssumedEntry = async (
+  ctx: Context,
+  entry: IndexEntry,
+  stat: FileStat,
+): Promise<boolean> =>
+  entry.flags.assumeValid && !matchesStatFields(entry, stat, await readStatCheck(ctx));
+
+const staleAssumedStatDelta = async (
+  ctx: Context,
+  entry: IndexEntry,
+  stat: FileStat,
+  scope: ResolvedScope,
+): Promise<WorkingTreeDelta | undefined> => {
+  if (!(await isStaleAssumedEntry(ctx, entry, stat))) return undefined;
+  const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
+  return {
+    status: isSameKind(worktreeMode, entry.mode) ? 'modified' : 'type-changed',
+    worktreeMode,
+  };
+};
+
+const compareJudgedByStat = async (
+  ctx: Context,
+  entry: IndexEntry,
+  absPath: string,
+  stat: FileStat,
+  scope: ResolvedScope,
+): Promise<WorkingTreeDelta> =>
+  (await staleAssumedStatDelta(ctx, entry, stat, scope)) ??
+  (await compareFile(ctx, withoutAssumeValid(entry), absPath, stat, scope));
+
+const compareOccupant = (
+  ctx: Context,
+  entry: IndexEntry,
+  absPath: string,
+  stat: FileStat,
+  scope: ResolvedScope,
+): Promise<WorkingTreeDelta> => {
+  if (entry.mode === FILE_MODE.GITLINK) return compareGitlink(ctx, entry, stat, scope);
+  if (scope.ignoreAssumeValid === true)
+    return compareJudgedByStat(ctx, entry, absPath, stat, scope);
+  return compareFile(ctx, entry, absPath, stat, scope);
+};
+
 /**
  * The comparison plus its refresh verdict, from the single `lstat` the
  * comparison already took — no second stat, no extra read.
@@ -339,15 +424,17 @@ export const compareAndRefresh = async (
   entry: IndexEntry,
   scope: ComparisonScope = {},
 ): Promise<RefreshedComparison> => {
+  if (isTrusted(entry, scope)) return { delta: { status: 'unchanged', worktreeMode: entry.mode } };
   if (isLossy(entry)) return { delta: { status: 'absent' } };
   const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
   if (await belowSymlinkedDirectory(ctx, entry, scope)) return { delta: { status: 'absent' } };
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
-  const delta =
-    entry.mode === FILE_MODE.GITLINK
-      ? await compareGitlink(ctx, entry, stat, scope)
-      : await compareFile(ctx, entry, absPath, stat, scope);
+  if (stat.isDirectory && entry.mode !== FILE_MODE.GITLINK) {
+    return { delta: { status: 'absent' }, directoryInPlace: true };
+  }
+  const resolved = await resolveScope(ctx, scope);
+  const delta = await compareOccupant(ctx, entry, absPath, stat, resolved);
   if (delta.status === 'unchanged' && shouldRefresh(entry, stat)) {
     return { delta, refreshed: withStatData(entry, stat) };
   }
@@ -394,8 +481,12 @@ export const compareWorkingTreeEntry = async (
 /** git's racy branch of ie_match_stat: content decides, checkin attributes built once per checker. */
 export const racyContentMatcher = (ctx: Context): RacyContentCheck => {
   const provider = lazily(() => buildCheckinAttributeProvider(ctx));
+  const executableBit = lazily(() => readExecutableBitTrust(ctx));
   return async (entry, absPath, stat) => {
-    const { status } = await compareFile(ctx, entry, absPath, stat, scopeOf(await provider()));
+    const { status } = await compareFile(ctx, entry, absPath, stat, {
+      ...scopeOf(await provider()),
+      executableBit: await executableBit(),
+    });
     return !isWorkingTreeModified(status);
   };
 };

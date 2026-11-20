@@ -121,6 +121,13 @@ Exit codes and data match git; only the wording or the named path differs.
   tsgit rm([S])    -> threw {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":["<s300>"],"untracked":[]}; ls-files unchanged
   ```
 
+- **32.88** `rm` of a tracked file path where a directory now stands refuses `CHECKOUT_OVERWRITE_DIRTY` where git dies with an I/O error — pinned against git 2.56.0. Both refuse and leave the index untouched; only the code and wording differ. Locus: `src/application/commands/internal/working-tree.ts` (`removeFile`). Not folded: out of scope.
+  ```
+  # seed: commit base + m; rm m; mkdir m; echo inner>m/inner
+  git rm m        -> fatal: git rm: 'm': Operation not permitted ; exit=128 ; index unchanged
+  tsgit rm(['m']) -> THROW {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":["m"],"untracked":[]} ; index unchanged
+  ```
+
 ## Rare configuration and edge input
 
 A well-formed repository, but a configuration, layout or argument shape few callers produce.
@@ -164,12 +171,11 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit THROW {"code":"OPERATION_IN_PROGRESS","operation":"merge"}; nothing written
   ```
 
-- **32.62** `readConfig` ignores every non-sparse key in `config.worktree` — pre-existing, pinned against git 2.56.0. With `extensions.worktreeConfig = true`, git reads `config.worktree` for every key; tsgit reads it for the sparse keys only, `readConfig` stays local-only (`src/application/primitives/config-read.ts`). Well-formed case: local `core.fileMode = true`, `git config --worktree core.fileMode false`, `chmod +x x` — git `status` clean, tsgit `status()` `clean: false`. Corrupt case: `core.ignorecase = bogus` in `config.worktree` — git `fatal: bad boolean config value 'bogus' for 'core.ignorecase'`, tsgit `status()` succeeds. Not folded: out of scope (every reader's config layer, outside the sparse keys).
+- **32.62** `readConfig` ignores every key in `config.worktree` but the sparse, `core.fileMode`, `core.trustctime` and `core.checkstat` ones — pre-existing, pinned against git 2.56.0. With `extensions.worktreeConfig = true`, git reads `config.worktree` for every key; tsgit reads it for the sparse keys, `core.fileMode`, `core.trustctime` and `core.checkstat` only, `readConfig` stays local-only (`src/application/primitives/config-read.ts`). A bad `core.fileMode`, `core.trustctime` or `core.checkstat` in `config.worktree` is refused, as git does. Every other key in `config.worktree` is still ignored. Corrupt case: `core.ignorecase = bogus` in `config.worktree` — git `fatal: bad boolean config value 'bogus' for 'core.ignorecase'`, tsgit `status()` succeeds. Not folded: out of scope (every reader's config layer, outside the sparse keys).
   ```
-  git config extensions.worktreeConfig true; git config --worktree core.fileMode false; chmod +x x
-  git status --porcelain: (clean)     tsgit status {"clean":false}
+  git config extensions.worktreeConfig true; git config --worktree core.ignorecase bogus
+  git status: fatal: bad boolean config value 'bogus' for 'core.ignorecase'     tsgit status() succeeds
   ```
-  The fileMode case is not specific to `config.worktree`: tsgit ignores a local `core.fileMode = false` too, tracked as backlog 32.74.
 
 - **32.64** Non-cone `/*` and `!/*/` mis-match, so checkout drops and deletes top-level files — pre-existing, pinned against git 2.56.0. Local `core.sparseCheckout = true`, no cone key. With `/*\n!/*/\n/b/\n`, git keeps `H top` with `top` on disk, tsgit marks `S top` and deletes it; with `/*` alone git keeps everything `H`, tsgit marks every path inside a directory `S` (`src/domain/sparse/parse-sparse-checkout.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.32; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
   ```
@@ -252,6 +258,20 @@ A well-formed repository, but a configuration, layout or argument shape few call
 - **32.85** Spike — `stash apply --index` of a stash holding a staged change to an excluded path leaves git's entry `H` with the file absent; tsgit leaves it `S` — pinned against git 2.56.0. Cone sparse on `b`, `a/f` staged `f2` through `update-index --no-skip-worktree` with work file `f1`, `git stash`, then `git stash apply --index` vs `repo.stash.apply({ restoreIndex: true })` (`src/application/commands/stash.ts`): both stage blob `9de77c1` and leave `a/` absent; git's `status` reports `MD a/f`, tsgit's `M  a/f`. Question: which step of git's `do_apply_stash` index restore clears the bit without writing the file, and does every `--index` restore of a skip-worktree path do it? Not folded: needs a probe.
 
 - **32.86** A forced `mv` onto an existing file through an untracked symbolic link to a directory outside the work tree refuses `PERMISSION_DENIED` where git writes outside — pinned against git 2.56.0. Tracked `file`, an outside directory holding `full/o`, and an untracked link `link -> ../out/full`: git `mv -f file link/o` exits 0, overwrites the outside `o` and stages `link/o`; tsgit `mv(['file'], 'link/o', { force: true })` throws `PERMISSION_DENIED { path: 'link/o' }` from the working-tree rename (`src/application/commands/internal/working-tree.ts`), index and work tree unchanged. The refusal is ADR-625's write-side leading-path containment, kept on purpose; the in-tree case (ADR-1227) renames through the link as git does. Lifting the guard would need an ADR and a security review. Not folded: needs its own decision.
+
+- **32.89** Spike — a true merge refuses `WORKING_TREE_DIRTY` on an assume-unchanged file edited to the same size within the index's second, where git's merge-ort merges — pre-existing, pinned against git 2.56.0. Both lose the local edit (git writes theirs, tsgit leaves the index blob). Locus: `src/application/primitives/apply-changeset.ts`. Question: does git's pre-merge index refresh move the index mtime past the entry so the whole-second stat match passes, and is that 32.87's mechanism? Not folded: needs a probe.
+  ```
+  # base f=v1; other: f=theirs; main: keep=k2; update-index --assume-unchanged f; printf 'v2\n' > f
+  git merge --no-edit other    -> Merge branch 'other' ; f=[theirs]
+  tsgit merge.run({rev:'other'}) -> WORKING_TREE_DIRTY {"localChanges":["f"],"untracked":[]} ; f=[v1]
+  ```
+
+- **32.90** `core.checkStat=minimal` is ignored by the plain stat-clean check: `status` reports modified where git trusts the stat — pinned against git 2.56.0. `readStatCheck` feeds only the assume-unchanged drift check; `matchesContentStat` (`src/application/primitives/internal/is-entry-stat-clean.ts`) still compares ctime, uid, gid and inode. Resolved by 32.87. Not folded: out of scope.
+  ```
+  # echo aaaa>f; touch -t 202001010000 f; add; commit; [config]; echo bbbb>g; touch -r f g; mv g f
+  default:                git " M f" | tsgit unstaged:"modified"
+  core.checkstat=minimal: git ""     | tsgit unstaged:"modified"
+  ```
 
 ## Performance off the hot path
 

@@ -6,10 +6,12 @@ import {
   isEntryStatClean,
   lstatBeyondLink,
   matchesCachedStat,
+  matchesStatFields,
   UNREACHABLE,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index-entry.js';
+import type { StatCheck } from '../../../../../src/domain/git-index/stat-check.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { FileStat } from '../../../../../src/ports/file-system.js';
@@ -400,7 +402,76 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a stat that differs from the entry only by the exec bit', () => {
+    describe('When the bit is ignored', () => {
+      it('Then the cached stat matches', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat: FileStat = { ...BASE_STAT, mode: 0o100755 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When the bit is trusted', () => {
+      it('Then it does not match', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat: FileStat = { ...BASE_STAT, mode: 0o100755 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a symlink stat for a regular entry', () => {
+    describe('When the bit is ignored', () => {
+      it('Then it does not match', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat: FileStat = {
+          ...BASE_STAT,
+          mode: 0o120000,
+          isFile: false,
+          isSymbolicLink: true,
+        };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
           ABS_PATH,
           stat,
           contentMatches,
@@ -422,7 +493,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
           ABS_PATH,
           stat,
           contentMatches,
@@ -443,7 +514,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -467,7 +538,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME },
+          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME, executableBit: 'trusted' },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -488,7 +559,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: undefined },
+          { entry: BASE_ENTRY, indexMtime: undefined, executableBit: 'trusted' },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -563,6 +634,43 @@ describe('lstatBeyondLink', () => {
 
         // Assert
         await expect(attempt).rejects.toBe(failure);
+      });
+    });
+  });
+});
+
+describe('matchesStatFields', () => {
+  const ALL: StatCheck = { ctime: true, ownerAndInode: true };
+  const NO_CTIME: StatCheck = { ctime: false, ownerAndInode: true };
+  const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
+
+  describe.each([
+    ['nothing drifted', {}, ALL, true],
+    ['the nanoseconds of mtime and ctime', { mtimeNs: 1n, ctimeNs: 1n }, ALL, true],
+    ['mtime by a second', { mtimeMs: 1_700_000_101_000 }, MINIMAL, false],
+    ['ctime by a second', { ctimeMs: 1_700_000_001_000 }, ALL, false],
+    ['ctime by a second', { ctimeMs: 1_700_000_001_000 }, NO_CTIME, true],
+    ['uid', { uid: 502 }, ALL, false],
+    ['uid', { uid: 502 }, MINIMAL, true],
+    ['gid', { gid: 21 }, ALL, false],
+    ['gid', { gid: 21 }, MINIMAL, true],
+    ['inode', { ino: 43 }, ALL, false],
+    ['inode', { ino: 43 }, MINIMAL, true],
+    ['size', { size: 8 }, MINIMAL, false],
+    ['size beyond 32 bits that wraps to the recorded one', { size: 2 ** 32 + 7 }, ALL, true],
+    ['inode beyond 32 bits that wraps to the recorded one', { ino: 2 ** 32 + 42 }, ALL, true],
+  ] as const)('Given a stat drifted in %s', (_label, drift, check, expected) => {
+    describe('When matched against the entry', () => {
+      it('Then it matches only when git compares no drifted field', () => {
+        // Arrange
+        const stat = { ...BASE_STAT, ...drift } as FileStat;
+        const sut = matchesStatFields;
+
+        // Act
+        const result = sut(BASE_ENTRY, stat, check);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

@@ -1,8 +1,10 @@
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import { escapedPathOf } from '../../../domain/git-index/index-path-key.js';
+import type { ExecutableBitTrust } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { compareAndRefresh, type WorkingTreeDelta } from '../compare-working-tree-entry.js';
+import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { type CleanOrder, configuresFilterDriver, inIndexOrder } from './clean-order.js';
 import { boundedMapFor } from './concurrency.js';
 import { type AttributeProvider, buildCheckinAttributeProvider } from './read-gitattributes.js';
@@ -39,6 +41,7 @@ const scanEntry = async (
   indexMtime: GitIndex['indexMtime'],
   filterDriversConfigured: boolean,
   scanner: LeadingPathScanner,
+  executableBit: ExecutableBitTrust,
 ): Promise<ScannedEntry | undefined> => {
   if (entry.flags.skipWorktree) return undefined;
   const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
@@ -46,6 +49,7 @@ const scanEntry = async (
     ...(indexMtime !== undefined && { indexMtime }),
     filterDriversConfigured,
     scanner,
+    executableBit,
   });
   return { path: escapedPathOf(entry), delta, refreshed };
 };
@@ -70,6 +74,7 @@ const scanWorkingTree = async (
 ): Promise<TrackedScan> => {
   const filterDriversConfigured = await configuresFilterDriver(ctx);
   const scanner = createLeadingPathScanner(ctx);
+  const executableBit = await readExecutableBitTrust(ctx);
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
@@ -80,6 +85,7 @@ const scanWorkingTree = async (
           indexMtime,
           filterDriversConfigured,
           scanner,
+          executableBit,
         );
         onScanned();
         return scanned;

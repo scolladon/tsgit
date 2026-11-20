@@ -9,6 +9,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+import { withExecutableWorkFile } from '../../../support/executable-work-file.js';
 import { buildSeededContext, recordedStatOf } from '../fixtures.js';
 
 afterEach(() => {
@@ -182,6 +183,24 @@ describe('notUpToDate stat short-circuit', () => {
     });
   });
 
+  describe('Given a stat-clean entry whose file differs only by a set exec bit, with core.filemode = false, When judged', () => {
+    it('Then the stat settles it and nothing is reported', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeWork(ctx, 'a', 'edited');
+      const entry = await statEntryOf(ctx, 'a', id);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
+      withExecutableWorkFile(ctx);
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entry], NEWER_THAN_ANY_ENTRY);
+
+      // Assert
+      expect([...result]).toEqual([]);
+    });
+  });
+
   describe('Given a stat-dirty entry with the same content, When judged', () => {
     it('Then the content fallback reports nothing', async () => {
       // Arrange
@@ -233,17 +252,7 @@ describe('notUpToDate stat short-circuit', () => {
   });
 });
 
-const EXECUTABLE_BITS = 0o100755;
-
-/** The memory file system models no modes: the work file's stat is made to carry the executable bits. */
-const makeExecutable = (ctx: SeededContext): void => {
-  const tryLstat = ctx.fs.tryLstat?.bind(ctx.fs);
-  if (tryLstat === undefined) throw new Error('the memory file system probes with tryLstat');
-  vi.spyOn(ctx.fs, 'tryLstat').mockImplementation(async (path) => {
-    const stat = await tryLstat(path);
-    return stat === undefined ? undefined : { ...stat, mode: EXECUTABLE_BITS };
-  });
-};
+const EXT_ON = '[extensions]\n\tworktreeConfig = true\n';
 
 const writeBody = async (ctx: SeededContext, path: string, body: string): Promise<void> => {
   await ctx.fs.write(`${workDirOf(ctx)}/${path}`, new TextEncoder().encode(body));
@@ -255,7 +264,7 @@ const modeRows = [
     entryMode: FILE_MODE.REGULAR,
     arrange: async (ctx: SeededContext): Promise<void> => {
       await writeWork(ctx, 'a', 'indexed');
-      makeExecutable(ctx);
+      withExecutableWorkFile(ctx);
     },
   },
   {
@@ -309,6 +318,62 @@ describe('notUpToDate mode and type', () => {
         expect([...result]).toEqual([]);
       });
     });
+
+    describe('When the candidates are judged with core.filemode false only in config.worktree', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${EXT_ON}[core]\n\tfilemode = true\n`,
+        );
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[core]\n\tfilemode = false\n',
+        );
+
+        // Act
+        const result = await sut(
+          ctx,
+          workDirOf(ctx),
+          [entryOf('a', id, { mode: entryMode })],
+          undefined,
+        );
+
+        // Assert
+        expect([...result]).toEqual([]);
+      });
+    });
+
+    describe('When the candidates are judged with core.filemode true in config.worktree over a false local', () => {
+      it('Then the path is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'indexed');
+        await arrange(ctx);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${EXT_ON}[core]\n\tfilemode = false\n`,
+        );
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[core]\n\tfilemode = true\n',
+        );
+
+        // Act
+        const result = await sut(
+          ctx,
+          workDirOf(ctx),
+          [entryOf('a', id, { mode: entryMode })],
+          undefined,
+        );
+
+        // Assert
+        expect([...result]).toEqual(['a']);
+      });
+    });
   });
 
   describe('Given an executable work file for an executable entry, When judged', () => {
@@ -317,7 +382,7 @@ describe('notUpToDate mode and type', () => {
       const ctx = await buildSeededContext();
       const id = await writeBlob(ctx, 'indexed');
       await writeWork(ctx, 'a', 'indexed');
-      makeExecutable(ctx);
+      withExecutableWorkFile(ctx);
       const entry = entryOf('a', id, { mode: FILE_MODE.EXECUTABLE });
 
       // Act
@@ -426,7 +491,7 @@ describe('notUpToDate mode and type', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, 'indexed');
         await writeWork(ctx, 'a', 'indexed');
-        makeExecutable(ctx);
+        withExecutableWorkFile(ctx);
         await writeSymlinksOff(ctx);
         const entry = entryOf('a', id, { mode: FILE_MODE.REGULAR });
 

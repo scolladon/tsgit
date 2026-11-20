@@ -5,6 +5,7 @@ import {
   fsckCannotDemote,
   fsckUnknownMsgId,
 } from '../../domain/commands/error.js';
+import { type CheckStat, parseCheckStat } from '../../domain/config/check-stat.js';
 import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 import {
   GIT_C_INT_MAX,
@@ -75,6 +76,10 @@ export interface ParsedConfig {
     readonly ignoreCase?: boolean;
     /** `core.fileMode` — whether the executable bit of a work file is trusted (git's `trust_executable_bit`). */
     readonly fileMode?: boolean;
+    /** `core.trustCtime` — whether an index entry's ctime counts as stat drift (git's `trust_ctime`); git defaults to true. */
+    readonly trustCtime?: boolean;
+    /** `core.checkStat` — `minimal` leaves ctime, uid, gid and inode out of the stat comparison (git's `check_stat`). */
+    readonly checkStat?: CheckStat;
     /** `core.symlinks` — whether symlinks are checked out as links (git's `has_symlinks`); git defaults to true. */
     readonly symlinks?: boolean;
     readonly looseCompression?: number;
@@ -1480,6 +1485,8 @@ type MutableCore = {
   sparseCheckoutCone?: boolean;
   ignoreCase?: boolean;
   fileMode?: boolean;
+  trustCtime?: boolean;
+  checkStat?: CheckStat;
   symlinks?: boolean;
   looseCompression?: number;
   maxTreeDepth?: number;
@@ -1631,7 +1638,13 @@ export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
 const CORE_BOOLEAN_FIELDS: Readonly<
   Record<
     string,
-    'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase' | 'fileMode' | 'symlinks'
+    | 'bare'
+    | 'sparseCheckout'
+    | 'sparseCheckoutCone'
+    | 'ignoreCase'
+    | 'fileMode'
+    | 'trustCtime'
+    | 'symlinks'
   >
 > = {
   bare: 'bare',
@@ -1640,6 +1653,7 @@ const CORE_BOOLEAN_FIELDS: Readonly<
   sparsecheckout: 'sparseCheckout',
   sparsecheckoutcone: 'sparseCheckoutCone',
   symlinks: 'symlinks',
+  trustctime: 'trustCtime',
 };
 
 const CORE_BOOLEAN_KEYS = new Set([
@@ -1684,6 +1698,12 @@ const applyCoreEol = (core: MutableCore, value: string | null): MutableCore => {
   return rest;
 };
 
+/** git leaves `check_stat` alone on a line that is neither `default` nor `minimal`. */
+const applyCoreCheckStat = (core: MutableCore, value: string | null): MutableCore | undefined => {
+  const parsed = parseCheckStat(value);
+  return parsed === undefined ? undefined : { ...core, checkStat: parsed };
+};
+
 /** The last `core.untrackedCache` line wins; `keep`, a non-boolean or a valueless key restores the default. */
 const applyCoreUntrackedCache = (core: MutableCore, value: string | null): MutableCore => {
   const parsed = value === null ? undefined : parseGitBoolean(value);
@@ -1705,6 +1725,7 @@ const applyCoreEntry = (
   if (CORE_BOOLEAN_KEYS.has(lowered)) return applyCoreBooleanEntry(core, lowered, value);
   if (lowered === 'eol') return applyCoreEol(core, value);
   if (lowered === 'untrackedcache') return applyCoreUntrackedCache(core, value);
+  if (lowered === 'checkstat') return applyCoreCheckStat(core, value);
   // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
@@ -2397,6 +2418,8 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
 /** The `[core]` fields that switch a work-tree behaviour on or off. */
 const finalizeCoreCapabilityFields = (core: MutableCore): ParsedConfig['core'] => ({
   ...(core.symlinks !== undefined ? { symlinks: core.symlinks } : {}),
+  ...(core.trustCtime !== undefined ? { trustCtime: core.trustCtime } : {}),
+  ...(core.checkStat !== undefined ? { checkStat: core.checkStat } : {}),
 });
 
 /** The `[core]` fields with a numeric size/count/limit grammar. Split out of
@@ -2566,7 +2589,23 @@ const findFirstRejectedBoolean = async (
   ctx: Context,
   target: BooleanWalkTarget,
 ): Promise<InvalidBooleanEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
+  const { tokens, source } = await readConfigEntry(ctx);
+  return firstRejectedInTokens(tokens, source, target);
+};
+
+/** `findFirstRejectedBoolean` over an arbitrary config file the cached local read does not cover. */
+const findFirstRejectedBooleanAt = async (
+  ctx: Context,
+  path: string,
+  target: BooleanWalkTarget,
+): Promise<InvalidBooleanEntry | undefined> =>
+  firstRejectedInTokens(tokenizeConfig(await ctx.fs.readUtf8(path), path), path, target);
+
+const firstRejectedInTokens = (
+  tokens: ReadonlyArray<ConfigToken>,
+  path: string,
+  target: BooleanWalkTarget,
+): InvalidBooleanEntry | undefined => {
   const keySet = new Set(target.keys.map((k) => k.toLowerCase()));
   const enters = (header: ConfigHeaderToken): boolean =>
     headerEntersTarget(header.section, header.subsection, target);
@@ -2866,6 +2905,38 @@ export const findFirstInvalidDisambiguate = async (
     accepts: (value) => parseDisambiguationHint(value) !== undefined,
     fixedKey: 'core.disambiguate',
   });
+
+const CHECK_STAT_TARGET: BooleanWalkTarget = {
+  section: 'core',
+  keys: ['checkstat'],
+  accepts: (value) => parseCheckStat(value) !== undefined,
+  fixedKey: 'core.checkstat',
+};
+
+/**
+ * `core.checkStat`-specific finder: `git_default_core_config` dies `invalid value`
+ * on a value other than `default`/`minimal` (case-insensitive), on every command.
+ * A valueless entry is a separate refusal (`findFirstValuelessEntry`).
+ */
+export const findFirstInvalidCheckStat = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> => findFirstRejectedBoolean(ctx, CHECK_STAT_TARGET);
+
+/** `findFirstInvalidCheckStat` over `config.worktree`, which the cached local read does not cover. */
+export const findFirstInvalidCheckStatAt = async (
+  ctx: Context,
+  path: string,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBooleanAt(ctx, path, CHECK_STAT_TARGET);
+
+/** `findFirstInvalidBoolean` over `config.worktree`, which the cached local read does not cover. */
+export const findFirstInvalidBooleanAt = async (
+  ctx: Context,
+  path: string,
+  section: string,
+  keys: ReadonlyArray<string>,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBooleanAt(ctx, path, { section, keys, accepts: acceptsGitBoolean });
 
 /** `branch.autoSetupRebase`'s literals, which git compares case-sensitively. */
 const AUTO_SETUP_REBASE_LITERALS: ReadonlySet<string> = new Set([

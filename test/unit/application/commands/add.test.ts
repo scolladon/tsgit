@@ -2,12 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
 import * as boolConfigGuard from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import {
+  invalidateIndexCache,
+  readIndex,
+} from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { pathTooLong } from '../../../../src/domain/error.js';
@@ -17,7 +23,7 @@ import {
   STAGE0_FLAGS,
 } from '../../../../src/domain/git-index/index.js';
 import { pathspecNoMatch, permissionDenied, TsgitError } from '../../../../src/domain/index.js';
-import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
   CommandRequest,
@@ -25,6 +31,10 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import {
+  EXECUTABLE_STAT_MODE,
+  withExecutableWorkFile,
+} from '../../support/executable-work-file.js';
 import { instrumentedContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext, seedRepo } from './fixtures.js';
@@ -5004,6 +5014,187 @@ describe('add — a pathspec probe the file system refuses as too long', () => {
 
         // Assert
         expect(err.data).toEqual(pathTooLong(`${seeded.layout.workDir}/a.txt`).data);
+      });
+    });
+  });
+});
+
+const writeFileModeConfig = async (ctx: TrackedCtx, value: 'true' | 'false'): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tfilemode = ${value}\n`);
+  invalidateConfigCache(ctx);
+};
+
+const stagedModeOf = async (ctx: TrackedCtx, path: string): Promise<FileMode | undefined> => {
+  invalidateIndexCache(ctx);
+  return (await entryAt(ctx, path))?.mode;
+};
+
+const withMode =
+  (path: string, mode: FileMode) =>
+  (entry: IndexEntry): IndexEntry =>
+    entry.path === path ? { ...entry, mode } : entry;
+
+interface DonorRow {
+  readonly title: string;
+  readonly recorded: FileMode | undefined;
+  readonly executable: boolean;
+  readonly content: string;
+  readonly fileMode: 'true' | 'false';
+  readonly expected: FileMode;
+}
+
+const DONOR_ROWS: ReadonlyArray<DonorRow> = [
+  {
+    title: 'tracked 100644 with an executable work file',
+    recorded: FILE_MODE.REGULAR,
+    executable: true,
+    content: 'a',
+    fileMode: 'false',
+    expected: FILE_MODE.REGULAR,
+  },
+  {
+    title: 'tracked 100755 with a plain work file',
+    recorded: FILE_MODE.EXECUTABLE,
+    executable: false,
+    content: 'a',
+    fileMode: 'false',
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'tracked 100755 with a plain work file and new content',
+    recorded: FILE_MODE.EXECUTABLE,
+    executable: false,
+    content: 'changed',
+    fileMode: 'false',
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'untracked executable work file',
+    recorded: undefined,
+    executable: true,
+    content: 'a',
+    fileMode: 'false',
+    expected: FILE_MODE.REGULAR,
+  },
+  {
+    title: 'tracked symlink replaced by an executable work file',
+    recorded: FILE_MODE.SYMLINK,
+    executable: true,
+    content: 'a',
+    fileMode: 'false',
+    expected: FILE_MODE.REGULAR,
+  },
+  {
+    title: 'tracked 100644 with an executable work file',
+    recorded: FILE_MODE.REGULAR,
+    executable: true,
+    content: 'a',
+    fileMode: 'true',
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'tracked 100755 with a plain work file',
+    recorded: FILE_MODE.EXECUTABLE,
+    executable: false,
+    content: 'a',
+    fileMode: 'true',
+    expected: FILE_MODE.REGULAR,
+  },
+  {
+    title: 'untracked executable work file',
+    recorded: undefined,
+    executable: true,
+    content: 'a',
+    fileMode: 'true',
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'tracked symlink replaced by an executable work file',
+    recorded: FILE_MODE.SYMLINK,
+    executable: true,
+    content: 'a',
+    fileMode: 'true',
+    expected: FILE_MODE.EXECUTABLE,
+  },
+];
+
+describe('add — core.filemode', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each(DONOR_ROWS)(
+    'Given core.filemode = $fileMode and a $title',
+    ({ recorded, executable, content, fileMode, expected }) => {
+      describe('When add stages the path', () => {
+        it(`Then the staged mode is ${expected}`, async () => {
+          // Arrange
+          const ctx = await seedFreshRepo({ 'x.txt': 'a' });
+          if (recorded !== undefined) {
+            await add(ctx, ['x.txt']);
+            await rewriteEntries(ctx, withMode('x.txt', recorded));
+          }
+          await writeWork(ctx, 'x.txt', content);
+          await writeFileModeConfig(ctx, fileMode);
+          if (executable) withExecutableWorkFile(ctx, 'x.txt');
+          const sut = add;
+
+          // Act
+          await sut(ctx, ['x.txt']);
+          const result = await stagedModeOf(ctx, 'x.txt');
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    },
+  );
+
+  describe('Given a stat-clean tracked 100644 file whose stat differs only by the exec bit, and core.filemode = false', () => {
+    describe('When add stages it', () => {
+      it('Then the entry is re-staged as is without reading the file', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'content' });
+        const path = 'a.txt' as FilePath;
+        const filePath = `${ctx.layout.workDir}/a.txt`;
+        const baseLstat = ctx.fs.lstat.bind(ctx.fs);
+        const pinnedStat = {
+          ...(await baseLstat(filePath)),
+          mtimeMs: 1000,
+          ctimeMs: 1000,
+          mode: EXECUTABLE_STAT_MODE,
+        };
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: enc('content'),
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [indexEntryFromStat(pinnedStat, FILE_MODE.REGULAR, id, path)],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        await writeFileModeConfig(ctx, 'false');
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (p) =>
+          p === filePath ? pinnedStat : baseLstat(p),
+        );
+        const readSlice = vi.spyOn(ctx.fs, 'readSlice');
+        const read = vi.spyOn(ctx.fs, 'read');
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['a.txt']);
+        const result = await stagedModeOf(ctx, 'a.txt');
+
+        // Assert
+        expect(result).toBe(FILE_MODE.REGULAR);
+        expect(readSlice.mock.calls.map(([readPath]) => readPath)).not.toContain(filePath);
+        expect(read).not.toHaveBeenCalledWith(filePath);
       });
     });
   });

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../../src/application/primitives/internal/index-lock.js';
 import * as gitattributes from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import {
@@ -310,6 +311,29 @@ describe('smudgeRacilyClean', () => {
 
         // Assert
         expect(result).toEqual([executable]);
+      });
+    });
+  });
+
+  describe('Given a racy carried-over executable entry whose same-size rewrite lost the exec bit and core.filemode = false', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is smudged', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        const [asRead] = await entriesAsRead(ctx);
+        const executable = { ...(asRead as IndexEntry), mode: FILE_MODE.EXECUTABLE };
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([executable], 'update');
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
+        invalidateConfigCache(ctx);
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [executable], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([{ ...executable, fileSize: 0 }]);
       });
     });
   });

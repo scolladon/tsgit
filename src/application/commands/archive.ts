@@ -3,7 +3,7 @@ import { resolveAttribute } from '../../domain/attributes/index.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import { FILE_MODE } from '../../domain/objects/file-mode.js';
+import { FILE_MODE, isRegularFileMode } from '../../domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
@@ -115,9 +115,6 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
   // git refuses a blob treeish with "fatal: not a tree object"
   throw unexpectedObjectType('tree', obj.type, oid);
 }
-
-const isRegularFileMode = (mode: FileMode): boolean =>
-  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 
 const readInCore = async (ctx: Context, id: ObjectId): Promise<Uint8Array> =>
   (await readBlob(ctx, id)).content;

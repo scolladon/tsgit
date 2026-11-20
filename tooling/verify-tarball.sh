@@ -525,7 +525,16 @@ done
 # core.ignorecase, and the bad-source and empty-source-directory refusals —
 # runtime code in every distribution form, none removable without dropping the
 # behaviour.
-SIZE_CAP=$((1538 * 1024))
+# Raised 1538 -> 1542 KiB by git's core.fileMode, assume-unchanged and stat-field
+# rules: the measured pack landed at 1 578 748 B, 3 836 B over the old cap,
+# attributable to the layered core.fileMode / core.trustctime / core.checkstat
+# readers and their eager and worktree-file gates, git's ce_mode_from_stat donor
+# rule through add, status, stash and the stat-clean judges, the trusted exec-bit
+# refusal on switch and merge, the directory-at-a-tracked-path split between the
+# removed and overwrite verdicts, and the assume-unchanged trust with its
+# whole-second stat-drift refusal — runtime code in every distribution form, none
+# removable without dropping the behaviour.
+SIZE_CAP=$((1542 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

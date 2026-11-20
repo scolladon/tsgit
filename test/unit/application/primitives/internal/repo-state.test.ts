@@ -492,6 +492,172 @@ describe('primitives/internal/repo-state', () => {
     });
   });
 
+  describe('Given core.filemode = bogus in local config', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming core.filemode', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfileMode = bogus\n');
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.filemode',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['valueless', '[core]\n\tfileMode\n'],
+    ['false', '[core]\n\tfileMode = false\n'],
+    ['0', '[core]\n\tfileMode = 0\n'],
+  ])('Given core.filemode %s in local config', (_label, text) => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+        // Act
+        const result = assertEagerConfigValid(ctx);
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.trustctime = bogus in local config', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming core.trustctime', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\ttrustCtime = bogus\n');
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.trustctime',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['valueless', '[core]\n\ttrustCtime\n'],
+    ['empty', '[core]\n\ttrustCtime =\n'],
+    ['false', '[core]\n\ttrustCtime = false\n'],
+  ])('Given core.trustctime %s in local config', (_label, text) => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+        // Act
+        const result = assertEagerConfigValid(ctx);
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['bogus', 'bogus'],
+    ['empty', ''],
+  ])('Given core.checkstat with a %s value in local config', (_label, value) => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it refuses with CONFIG_INVALID_ENUM_VALUE naming core.checkstat and its line', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tcheckStat = ${value}\n`);
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'core.checkstat',
+          value,
+          source: `${ctx.layout.gitDir}/config`,
+          line: 2,
+        });
+      });
+    });
+  });
+
+  describe('Given core.checkstat valueless in local config', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it refuses with CONFIG_MISSING_VALUE naming core.checkstat and its line', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n	checkStat\n');
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'core.checkstat',
+          source: `${ctx.layout.gitDir}/config`,
+          line: 2,
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['Minimal', '[core]\n\tcheckStat = Minimal\n'],
+    ['DEFAULT', '[core]\n\tcheckStat = DEFAULT\n'],
+  ])('Given core.checkstat %s in local config', (_label, text) => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+        // Act
+        const result = assertEagerConfigValid(ctx);
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.autocrlf = foo on line 3 and core.checkstat = bogus on line 2', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then the lower line wins', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tcheckStat = bogus\n\tautocrlf = foo\n',
+        );
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect(caught.data).toMatchObject({ code: 'CONFIG_INVALID_ENUM_VALUE', line: 2 });
+      });
+    });
+  });
+
   describe('Given core.autocrlf = foo on line 3 and core.ignorecase = maybe on line 2', () => {
     describe('When assertEagerConfigValid', () => {
       it('Then the lower line wins', async () => {

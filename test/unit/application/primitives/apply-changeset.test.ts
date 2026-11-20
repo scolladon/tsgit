@@ -28,6 +28,7 @@ import type {
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat, WriteOptions } from '../../../../src/ports/file-system.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { buildSeededContext, serializeIndexFixtureAsync } from './fixtures.js';
 import { createInterleavingFs } from './support/interleaving-fs.js';
 
@@ -5316,6 +5317,290 @@ describe('applyChangeset leaving occupants its pre-flight does not judge', () =>
 
         // Assert
         expect(mkdirSpy.mock.calls.map(([dir]) => dir)).toContain(`${WORKDIR}/d`);
+      });
+    });
+  });
+});
+
+describe('applyChangeset over an exec-bit-only local change', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const refusalOf = async (run: Promise<unknown>): Promise<TsgitError> => {
+    try {
+      await run;
+    } catch (err) {
+      if (err instanceof TsgitError) return err;
+      throw err;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  const seed = async (
+    fileMode?: string,
+  ): Promise<{ ctx: Context; oldId: ObjectId; newId: ObjectId }> => {
+    const ctx = await buildSeededContext();
+    if (fileMode !== undefined) {
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tfileMode = ${fileMode}\n`);
+      invalidateConfigCache(ctx);
+    }
+    const oldId = await writeBlob(ctx, enc('original'));
+    const newId = await writeBlob(ctx, enc('updated'));
+    await ctx.fs.write(`${WORKDIR}/f.txt`, enc('original'));
+    return { ctx, oldId, newId };
+  };
+
+  describe('Given an unforced update of a file whose exec bit was set locally, with the default config', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it refuses with CHECKOUT_OVERWRITE_DIRTY naming the path', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await seed();
+        withExecutableWorkFile(ctx);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (error.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw error;
+        expect(error.data.localChanges).toEqual(['f.txt']);
+        expect(error.data.untracked).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an unforced delete of a file whose exec bit was set locally, with the default config', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it refuses with CHECKOUT_OVERWRITE_DIRTY naming the path', async () => {
+        // Arrange
+        const { ctx, oldId } = await seed();
+        withExecutableWorkFile(ctx);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeDelete('f.txt', oldId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (error.data.code !== 'CHECKOUT_OVERWRITE_DIRTY') throw error;
+        expect(error.data.localChanges).toEqual(['f.txt']);
+        expect(error.data.untracked).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the same exec-bit-only change with core.filemode = false', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it applies', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await seed('false');
+        withExecutableWorkFile(ctx);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('updated');
+      });
+    });
+  });
+
+  describe('Given a symlink entry checked out as a regular file, with the link target changing in the switch', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it applies, the regular stand-in never counting as a mode change', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('target-a'));
+        const newId = await writeBlob(ctx, enc('target-b'));
+        await ctx.fs.write(`${WORKDIR}/link`, enc('target-a'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('link', oldId, newId, FILE_MODE.SYMLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.readlink(`${WORKDIR}/link`)).toBe('target-b');
+      });
+    });
+  });
+
+  describe('Given an update whose target only flips the mode over an untouched -x file', () => {
+    describe('When the changeset is applied', () => {
+      it('Then it applies', async () => {
+        // Arrange
+        const { ctx, oldId } = await seed();
+        const sut = applyChangeset;
+        const entry: ChangesetEntry = {
+          ...makeUpdate('f.txt', oldId, oldId),
+          mode: FILE_MODE.EXECUTABLE,
+        };
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([entry]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('original');
+      });
+    });
+  });
+});
+
+describe('applyChangeset over an assume-unchanged file whose cached stat drifted', () => {
+  const STALE_SECONDS = 5;
+
+  const arrange = async (assumeValid: boolean, drift: number) => {
+    const ctx = await buildSeededContext();
+    const oldId = await writeBlob(ctx, enc('original'));
+    const newId = await writeBlob(ctx, enc('updated'));
+    await ctx.fs.write(`${WORKDIR}/f.txt`, enc('original'));
+    const entry = indexEntryFromStat(
+      await ctx.fs.lstat(`${WORKDIR}/f.txt`),
+      FILE_MODE.REGULAR,
+      oldId,
+      'f.txt' as FilePath,
+    );
+    const index = {
+      version: 2 as const,
+      entries: [
+        {
+          ...entry,
+          mtimeSeconds: entry.mtimeSeconds - drift,
+          flags: { ...STAGE0_FLAGS, assumeValid },
+        },
+      ],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+    return { ctx, oldId, newId };
+  };
+
+  const refusalOf = async (run: Promise<unknown>): Promise<TsgitError | undefined> => {
+    try {
+      await run;
+    } catch (err) {
+      if (err instanceof TsgitError) return err;
+      throw err;
+    }
+    return undefined;
+  };
+
+  describe('Given an update of an assume-unchanged file whose stat drifted over identical content', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it refuses naming the path as a local change', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await arrange(true, STALE_SECONDS);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f.txt'],
+          untracked: [],
+        });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('original');
+      });
+    });
+  });
+
+  describe('Given a delete of an assume-unchanged file whose stat drifted over identical content', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it refuses naming the path as a local change', async () => {
+        // Arrange
+        const { ctx, oldId } = await arrange(true, STALE_SECONDS);
+        const sut = applyChangeset;
+
+        // Act
+        const error = await refusalOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeDelete('f.txt', oldId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given an update of an assume-unchanged file whose stat still matches', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it applies', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await arrange(true, 0);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('updated');
+      });
+    });
+  });
+
+  describe('Given an update of a plain tracked file whose stat drifted over identical content', () => {
+    describe('When the changeset is applied unforced', () => {
+      it('Then it applies as its content is unchanged', async () => {
+        // Arrange
+        const { ctx, oldId, newId } = await arrange(false, STALE_SECONDS);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeUpdate('f.txt', oldId, newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('updated');
       });
     });
   });

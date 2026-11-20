@@ -41,11 +41,11 @@ import { subjectLine } from '../../domain/objects/commit-message.js';
 import { compareBytes, encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
-  type AuthorIdentity,
-  deriveWorkingMode,
-  type FilePath,
-  type ObjectId,
-} from '../../domain/objects/index.js';
+  type ExecutableBitTrust,
+  type FileMode,
+  indexModeFromStat,
+} from '../../domain/objects/file-mode.js';
+import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
 import { emptyTreeOid } from '../../domain/objects/object-id.js';
 import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
@@ -56,7 +56,10 @@ import {
 } from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
+  type ComparisonScope,
   compareAndRefresh,
+  isTrusted,
+  type RefreshedComparison,
   scopeOf,
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
@@ -112,6 +115,7 @@ import {
 } from '../primitives/internal/write-converted-entry.js';
 import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTreeJudging } from '../primitives/materialize-tree.js';
+import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
@@ -209,17 +213,19 @@ const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> =>
 interface ConversionScope {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 interface HashedFile {
   readonly id: ObjectId;
-  readonly mode: ReturnType<typeof deriveWorkingMode>;
+  readonly mode: FileMode;
   readonly notice?: EolNotice;
 }
 
 const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
+  executableBit: await readExecutableBitTrust(ctx),
 });
 
 /** The blob bytes git stores for a work-tree file: symlink targets verbatim, files cleaned. */
@@ -253,6 +259,8 @@ interface HashRequest {
   readonly scope: ConversionScope;
   /** The stage-0 blob, for git's index-CRLF rule; absent for untracked files. */
   readonly indexBlob?: ObjectId;
+  /** The stage-0 entry's mode, git's donor; absent for HEAD-only and untracked files. */
+  readonly indexMode?: FileMode;
 }
 
 const hashFileAt = async (
@@ -263,7 +271,7 @@ const hashFileAt = async (
   await admitWrite(ctx, request.path);
   const { bytes, notice } = await cleanedContent(ctx, joinPath(workDir, request.path), request);
   const id = await hashBlob(ctx, bytes, { write: true });
-  const mode = deriveWorkingMode(request.stat);
+  const mode = indexModeFromStat(request.stat, request.indexMode, request.scope.executableBit);
   return notice === undefined ? { id, mode } : { id, mode, notice };
 };
 
@@ -302,6 +310,7 @@ interface SnapshotScope {
   readonly provider: AttributeProvider;
   readonly indexMtime: GitIndex['indexMtime'];
   readonly scanner: LeadingPathScanner;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 const statReachable = (ctx: Context, path: FilePath): Promise<FileStat | undefined> =>
@@ -315,15 +324,13 @@ const isDirectoryAt = async (ctx: Context, path: FilePath): Promise<boolean> =>
  * git keeps the index entry for a path its work tree cannot answer for: a directory standing
  * there, or — for an index-only path — nothing reachable at all.
  */
-const snapshotState = async (
-  ctx: Context,
-  { entry, indexed }: { readonly entry: IndexEntry; readonly indexed: boolean },
-  status: WorkingTreeComparison,
-): Promise<SnapshotState> => {
-  if (status === 'absent') return indexed ? 'absent' : 'unchanged';
-  // Stryker disable next-line ConditionalExpression: equivalent — an unchanged non-gitlink entry never has a directory at its path (a directory compares type-changed), so the fall-through returns the same status after one extra lstat.
-  if (status === 'unchanged') return status;
-  return (await isDirectoryAt(ctx, entry.path)) ? 'occluded' : status;
+const snapshotState = (
+  { indexed }: { readonly indexed: boolean },
+  { delta, directoryInPlace }: RefreshedComparison,
+): SnapshotState => {
+  if (directoryInPlace === true) return 'occluded';
+  if (delta.status === 'absent') return indexed ? 'absent' : 'unchanged';
+  return delta.status;
 };
 
 /**
@@ -334,6 +341,15 @@ const snapshotState = async (
 const ridesOnIndexId = async (ctx: Context, entry: IndexEntry): Promise<boolean> =>
   isGitlink(entry.mode) &&
   (entry.pathBytes !== undefined || (await isDirectoryAt(ctx, entry.path)));
+
+// git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink;
+// an armed assume-unchanged entry is never looked at, so it never gets that far.
+const isBeyondSymlink = async (
+  entry: IndexEntry,
+  scope: SnapshotScope,
+  comparisonScope: ComparisonScope,
+): Promise<boolean> =>
+  !isTrusted(entry, comparisonScope) && (await scope.scanner.hasSymlinkedLeadingPath(entry.path));
 
 /** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
 const classifyEntry = async (
@@ -347,20 +363,15 @@ const classifyEntry = async (
   if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
   if (await ridesOnIndexId(ctx, entry)) return { kind: 'indexed', entry, state: 'unchanged' };
   const indexed = scope.head === undefined || scope.head.entries.has(escapedPathOf(entry));
-  // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
-  if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
+  const comparisonScope = {
+    ...scopeOf(scope.provider, scope.indexMtime, scope.scanner),
+    executableBit: scope.executableBit,
+  };
+  if (indexed && (await isBeyondSymlink(entry, scope, comparisonScope))) {
     return { kind: 'indexed', entry, state: 'beyond-symlink' };
   }
-  const { delta } = await compareAndRefresh(
-    ctx,
-    entry,
-    scopeOf(scope.provider, scope.indexMtime, scope.scanner),
-  );
-  return {
-    kind: 'indexed',
-    entry,
-    state: await snapshotState(ctx, { entry, indexed }, delta.status),
-  };
+  const comparison = await compareAndRefresh(ctx, entry, comparisonScope);
+  return { kind: 'indexed', entry, state: snapshotState({ indexed }, comparison) };
 };
 
 /** A HEAD path the index lost: recorded from the work tree where a file or link stands, else not at all. */
@@ -453,11 +464,17 @@ const keepLeadingGitlinks = (
 const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
-  provider: AttributeProvider,
+  { provider, executableBit }: ConversionScope,
   head: EscapedFlatTree | undefined,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
   const scanner = createLeadingPathScanner(ctx);
-  const scope: SnapshotScope = { head, provider, indexMtime: index.indexMtime, scanner };
+  const scope: SnapshotScope = {
+    head,
+    provider,
+    indexMtime: index.indexMtime,
+    scanner,
+    executableBit,
+  };
   const classify = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
       try {
@@ -526,7 +543,7 @@ const projectEntry = async (
     path: entry.path,
     stat,
     scope,
-    ...(tracked.kind === 'indexed' && { indexBlob: entry.id }),
+    ...(tracked.kind === 'indexed' && { indexBlob: entry.id, indexMode: entry.mode }),
   });
   return { entry: stage0Entry(entry.path, id, mode), notice };
 };
@@ -616,7 +633,7 @@ const findLocalChanges = async (
   const scope = await buildConversionScope(ctx);
   const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
   const head = iTree === base.bTree ? undefined : await flattenEscapedTree(ctx, base.bTree);
-  const tracked = await classifyTracked(ctx, index, scope.provider, head);
+  const tracked = await classifyTracked(ctx, index, scope, head);
   const stagedBeyondGitlinks = differsBeyondGitlinks(index, head);
   const untracked = await untrackedChanges(ctx, opts, index);
   return { iTree, stagedBeyondGitlinks, scope, tracked, ...untracked };

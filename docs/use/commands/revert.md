@@ -92,7 +92,7 @@ type RevertResult =
   (`NO_INITIAL_COMMIT`), staged changes (`WORKING_TREE_DIRTY`; the index must match HEAD, except a gitlink difference its submodule ignore mode hides),
   and an operation already in progress (`OPERATION_IN_PROGRESS`). Unstaged
   changes do not refuse, as in git: the merge's would-overwrite check guards
-  the paths it touches, and that check also refuses an untracked file or
+  the paths it touches (an exec-bit-only change counts only while `core.fileMode` is trusted; under `false` it does not), and that check also refuses an untracked file or
   symlink standing in a leading path of a path the revert adds (`untracked`
   names the obstructing component). `--no-commit` refuses only on unmerged entries.
 - **Index-cut commit.** The commit is cut from the index git leaves after the

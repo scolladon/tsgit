@@ -36,11 +36,11 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 
 `materializeTree` and `applyChangeset` take the optional `ignoredOccupants`, `untrackedOccupants` and `unmergedPaths` modes that the checkout-family commands use to displace or protect what stands in a write's way; their entries in [`internals.md`](internals.md) list each mode and its default.
 
-`materializeTree`'s `forceRewriteAll` follows git's one-way merge: a path whose index entry already matches the target is rewritten only when its work-tree file is not up to date (edited, deleted, re-stat'ed or replaced by an occupant), and `written` counts those rewrites only; [`internals.md`](internals.md) has the rule in full.
+`materializeTree`'s `forceRewriteAll` follows git's one-way merge: a path whose index entry already matches the target is rewritten only when its work-tree file is not up to date (edited, deleted, re-stat'ed or replaced by an occupant; an exec-bit-only change counts only under `core.fileMode = true`), and `written` counts those rewrites only; [`internals.md`](internals.md) has the rule in full.
 
 `materializeTree`'s `headTree` follows git's two-way merge of a branch switch, with the empty tree as the old side when HEAD is unborn: a staged path the switch does not change is carried, and a staged file in the way of a target directory follows `core.ignoreCase` without sparse checkout, while under sparse checkout the directory side always wins; [`internals.md`](internals.md) has the rule in full.
 
-`materializeTree` and `applyMergeToWorktree` follow git's sparse rules: a clean change outside the patterns is not written and is staged skip-worktree, a conflict stop retires up-to-date out-of-pattern files, and a not-up-to-date one is kept with a warning. `loadSparseMatcher` folds ASCII case under `core.ignorecase`, and `readConfig`'s `core` gains `fileMode` and `symlinks`; [`internals.md`](internals.md) has the rules in full.
+`materializeTree` and `applyMergeToWorktree` follow git's sparse rules: a clean change outside the patterns is not written and is staged skip-worktree, a conflict stop retires up-to-date out-of-pattern files, and a not-up-to-date one is kept with a warning. `loadSparseMatcher` folds ASCII case under `core.ignorecase`, and `readConfig`'s `core` gains `fileMode`, `symlinks`, `trustCtime` and `checkStat`; [`internals.md`](internals.md) has the rules in full.
 
 For internal building blocks referenced from command pages (`materializeTree`, `computeChangeset`, `readHeadTree`, `detectMergeRenames`, `shiftMergeSide`, `readConfig`, `findWouldOverwrite`, `resolveConversion`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
 

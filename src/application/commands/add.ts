@@ -33,13 +33,10 @@ import {
   type ResolveUndoRecord,
   resolveUndoRecordOf,
 } from '../../domain/git-index/resolve-undo.js';
+import { unmergedModeDonor } from '../../domain/git-index/unmerged-mode-donor.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
-import {
-  deriveWorkingMode,
-  FILE_MODE,
-  type FileMode,
-  type ObjectId,
-} from '../../domain/objects/index.js';
+import { type ExecutableBitTrust, indexModeFromStat } from '../../domain/objects/file-mode.js';
+import { FILE_MODE, type FileMode, type ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import {
@@ -85,6 +82,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
+import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../primitives/read-index.js';
 import {
   IDENTITY_CONVERSION,
@@ -199,6 +197,7 @@ export const add = (
 interface ConversionScope {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
+  readonly executableBit: ExecutableBitTrust;
 }
 
 /**
@@ -208,13 +207,17 @@ interface ConversionScope {
  */
 interface StagingScope extends ConversionScope {
   readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
+  /** The mode an unmerged path's stages lend when core.fileMode distrusts the work file's exec bit. */
+  readonly modeDonors: ReadonlyMap<FilePath, FileMode | undefined>;
 }
 
 const NO_INDEX_RULES: ReadonlyMap<FilePath, IndexEntry> = new Map();
+const NO_MODE_DONORS: ReadonlyMap<FilePath, FileMode | undefined> = new Map();
 
 const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
+  executableBit: await readExecutableBitTrust(ctx),
 });
 
 const WHOLE_TREE_PATHSPEC = '.';
@@ -288,11 +291,11 @@ const addLiteralOnly = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { indexRules, unmergedStages, stageZeroBeside, sorted, ...state } =
+    const { indexRules, modeDonors, unmergedStages, stageZeroBeside, sorted, ...state } =
       await readExistingEntries(ctx);
     const staging = {
       ctx,
-      scope: { ...scope, indexRules },
+      scope: { ...scope, indexRules, modeDonors },
       ...state,
       stageZeroBeside,
       ensurePromisorConfigValid,
@@ -972,7 +975,7 @@ const addRenormalized = async (
     const sparse = await refuseUnseenRenormalized(ctx, positives, entries);
     const staging = {
       ctx,
-      scope: { ...scope, indexRules: NO_INDEX_RULES },
+      scope: { ...scope, indexRules: NO_INDEX_RULES, modeDonors: NO_MODE_DONORS },
       ensurePromisorConfigValid,
     };
     const renormalized = await renormalizeEntries(staging, entries, matcher);
@@ -1172,7 +1175,7 @@ const renormalizeOne = async (
   if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
-  const mode: FileMode = deriveWorkingMode(fresh);
+  const mode = indexModeFromStat(fresh, donorOf(scope, previous), scope.executableBit);
   indexPathRulesOf(ctx).validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const { id } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'renormalize');
   return indexEntryFromStat(fresh, mode, id, path);
@@ -1300,6 +1303,7 @@ const stageIgnoredWalk = async (
     sorted,
     indexMtime,
     indexRules,
+    modeDonors,
   } = await readExistingEntries(ctx);
   const tracker = trackPositives(matcher, positives);
   const verdicts = verdictsBesideSkipWorktree(existing, (path) => tracker.observe(path));
@@ -1326,7 +1330,7 @@ const stageIgnoredWalk = async (
   const outcomes = await stageSelectedEntries(
     ctx,
     { existing, matcher, walked, repositories, unmergedStages, verdicts },
-    { ...scope, indexRules },
+    { ...scope, indexRules, modeDonors },
     indexMtime,
     ensurePromisorConfigValid,
   );
@@ -1711,7 +1715,7 @@ export const addAll = async (
       [...reached.files, ...hidden.filter((entry) => !isRepositoryLeaf(entry))],
       existing,
       seen,
-      { ...scope, indexRules: state.indexRules },
+      { ...scope, indexRules: state.indexRules, modeDonors: state.modeDonors },
       state.indexMtime,
       ensurePromisorConfigValid,
     );
@@ -1861,7 +1865,24 @@ interface ExistingIndexState {
   readonly sorted: ReadonlyArray<IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
+  readonly modeDonors: ReadonlyMap<FilePath, FileMode | undefined>;
 }
+
+const stagedModesOf = (
+  stages: ReadonlyArray<IndexEntry>,
+): Parameters<typeof unmergedModeDonor>[0] =>
+  Object.fromEntries(stages.map((entry) => [`stage${entry.flags.stage}`, entry]));
+
+const modeDonorsOf = (
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+): ReadonlyMap<FilePath, FileMode | undefined> => {
+  const donors = new Map<FilePath, FileMode | undefined>();
+  for (const stages of unmergedStages.values()) {
+    const donor = unmergedModeDonor(stagedModesOf(stages));
+    for (const { path } of stages) donors.set(path, donor);
+  }
+  return donors;
+};
 
 const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> => {
   const { entries, indexMtime } = await readIndexOrEmpty(ctx);
@@ -1881,7 +1902,16 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
   }
   const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));
   const stageZeroBeside = new Map([...stageZero].filter(([key]) => unmergedStages.has(key)));
-  return { entries: out, unmergedStages, stageZeroBeside, sorted: entries, indexMtime, indexRules };
+  const modeDonors = modeDonorsOf(unmergedStages);
+  return {
+    entries: out,
+    unmergedStages,
+    stageZeroBeside,
+    sorted: entries,
+    indexMtime,
+    indexRules,
+    modeDonors,
+  };
 };
 
 /** An unmerged path stays so when the add left it unstaged: it is neither removed nor staged. */
@@ -1996,6 +2026,12 @@ const stageFromFreshStat = async (
   return stagePromisorChecked(ctx, path, fresh, scope, previous, indexMtime);
 };
 
+/** The entry whose mode git consults when the work file's exec bit is distrusted. */
+const donorOf = (scope: StagingScope, previous: IndexEntry | undefined): FileMode | undefined => {
+  if (previous === undefined) return undefined;
+  return previous.flags.stage === 0 ? previous.mode : scope.modeDonors.get(previous.path);
+};
+
 const stagePromisorChecked = async (
   ctx: Context,
   path: FilePath,
@@ -2004,14 +2040,14 @@ const stagePromisorChecked = async (
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
 ): Promise<StagedBlob> => {
-  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime))
+  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime, scope.executableBit))
     return { entry: previous };
   // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
   // stage race cannot smuggle an oversize blob past the pre-filter.
   if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
-  const mode: FileMode = deriveWorkingMode(fresh);
+  const mode = indexModeFromStat(fresh, donorOf(scope, previous), scope.executableBit);
   indexPathRulesOf(ctx).validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const { id, notice } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'write');
   const entry = indexEntryFromStat(fresh, mode, id, path);
@@ -2058,11 +2094,12 @@ const restagesAsIs = (
   previous: IndexEntry,
   fresh: FileStat,
   indexMtime: IndexMtime | undefined,
+  executableBit: ExecutableBitTrust,
 ): boolean =>
   indexMtime !== undefined &&
-  // Stryker disable next-line ConditionalExpression: equivalent — deriveWorkingMode never returns FILE_MODE.GITLINK, so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
+  // Stryker disable next-line ConditionalExpression: equivalent — indexModeFromStat never returns FILE_MODE.GITLINK (a gitlink donor yields 100644 or the stat-derived mode), so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
   previous.mode !== FILE_MODE.GITLINK &&
-  deriveWorkingMode(fresh) === previous.mode &&
+  indexModeFromStat(fresh, previous.mode, executableBit) === previous.mode &&
   isEntryStatClean(previous, fresh, indexMtime);
 
 /**

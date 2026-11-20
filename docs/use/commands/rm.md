@@ -42,6 +42,8 @@ working file in every case; `force` overrides the valve entirely.
 
 ## Submodules
 
+Under `core.fileMode = false` (local config, or an active `config.worktree` over it) the work file's exec bit is untrusted: a file whose only difference from the index is its exec bit is not a local modification. A directory standing at a tracked non-gitlink path reads as removed, so it is no local modification either. A malformed `core.fileMode` refuses `CONFIG_BAD_BOOLEAN_VALUE`.
+
 `rm` prepares a submodule (a gitlink entry) in git's order before anything leaves the working tree:
 
 1. A working `.gitmodules` that differs by content from its staged entry is refused `GITMODULES_NOT_STAGED` — under `cached` and `force` too, with nothing removed. A `.gitmodules` rewritten with the same bytes, or absent from the work tree, does not trigger it.

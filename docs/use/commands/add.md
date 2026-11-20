@@ -114,9 +114,17 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
 - `WORKING_TREE_FILE_TOO_LARGE` — a file exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB).
 - `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` — `core.safecrlf=true` and a path's line endings would not survive the round trip. See [Line-ending conversion](#line-ending-conversion-coreautocrlf-coreeol-text-eol-ident).
-- `CONFIG_BAD_BOOLEAN_VALUE` — `core.autocrlf` or `core.safecrlf` holds a value git's boolean grammar refuses (`core.autocrlf` also accepts `input`, `core.safecrlf` also accepts `warn`). Checked before anything is staged, as on every command.
+- `CONFIG_BAD_BOOLEAN_VALUE` — `core.autocrlf`, `core.safecrlf` or `core.fileMode` holds a value git's boolean grammar refuses (`core.autocrlf` also accepts `input`, `core.safecrlf` also accepts `warn`); `core.fileMode` is refused in local config and in an active `config.worktree`. `core.trustctime` is refused the same way; a `core.checkstat` other than `default` / `minimal` refuses `CONFIG_INVALID_ENUM_VALUE`, and a valueless one `CONFIG_MISSING_VALUE`. Checked before anything is staged, as on every command.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
+
+## Executable bit (`core.fileMode`)
+
+The staged mode of a regular file follows git's `ce_mode_from_stat`. `core.fileMode` is read from local config, overlaid by an active `config.worktree` (the last valid entry in each file wins); it defaults to `true`. Global and system config stay unread.
+
+- **Trusted (default).** The owner exec bit (`0o100`) decides: set stages `100755`, else `100644`.
+- **`core.fileMode = false`.** The exec bit is not read from disk. The mode comes from a donor index entry: the stage-0 entry for the path (an intent-to-add entry included); for an unmerged path the first present of stage 2, then 1, then 3; a donor that is not a regular file, or no entry at all (a new path), stages `100644`. A path whose only change is its exec bit is not re-staged.
+- **Symlinks** always stage `120000`.
 
 ## Index write
 

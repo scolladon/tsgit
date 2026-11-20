@@ -30,3 +30,10 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 - **Rule:** copy git's observable outcome, data loss included, and record the upstream defect in the ADR; never diverge because git's behaviour looks broken. A write outside the repository still goes to the user for security sign-off.
 - **Evidence:** ADR-1220, ADR-936, ADR-937
 - **Counter-cases:** none
+
+## D-5 — A divergence review proves in a seam the change edits is folded whole, even when its cause predates the change
+
+- **Trigger:** review proves a git divergence whose locus is a line or function the change already edits, but whose cause predates the change and lies outside the brief's subject; the design recommends deferring it to impact triage.
+- **Rule:** fold it in the current change, per consumer of the seam, with an ADR and an interop pin per consumer; do not defer a proven divergence in an edited seam because it is off-subject.
+- **Evidence:** ADR-1234
+- **Counter-cases:** none

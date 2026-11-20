@@ -7,14 +7,16 @@ import { FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FileMode } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
+import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { createConcurrencyLimiter } from './concurrency-limiter.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { buildRepoIgnorePredicate } from './ignore-evaluator.js';
 import {
-  type CachedStat,
   lstatBeyondLink,
   matchesCachedStat,
+  type TrackedStat,
   UNREACHABLE,
 } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -24,7 +26,7 @@ import type { LeadingPathScanner } from './symlinked-leading-path.js';
 
 export type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
 
-export type TrackedLookup = (path: FilePath) => Promise<CachedStat | undefined>;
+export type TrackedLookup = (path: FilePath) => Promise<TrackedStat | undefined>;
 
 // What the clash check weighs an occupant against: the paths the changeset deletes,
 // the repo's ignore rules (git removes ignored files along with a directory that
@@ -46,15 +48,14 @@ export interface OccupantClash {
 export type OccupantVerdict =
   | { readonly kind: 'clash'; readonly clash: OccupantClash }
   | { readonly kind: 'clear' }
-  // A plain file or symlink stands at the path (the probe saw it): the caller hashes it against the index.
-  | { readonly kind: 'compare-content' };
+  // A plain file or symlink stands at the path (the probe saw it, `stat` is that lstat): the caller weighs it against the index.
+  | { readonly kind: 'compare-content'; readonly stat: FileStat };
 
 export type OccupantShape =
   | { readonly kind: 'add'; readonly path: FilePath; readonly mode: FileMode }
   | { readonly kind: 'update' | 'delete'; readonly path: FilePath };
 
 const CLEAR: OccupantVerdict = { kind: 'clear' };
-const COMPARE_CONTENT: OccupantVerdict = { kind: 'compare-content' };
 
 export const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
   absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
@@ -151,7 +152,13 @@ const classifyThroughLink = async (
   if (reached === UNREACHABLE) return localChange(path);
   const tracked = await scope.tracked(path);
   if (tracked === undefined) return localChange(path);
-  const unchanged = await matchesCachedStat(tracked, absPath, reached, racyContentMatcher(ctx));
+  const executableBit = await readExecutableBitTrust(ctx);
+  const unchanged = await matchesCachedStat(
+    { ...tracked, executableBit },
+    absPath,
+    reached,
+    racyContentMatcher(ctx),
+  );
   return unchanged ? CLEAR : localChange(path);
 };
 
@@ -181,7 +188,7 @@ const classifyChangedPath = async (
   const absPath = joinPath(scope.workdir, shape.path);
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined) return CLEAR;
-  if (!stat.isDirectory) return COMPARE_CONTENT;
+  if (!stat.isDirectory) return { kind: 'compare-content', stat };
   if (shape.kind === 'update') return localChange(shape.path);
   return (await holdsSurvivor(ctx, absPath, scope))
     ? untracked(shape.path)

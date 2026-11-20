@@ -42,6 +42,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
+import { readExecutableBitTrust } from './read-executable-bit-trust.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -205,8 +206,9 @@ const isLocalChange = async (
   // git's `verify_uptodate_1` returns early for a gitlink: a moved checkout is not local work.
   if (entry.mode === FILE_MODE.GITLINK) return false;
   if (await isBlockedByObstruction(ctx, path, clashScope)) return true;
-  const { delta } = await compareAndRefresh(ctx, entry, scope);
-  return isWorkingTreeModified(delta.status);
+  const { delta, directoryInPlace } = await compareAndRefresh(ctx, entry, scope);
+  // git's `verify_uptodate` counts a directory where a file is tracked as a change, though `check_removed` reads it as gone.
+  return directoryInPlace === true || isWorkingTreeModified(delta.status);
 };
 
 /**
@@ -232,7 +234,11 @@ export const findWouldOverwrite = async (
   const provider = await buildCheckinAttributeProvider(ctx);
   // One leading-path memo for the whole scan: a shared directory is lstat-ed once.
   const scanner = createLeadingPathScanner(ctx);
-  const scope = scopeOf(provider, currentIndex.indexMtime, scanner);
+  const scope = {
+    ...scopeOf(provider, currentIndex.indexMtime, scanner),
+    ignoreAssumeValid: true as const,
+    executableBit: await readExecutableBitTrust(ctx),
+  };
   const clashScope = clashScopeOf(ctx, removed, scanner, byPath, currentIndex.indexMtime);
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];

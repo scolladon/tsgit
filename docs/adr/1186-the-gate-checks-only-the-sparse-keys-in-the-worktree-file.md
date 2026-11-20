@@ -4,7 +4,12 @@ subjects:
 ---
 # 1186 — the gate checks only the sparse keys in the worktree file
 
-- **Status:** accepted
+> **Superseded by [ADR-1233](1233-the-eager-gate-refuses-a-bad-core-filemode-in-local-and-the-worktree-file.md)**
+> for `core.fileMode`: the worktree-file gate now also refuses a bad `core.fileMode`. The gate
+> running only when the extension is on, and every other eager key staying unchecked there, are
+> carried forward.
+
+- **Status:** superseded by ADR-1233
 - **Date:** 2026-11-13
 - **Design:** docs/design/sparse-checkout-worktree-config.md · **Supersedes/Refines:** refines ADR-1185
 

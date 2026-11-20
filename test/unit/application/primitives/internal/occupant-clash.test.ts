@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import type { IndexMtime } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import {
@@ -514,7 +515,10 @@ describe('classifyOccupant', () => {
         const result = await classifyChange(ctx, 'update', 'f', scopeOf(ctx));
 
         // Assert
-        expect(result).toEqual({ kind: 'compare-content' });
+        expect(result).toEqual({
+          kind: 'compare-content',
+          stat: expect.objectContaining({ isFile: true }),
+        });
       });
     });
   });
@@ -530,7 +534,10 @@ describe('classifyOccupant', () => {
         const result = await classifyChange(ctx, 'delete', 'f', scopeOf(ctx));
 
         // Assert
-        expect(result).toEqual({ kind: 'compare-content' });
+        expect(result).toEqual({
+          kind: 'compare-content',
+          stat: expect.objectContaining({ isFile: true }),
+        });
       });
     });
   });
@@ -747,6 +754,27 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+
+    describe('When the stat matches and the cached mode differs from the reached file mode only by the exec bit, with core.filemode = false', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfileMode = false\n');
+        invalidateConfigCache(ctx);
+        const lookup = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
+        const tracked: TrackedLookup = async (target) => {
+          const found = await lookup(target);
+          if (found === undefined) return undefined;
+          return { ...found, entry: { ...found.entry, mode: FILE_MODE.EXECUTABLE } };
+        };
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
       });
     });
 

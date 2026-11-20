@@ -15,7 +15,7 @@
  *   kind:    byte-identical
  *   format:  git-archive-zip
  */
-import { FILE_MODE } from '../objects/file-mode.js';
+import { FILE_MODE, isRegularFileMode } from '../objects/file-mode.js';
 import { crc32 } from '../storage/crc32.js';
 import type { ArchiveEntry, ArchiveResult } from './types.js';
 
@@ -417,7 +417,7 @@ interface EntryContent {
  * symlink regardless of how compressible the target string is.
  */
 function isCompressibleBlob(mode: ArchiveEntry['mode']): boolean {
-  return mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+  return isRegularFileMode(mode);
 }
 
 /**

@@ -27,6 +27,7 @@ import * as convertBlobMod from '../../../../src/application/primitives/internal
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
+import * as trustMod from '../../../../src/application/primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -297,6 +298,26 @@ const occupy = async (ctx: Context, name: string, kind: 'file' | 'symlink'): Pro
 
 const modeAt = async (ctx: Context, stash: ObjectId, path: string) =>
   (await workTreeEntryOf(ctx, stash, path))?.mode;
+
+const setIndexMode = async (ctx: Context, mode: IndexEntry['mode']): Promise<void> => {
+  const lock = await acquireIndexLock(ctx);
+  await lock.commit(
+    (await readIndex(ctx)).entries.map((e) => ({ ...e, mode })),
+    'replace',
+  );
+};
+
+const disableExecutableBit = (ctx: Context): Promise<void> =>
+  updateConfigEntries(ctx, [{ section: 'core', key: 'filemode', value: 'false' }]);
+
+/** The memory file system models no modes: every work file's stat is made to carry the exec bits. */
+const makeWorkFilesExecutable = (ctx: Context): void => {
+  const lstat = ctx.fs.lstat.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => ({
+    ...(await lstat(path)),
+    mode: 0o100755,
+  }));
+};
 
 describe('stash push', () => {
   describe('Given three committed files sharing a directory', () => {
@@ -4664,6 +4685,86 @@ describe('stashPush — the work-tree tree follows git’s path set', () => {
     });
   });
 
+  describe('Given an assume-valid committed file replaced by a directory', () => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes and leaves the directory and the index untouched', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, 'f', 'v1\n', 'add f');
+        const tracked = await readIndex(ctx);
+        const assumed = tracked.entries.map((entry) =>
+          entry.path === 'f' ? { ...entry, flags: { ...entry.flags, assumeValid: true } } : entry,
+        );
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync({ ...tracked, entries: assumed }, ctx),
+        );
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'f/inner', 'inner\n');
+        const indexBefore = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(await read(ctx, 'f/inner')).toBe('inner\n');
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(indexBefore);
+      });
+    });
+  });
+
+  describe.each([
+    [
+      'deleted',
+      'f/g',
+      async (ctx: Context) => {
+        await ctx.fs.rm(`${ctx.layout.workDir}/f/g`);
+      },
+    ],
+    [
+      'below a directory replaced by a symlink',
+      'f/g',
+      async (ctx: Context) => {
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await write(ctx, 'other/g', 'v1\n');
+        await ctx.fs.symlink('other', `${ctx.layout.workDir}/f`);
+      },
+    ],
+    [
+      'below a removed directory',
+      'f/g',
+      async (ctx: Context) => {
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+      },
+    ],
+  ] as const)('Given an assume-valid committed file %s', (_label, path, disturb) => {
+    describe('When push runs', () => {
+      it('Then it reports no local changes and leaves the index untouched', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await commitFile(ctx, path, 'v1\n', 'add file');
+        const tracked = await readIndex(ctx);
+        const assumed = tracked.entries.map((entry) =>
+          entry.path === path ? { ...entry, flags: { ...entry.flags, assumeValid: true } } : entry,
+        );
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync({ ...tracked, entries: assumed }, ctx),
+        );
+        await disturb(ctx);
+        const indexBefore = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const result = await stashPush(ctx, {});
+
+        // Assert
+        expect(result).toEqual({ kind: 'no-local-changes' });
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(indexBefore);
+      });
+    });
+  });
+
   describe('Given a staged new file deleted from the work tree', () => {
     describe('When push runs', () => {
       it('Then the work-tree tree keeps the index entry', async () => {
@@ -5299,6 +5400,85 @@ describe('stash apply under a cone that excludes a/', () => {
         // Assert
         expect((await entryOf(ctx, 'a/f'))?.flags.skipWorktree).toBe(true);
         expect(await exists(ctx, 'a/f')).toBe(false);
+      });
+    });
+  });
+});
+
+describe('stash push core.fileMode', () => {
+  const FROZEN_CLOCK_MS = 1_700_000_000_000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  describe('Given core.filemode = false and an executable entry whose work file lost the exec bit and changed content', () => {
+    describe('When stash push runs', () => {
+      it('Then the work-tree tree records 100755', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await setIndexMode(ctx, FILE_MODE.EXECUTABLE);
+        await disableExecutableBit(ctx);
+        await write(ctx, 'a.txt', 'edited\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a.txt')).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+
+  describe('Given core.filemode = false and a regular entry whose work file gained the exec bit and changed content', () => {
+    describe('When stash push runs', () => {
+      it('Then the work-tree tree records 100644', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await disableExecutableBit(ctx);
+        await write(ctx, 'a.txt', 'edited\n');
+        makeWorkFilesExecutable(ctx);
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(await modeAt(ctx, result.stash, 'a.txt')).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given one and then three edited tracked files', () => {
+    describe('When stash push runs over each', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const sut = stashPush;
+        const readsFor = async (count: number): Promise<number> => {
+          // A frozen clock makes every entry racy in both runs, so the reads cannot depend on the second boundary.
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(FROZEN_CLOCK_MS);
+          const ctx = await setupRepo();
+          const names = Array.from({ length: count }, (_, i) => `f${i}.txt`);
+          for (const name of names) await commitFile(ctx, name, 'committed\n', `add ${name}`);
+          for (const name of names) await write(ctx, name, 'edited\n');
+          const spy = vi.spyOn(trustMod, 'readExecutableBitTrust');
+          await sut(ctx, {});
+          const calls = spy.mock.calls.length;
+          spy.mockRestore();
+          return calls;
+        };
+
+        // Act
+        const one = await readsFor(1);
+        const three = await readsFor(3);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });

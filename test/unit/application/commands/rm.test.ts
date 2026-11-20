@@ -4,9 +4,11 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { deriveGitlinkContext } from '../../../../src/application/primitives/internal/submodule-context.js';
+import * as trustMod from '../../../../src/application/primitives/read-executable-bit-trust.js';
 import {
   invalidateIndexCache,
   readIndex,
@@ -36,6 +38,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
 import { seedIndex, stagesOf } from './add-index-fixtures.js';
@@ -1217,6 +1220,94 @@ describe('rm stat cache', () => {
 
         // Assert
         expect(reads).not.toContain(path);
+      });
+    });
+  });
+});
+
+describe('rm core.fileMode policy', () => {
+  const FROZEN_CLOCK_MS = 1_700_000_000_000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const seedCommittedFile = async (config: string): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { 'a.txt': 'v1\n' } });
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'seed', author: AUTHOR });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+    invalidateConfigCache(ctx);
+    withExecutableWorkFile(ctx);
+    return ctx;
+  };
+
+  describe('Given a committed file differing only by a set exec bit and the default core.fileMode', () => {
+    describe('When rm runs without an override', () => {
+      it('Then it refuses with RM_LOCAL_MODIFICATIONS and keeps the entry', async () => {
+        // Arrange
+        const ctx = await seedCommittedFile('');
+        const sut = rm;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['a.txt']), 'RM_LOCAL_MODIFICATIONS');
+
+        // Assert
+        if (err.data.code !== 'RM_LOCAL_MODIFICATIONS') throw new Error('unexpected error shape');
+        expect(err.data.paths).toEqual(['a.txt']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toContain('a.txt');
+      });
+    });
+  });
+
+  describe('Given a committed file differing only by a set exec bit and core.fileMode = false', () => {
+    describe('When rm runs without an override', () => {
+      it('Then it removes the entry and the file', async () => {
+        // Arrange
+        const ctx = await seedCommittedFile('[core]\n\tfilemode = false\n');
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['a.txt']);
+
+        // Assert
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).not.toContain('a.txt');
+        expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given one and then three tracked files', () => {
+    describe('When rm runs over each', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const sut = rm;
+        const readsFor = async (count: number): Promise<number> => {
+          // A frozen clock makes every entry racy in both runs, so the reads cannot depend on the second boundary.
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(FROZEN_CLOCK_MS);
+          const ctx = createMemoryContext();
+          const names = Array.from({ length: count }, (_, i) => `f${i}.txt`);
+          await seedRepo(ctx, {
+            workingTree: Object.fromEntries(names.map((name) => [name, 'v1\n'])),
+          });
+          await add(ctx, names);
+          await commit(ctx, { message: 'seed', author: AUTHOR });
+          const spy = vi.spyOn(trustMod, 'readExecutableBitTrust');
+          await sut(ctx, names);
+          const calls = spy.mock.calls.length;
+          spy.mockRestore();
+          return calls;
+        };
+
+        // Act
+        const one = await readsFor(1);
+        const three = await readsFor(3);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });

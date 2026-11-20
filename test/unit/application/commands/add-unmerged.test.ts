@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add, addAll } from '../../../../src/application/commands/add.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import {
+  invalidateIndexCache,
+  readIndex,
+} from '../../../../src/application/primitives/read-index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
+import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/index.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import {
   indexExtensionsOf,
@@ -802,6 +808,86 @@ describe('Given an unmerged h that an ignore rule hides from the walk', () => {
 
       // Assert
       expect(stagesAt(result, 'h')).toEqual(['0']);
+    });
+  });
+});
+
+interface DonorRow {
+  readonly title: string;
+  readonly stages: ReadonlyArray<IndexRow>;
+  readonly executable: boolean;
+  readonly expected: FileMode;
+}
+
+const stageRow = (stage: 1 | 2 | 3, mode: FileMode): IndexRow => ({
+  path: 'f',
+  text: `f-${stage}`,
+  stage,
+  mode,
+});
+
+const UNMERGED_DONOR_ROWS: ReadonlyArray<DonorRow> = [
+  {
+    title: 'stage 2 executable beside stage 3 regular, with a plain work file',
+    stages: [stageRow(2, FILE_MODE.EXECUTABLE), stageRow(3, FILE_MODE.REGULAR)],
+    executable: false,
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'stage 1 regular beside stage 2 executable, with a plain work file',
+    stages: [stageRow(1, FILE_MODE.REGULAR), stageRow(2, FILE_MODE.EXECUTABLE)],
+    executable: false,
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'stage 1 executable beside stage 3 regular, with a plain work file',
+    stages: [stageRow(1, FILE_MODE.EXECUTABLE), stageRow(3, FILE_MODE.REGULAR)],
+    executable: false,
+    expected: FILE_MODE.EXECUTABLE,
+  },
+  {
+    title: 'stage 1 regular beside stage 3 executable, with an executable work file',
+    stages: [stageRow(1, FILE_MODE.REGULAR), stageRow(3, FILE_MODE.EXECUTABLE)],
+    executable: true,
+    expected: FILE_MODE.REGULAR,
+  },
+  {
+    title: 'stage 2 regular beside stage 3 executable, with an executable work file',
+    stages: [stageRow(2, FILE_MODE.REGULAR), stageRow(3, FILE_MODE.EXECUTABLE)],
+    executable: true,
+    expected: FILE_MODE.REGULAR,
+  },
+];
+
+const FILEMODE_FALSE = '[core]\n\tfilemode = false\n';
+
+describe('add — an unmerged path under core.filemode = false', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each(UNMERGED_DONOR_ROWS)('Given $title', ({ stages, executable, expected }) => {
+    describe('When add stages the path', () => {
+      it(`Then the staged mode is ${expected}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { f: 'merged' } });
+        await seedIndex(ctx, stages);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, FILEMODE_FALSE);
+        invalidateConfigCache(ctx);
+        if (executable) {
+          withExecutableWorkFile(ctx, 'f');
+        }
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['f']);
+        invalidateIndexCache(ctx);
+        const result = (await readIndex(ctx)).entries.map((entry) => entry.mode);
+
+        // Assert
+        expect(result).toEqual([expected]);
+      });
     });
   });
 });

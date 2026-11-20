@@ -37,6 +37,7 @@ import {
 } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
+import type { ExecutableBitTrust } from '../../domain/objects/file-mode.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -80,6 +81,7 @@ import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clea
 import { judgeMovers, warnLeftDespiteSparse } from './internal/sparse-left-dirty.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
+import { readExecutableBitTrust } from './read-executable-bit-trust.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -485,11 +487,17 @@ const obstructionMayGo = async (
   index: GitIndex,
   entry: IndexEntry,
   contentMatches: RacyContentCheck,
+  executableBit: () => Promise<ExecutableBitTrust>,
 ): Promise<boolean> => {
   const absPath = joinPath(workdir, escapedPathOf(entry));
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined) return false;
-  return matchesCachedStat({ entry, indexMtime: index.indexMtime }, absPath, stat, contentMatches);
+  return matchesCachedStat(
+    { entry, indexMtime: index.indexMtime, executableBit: await executableBit() },
+    absPath,
+    stat,
+    contentMatches,
+  );
 };
 
 /** The colliders git may remove: none unless core.ignoreCase; the config is read only when one exists. */
@@ -500,10 +508,12 @@ const clearedObstructions = async (
   over: ReadonlyArray<IndexEntry>,
 ): Promise<IndexEntry[]> => {
   const ignoreCase = lazily(async () => (await readConfig(ctx)).core?.ignoreCase === true);
+  const executableBit = lazily(() => readExecutableBitTrust(ctx));
   const contentMatches = racyContentMatcher(ctx);
   const going: IndexEntry[] = [];
   for (const entry of over) {
-    const mayGo = async () => obstructionMayGo(ctx, workdir, index, entry, contentMatches);
+    const mayGo = async () =>
+      obstructionMayGo(ctx, workdir, index, entry, contentMatches, executableBit);
     if ((await ignoreCase()) && (await mayGo())) {
       going.push(entry);
     }

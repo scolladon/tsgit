@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import {
   changedPaths,
   findTrackedBeyondSymlink,
@@ -9,6 +10,7 @@ import {
   resultModesOf,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import * as trust from '../../../../src/application/primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
@@ -17,6 +19,7 @@ import type { MergeConflict } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 
 const blob = (ctx: Context, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -69,6 +72,87 @@ const layOutMovedSubmodule = async (ctx: Context): Promise<void> => {
 };
 
 describe('findWouldOverwrite', () => {
+  describe.each([
+    ['regular file', FILE_MODE.REGULAR],
+    ['symlink', FILE_MODE.SYMLINK],
+  ] as const)('Given a tracked %s replaced by a directory', (_kind, mode) => {
+    describe('When the changed set names the path', () => {
+      it('Then it is a local change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'm/inner', 'inner\n');
+        const entry = entryOf('m', await blob(ctx, 'one\n'), mode);
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(ctx, set('m'), indexOf([entry]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: ['m'], untracked: [] });
+      });
+    });
+  });
+
+  describe.each([
+    ['an exec bit set', async (ctx: Context) => withExecutableWorkFile(ctx)],
+    [
+      'a symlink swapped in',
+      async (ctx: Context) => {
+        await ctx.fs.rm(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/a`);
+      },
+    ],
+    ['its content edited', async (ctx: Context) => work(ctx, 'a', 'two\n')],
+  ] as const)('Given an assume-valid file with %s and an armed stat cache', (_label, change) => {
+    describe('When the changed set names the path', () => {
+      it('Then it is a local change, as git re-checks the file ignoring the assume-valid bit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, 'a', 'one\n');
+        const entry = {
+          ...entryOf('a', await blob(ctx, 'one\n')),
+          flags: { ...STAGE0_FLAGS, assumeValid: true },
+        };
+        await change(ctx);
+        const index = { ...indexOf([entry]), indexMtime: { seconds: 10, nanoseconds: 0 } };
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(ctx, set('a'), index);
+
+        // Assert
+        expect(result).toEqual({ localChanges: ['a'], untracked: [] });
+      });
+    });
+  });
+
+  describe.each([
+    ['the default', '', ['a']],
+    ['core.filemode = false', '[core]\n\tfilemode = false\n', []],
+  ] as const)(
+    'Given a file differing only by a set exec bit under %s',
+    (_label, config, expected) => {
+      describe('When the changed set names the path', () => {
+        it(`Then the local changes are ${JSON.stringify(expected)}`, async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+          invalidateConfigCache(ctx);
+          await work(ctx, 'a', 'one\n');
+          const entry = entryOf('a', await blob(ctx, 'one\n'));
+          withExecutableWorkFile(ctx);
+          const sut = findWouldOverwrite;
+
+          // Act
+          const result = await sut(ctx, set('a'), indexOf([entry]));
+
+          // Assert
+          expect(result).toEqual({ localChanges: expected, untracked: [] });
+        });
+      });
+    },
+  );
+
   describe('Given three tracked files sharing a directory', () => {
     describe('When the changed set names all three', () => {
       it('Then the directory is lstat-ed once for the whole scan', async () => {
@@ -91,6 +175,35 @@ describe('findWouldOverwrite', () => {
         expect(
           lstat.mock.calls.filter(([path]) => path === `${ctx.layout.workDir}/d`),
         ).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given one and then three tracked paths with local edits', () => {
+    describe('When findWouldOverwrite runs over each', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const countReads = async (names: ReadonlyArray<string>): Promise<number> => {
+          const ctx = createMemoryContext();
+          const entries: IndexEntry[] = [];
+          for (const name of names) {
+            await work(ctx, name, 'edited\n');
+            entries.push(entryOf(name, await blob(ctx, `${name}\n`)));
+          }
+          const reads = vi.spyOn(trust, 'readExecutableBitTrust');
+          await findWouldOverwrite(ctx, set(...names), indexOf(entries));
+          const count = reads.mock.calls.length;
+          reads.mockRestore();
+          return count;
+        };
+        const sut = countReads;
+
+        // Act
+        const one = await sut(['a']);
+        const three = await sut(['a', 'b', 'c']);
+
+        // Assert
+        expect(three).toBe(one);
       });
     });
   });
@@ -725,6 +838,45 @@ describe('findWouldOverwrite stat cache', () => {
       });
     });
   });
+
+  describe.each([
+    ['untouched', 0, []],
+    ['touched without a content change', 5, ['a']],
+  ] as const)(
+    'Given an assume-valid file %s since the index recorded it',
+    (_label, recordedSecondsBehind, expected) => {
+      describe('When the changed set names the path', () => {
+        it(`Then the local changes are ${JSON.stringify(expected)}, as git compares the stat alone`, async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await work(ctx, 'a', 'one\n');
+          const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/a`);
+          const recorded = indexEntryFromStat(
+            stat,
+            FILE_MODE.REGULAR,
+            await blob(ctx, 'one\n'),
+            'a' as FilePath,
+          );
+          const entry = {
+            ...recorded,
+            mtimeSeconds: recorded.mtimeSeconds - recordedSecondsBehind,
+            flags: { ...STAGE0_FLAGS, assumeValid: true },
+          };
+          const index = {
+            ...indexOf([entry]),
+            indexMtime: { seconds: recorded.mtimeSeconds + 10, nanoseconds: 0 },
+          };
+          const sut = findWouldOverwrite;
+
+          // Act
+          const result = await sut(ctx, set('a'), index);
+
+          // Assert
+          expect(result).toEqual({ localChanges: expected, untracked: [] });
+        });
+      });
+    },
+  );
 
   describe('Given a tracked changed path beneath a symlink to a directory holding it unchanged', () => {
     describe('When the index is newer than the entry', () => {

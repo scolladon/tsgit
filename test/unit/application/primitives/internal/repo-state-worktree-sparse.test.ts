@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   assertOperationalRepository,
   assertOperationalRepositorySettingsFirst,
-  assertWorktreeSparseBooleansValid,
+  assertWorktreeCoreBooleansValid,
 } from '../../../../../src/application/primitives/internal/repo-state.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { instrumentedContext } from '../fixtures.js';
@@ -35,7 +35,7 @@ const badBoolean = (ctx: Context, key: string, value: string): Record<string, un
   value,
 });
 
-describe('assertWorktreeSparseBooleansValid', () => {
+describe('assertWorktreeCoreBooleansValid', () => {
   describe('Given the extension on and a bad sparseCheckout in config.worktree', () => {
     describe('When the check runs', () => {
       it('Then it refuses naming the key, the value and the worktree file', async () => {
@@ -43,7 +43,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx);
         await seedWorktreeConfig(ctx, '[core]\n\tsparseCheckout = bogus\n');
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await refusalOf(() => sut(ctx));
@@ -61,7 +61,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx);
         await seedWorktreeConfig(ctx, '[core]\n\tsparseCheckoutCone = bogus\n');
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await refusalOf(() => sut(ctx));
@@ -82,7 +82,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
           ctx,
           '[core]\n\tsparseCheckoutCone = first\n\tsparseCheckout = second\n',
         );
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await refusalOf(() => sut(ctx));
@@ -100,7 +100,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx);
         await seedWorktreeConfig(ctx, '[CORE]\n\tSPARSECHECKOUT = bogus\n');
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await refusalOf(() => sut(ctx));
@@ -114,7 +114,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
   describe.each([
     ['a valueless sparseCheckout', '[core]\n\tsparseCheckout\n'],
     ['a bad value under a subsectioned [core "x"]', '[core "x"]\n\tsparseCheckout = bogus\n'],
-    ['a bad ignoreCase, which is not a sparse key', '[core]\n\tignoreCase = bogus\n'],
+    ['a bad ignoreCase, which the worktree gate does not check', '[core]\n\tignoreCase = bogus\n'],
     ['a bad value in another section', '[other]\n\tsparseCheckout = bogus\n'],
     ['valid sparse booleans', '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = no\n'],
   ])('Given %s in config.worktree', (_label, text) => {
@@ -124,7 +124,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx);
         await seedWorktreeConfig(ctx, text);
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await sut(ctx);
@@ -142,7 +142,188 @@ describe('assertWorktreeSparseBooleansValid', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx, '[core]\n\tbare = false\n');
         await seedWorktreeConfig(ctx, '[core]\n\tsparseCheckout = bogus\n');
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given the extension on and a bad fileMode in config.worktree', () => {
+    describe('When the check runs', () => {
+      it('Then it refuses naming core.filemode, the value and the worktree file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, '[core]\n\tfileMode = bogus\n');
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject(badBoolean(ctx, 'core.filemode', 'bogus'));
+      });
+    });
+
+    describe('When assertOperationalRepository runs', () => {
+      it('Then it refuses naming core.filemode', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, '[core]\n\tfileMode = bogus\n');
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject(badBoolean(ctx, 'core.filemode', 'bogus'));
+      });
+    });
+  });
+
+  describe('Given the extension on and a bad trustCtime in config.worktree', () => {
+    describe('When the check runs', () => {
+      it('Then it refuses naming core.trustctime, the value and the worktree file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, '[core]\n\ttrustCtime = bogus\n');
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject(badBoolean(ctx, 'core.trustctime', 'bogus'));
+      });
+    });
+  });
+
+  describe.each([
+    ['bogus', '\tcheckStat = bogus\n', 'CONFIG_INVALID_ENUM_VALUE', 'bogus'],
+    ['empty', '\tcheckStat =\n', 'CONFIG_INVALID_ENUM_VALUE', ''],
+  ])(
+    'Given the extension on and a %s checkStat in config.worktree',
+    (_label, line, code, value) => {
+      describe('When the check runs', () => {
+        it('Then it refuses naming core.checkstat, the value, the file and the line', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedWorktreeConfig(ctx, `[core]\n${line}`);
+          const sut = assertWorktreeCoreBooleansValid;
+
+          // Act
+          const result = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(result).toMatchObject({
+            code,
+            key: 'core.checkstat',
+            value,
+            source: `${ctx.layout.gitDir}/config.worktree`,
+            line: 2,
+          });
+        });
+      });
+    },
+  );
+
+  describe('Given the extension on and a valueless checkStat in config.worktree', () => {
+    describe('When the check runs', () => {
+      it('Then it refuses with CONFIG_MISSING_VALUE naming the file and the line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, '[core]\n\tcheckStat\n');
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'core.checkstat',
+          source: `${ctx.layout.gitDir}/config.worktree`,
+          line: 2,
+        });
+      });
+    });
+  });
+
+  describe('Given a bad checkStat on line 3 and a bad trustCtime on line 2 in config.worktree', () => {
+    describe('When the check runs', () => {
+      it('Then the lower line is the one refused', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, '[core]\n\ttrustCtime = bogus\n\tcheckStat = bogus\n');
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject(badBoolean(ctx, 'core.trustctime', 'bogus'));
+      });
+    });
+  });
+
+  describe.each([
+    ['Minimal', '\tcheckStat = Minimal\n'],
+    ['valueless trustCtime', '\ttrustCtime\n'],
+    ['false trustCtime', '\ttrustCtime = false\n'],
+  ])('Given the extension on and %s in config.worktree', (_label, line) => {
+    describe('When the check runs', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, `[core]\n${line}`);
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given the extension off and a bad checkStat in config.worktree', () => {
+    describe('When the check runs', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, '[core]\n\tbare = false\n');
+        await seedWorktreeConfig(ctx, '[core]\n\tcheckStat = bogus\n');
+        const sut = assertWorktreeCoreBooleansValid;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given the extension off and a bad fileMode in config.worktree', () => {
+    describe('When the check runs', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, '[core]\n\tbare = false\n');
+        await seedWorktreeConfig(ctx, '[core]\n\tfileMode = bogus\n');
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await sut(ctx);
@@ -164,7 +345,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
           ...base,
           layout: { ...base.layout, formatRefusal: { kind: 'version', version: 99 } },
         });
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const result = await sut(ctx);
@@ -188,7 +369,7 @@ describe('assertWorktreeSparseBooleansValid', () => {
           layout: { ...main.layout, gitDir: linkedDir, commonDir: main.layout.gitDir },
         };
         await seedWorktreeConfig(linked, '[core]\n\tsparseCheckout = bogus\n');
-        const sut = assertWorktreeSparseBooleansValid;
+        const sut = assertWorktreeCoreBooleansValid;
 
         // Act
         const mainResult = await sut(main);

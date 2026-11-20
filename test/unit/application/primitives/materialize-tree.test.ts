@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { materializeTree } from '../../../../src/application/primitives/materialize-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -10,6 +11,7 @@ import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mo
 import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
+import { withExecutableWorkFile } from '../../support/executable-work-file.js';
 import { recordingProgress } from '../commands/fixtures.js';
 import { buildSeededContext, recordedStatOf } from './fixtures.js';
 
@@ -2238,6 +2240,50 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
         expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
         expect(await readWork(ctx, 'd/x')).toBe('x');
+      });
+    });
+
+    const buildExecutableStagedFile = async (fileModeLine: string) => {
+      const staged = await buildStagedFile('true');
+      await staged.ctx.fs.writeUtf8(
+        `${staged.ctx.layout.gitDir}/config`,
+        `[core]\n\tignorecase = true\n${fileModeLine}`,
+      );
+      invalidateConfigCache(staged.ctx);
+      withExecutableWorkFile(staged.ctx);
+      return staged;
+    };
+
+    describe('When ignorecase is true, d differs only by a set exec bit and core.filemode is false', () => {
+      it('Then d leaves the index and d/x is written', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } =
+          await buildExecutableStagedFile('\tfileMode = false\n');
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['d/x', 'f']);
+      });
+    });
+
+    describe('When ignorecase is true, d differs only by a set exec bit and core.filemode is unset', () => {
+      it('Then it refuses d as untracked', async () => {
+        // Arrange
+        const { ctx, headTree, targetTree, currentIndex } = await buildExecutableStagedFile('');
+
+        // Act
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['d'],
+        });
       });
     });
 

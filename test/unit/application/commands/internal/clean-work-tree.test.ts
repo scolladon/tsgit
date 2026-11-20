@@ -12,6 +12,8 @@ import {
   stagedGitlinkChanges,
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
+import * as trust from '../../../../../src/application/primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { MAX_GITMODULES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -28,6 +30,7 @@ import type {
 } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { withExecutableWorkFile } from '../../../support/executable-work-file.js';
 
 const AUTHOR: AuthorIdentity = { name: 'T', email: 't@x', timestamp: 1, timezoneOffset: '+0000' };
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
@@ -186,6 +189,35 @@ describe('assertCleanWorkTree', () => {
     });
   });
 
+  describe('Given one and then three committed files with unstaged edits', () => {
+    describe('When asserted', () => {
+      it('Then core.fileMode reads do not grow with the entry count', async () => {
+        // Arrange
+        const countReads = async (names: ReadonlyArray<string>): Promise<number> => {
+          const ctx = createMemoryContext();
+          await init(ctx);
+          for (const name of names) await ctx.fs.writeUtf8(work(ctx, name), `${name}\n`);
+          await add(ctx, [...names]);
+          const { tree } = await commit(ctx, { message: 'init', author: AUTHOR });
+          for (const name of names) await ctx.fs.writeUtf8(work(ctx, name), 'edited\n');
+          const reads = vi.spyOn(trust, 'readExecutableBitTrust');
+          await codeOf(() => assertCleanWorkTree(ctx, tree));
+          const count = reads.mock.calls.length;
+          reads.mockRestore();
+          return count;
+        };
+        const sut = countReads;
+
+        // Act
+        const one = await sut(['a']);
+        const three = await sut(['a', 'b', 'c']);
+
+        // Assert
+        expect(three).toBe(one);
+      });
+    });
+  });
+
   describe('Given a clean working tree and index matching HEAD', () => {
     describe('When asserted', () => {
       it('Then it passes', async () => {
@@ -293,6 +325,56 @@ describe('assertCleanWorkTree', () => {
 
         // Assert
         expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
+  describe('Given an exec-bit-only change on a committed file', () => {
+    const seedExecutable = async (
+      fileMode?: string,
+    ): Promise<{ ctx: Context; headTree: ObjectId }> => {
+      const seeded = await seedClean('a.sh', 'run\n');
+      if (fileMode !== undefined) {
+        await seeded.ctx.fs.writeUtf8(
+          `${seeded.ctx.layout.gitDir}/config`,
+          `[core]\n\tfileMode = ${fileMode}\n`,
+        );
+        invalidateConfigCache(seeded.ctx);
+      }
+      withExecutableWorkFile(seeded.ctx);
+      return seeded;
+    };
+
+    describe('When asserted with core.filemode = false', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedExecutable('false');
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const run = sut(ctx, headTree);
+
+        // Assert
+        await expect(run).resolves.toBeUndefined();
+      });
+    });
+
+    describe('When asserted with the default config', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the path', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedExecutable();
+        const sut = assertCleanWorkTree;
+
+        // Act
+        const error = await sut(ctx, headTree).then(
+          () => undefined,
+          (err: TsgitError) => err,
+        );
+
+        // Assert
+        expect(error?.data.code).toBe('WORKING_TREE_DIRTY');
+        if (error?.data.code !== 'WORKING_TREE_DIRTY') throw error;
+        expect(error.data.localChanges).toEqual(['a.sh']);
       });
     });
   });
