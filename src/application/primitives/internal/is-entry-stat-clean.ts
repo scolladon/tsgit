@@ -53,14 +53,18 @@ export const hasRacyTimestamp = (
     (entry) => entry.mode !== FILE_MODE.GITLINK && entry.mtimeSeconds >= indexMtime.seconds,
   );
 
+const MS_PER_SECOND = 1000;
+
+const wholeSecond = (ms: number): number => Math.floor(ms / MS_PER_SECOND);
+
 const matchesMtime = (entry: IndexEntry, stat: FileStat): boolean => {
-  if (entry.mtimeSeconds !== Math.floor(stat.mtimeMs / 1000)) return false;
+  if (entry.mtimeSeconds !== wholeSecond(stat.mtimeMs)) return false;
   if (stat.mtimeNs === undefined) return true;
   return entry.mtimeNanoseconds === Number(stat.mtimeNs % NS_PER_SECOND);
 };
 
 const matchesCtime = (entry: IndexEntry, stat: FileStat): boolean => {
-  if (entry.ctimeSeconds !== Math.floor(stat.ctimeMs / 1000)) return false;
+  if (entry.ctimeSeconds !== wholeSecond(stat.ctimeMs)) return false;
   if (stat.ctimeNs === undefined) return true;
   return entry.ctimeNanoseconds === Number(stat.ctimeNs % NS_PER_SECOND);
 };
@@ -79,8 +83,6 @@ export const matchesContentStat = (entry: IndexEntry, stat: FileStat): boolean =
   entry.gid === stat.gid &&
   truncate32(entry.ino) === truncate32(stat.ino) &&
   truncate32(entry.fileSize) === truncate32(stat.size);
-
-const wholeSecond = (ms: number): number => Math.floor(ms / 1000);
 
 /**
  * `ce_match_stat_basic` as git builds it without nanosecond stat support: whole seconds, and

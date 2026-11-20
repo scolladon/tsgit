@@ -6,8 +6,6 @@ import {
   configMissingValue,
   operationInProgress,
 } from '../../../domain/commands/error.js';
-import { parseCheckStat } from '../../../domain/config/check-stat.js';
-import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../../domain/index.js';
 import { RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -58,11 +56,7 @@ import {
   type ValuelessEntry,
 } from '../config-read.js';
 import { readActiveWorktreeSections } from '../config-scoped-read.js';
-import {
-  type CoreKeyEntry,
-  coreKeyEntries,
-  isWorktreeConfigExtensionOn,
-} from '../read-sparse-config.js';
+import { coreKeyEntries, isWorktreeConfigExtensionOn } from '../read-sparse-config.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 import { resolveWorktreeScopePath } from './config-scope.js';
 import { type HeadFile, validateHead } from './head-file.js';
@@ -170,11 +164,13 @@ export const isUsableHead = (head: HeadFile): boolean => {
   return false;
 };
 
+const CHECK_STAT_KEY = 'checkstat';
+
 const CORE_STRING_KEYS: ReadonlyArray<string> = [
   'excludesfile',
   'attributesfile',
   'disambiguate',
-  'checkstat',
+  CHECK_STAT_KEY,
 ];
 // `logallrefupdates` is deliberately excluded: it accepts a third literal
 // ("always") beyond git's boolean grammar, so it takes its own tri-state-aware
@@ -259,6 +255,20 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
+  const candidates: ReadonlyArray<EagerCandidate | undefined> = [
+    ...(await coreCandidates(ctx)),
+    ...(await autoSetupRebaseCandidates(ctx)),
+    ...(await diffDriverCandidates(ctx)),
+  ];
+  const selected = candidates.reduce<EagerCandidate | undefined>(
+    (winner, candidate) => pickLowerLine(winner, candidate),
+    undefined,
+  );
+  if (selected !== undefined) throwEagerCandidate(selected);
+};
+
+/** `[core]` keys: string, compression, boolean, tri-state and enum entries git refuses at config load. */
+const coreCandidates = async (ctx: Context): Promise<ReadonlyArray<EagerCandidate | undefined>> => {
   const [
     str,
     comp,
@@ -280,9 +290,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     findFirstInvalidDisambiguate(ctx),
     findFirstInvalidCheckStat(ctx),
   ]);
-  const branchCandidates = await autoSetupRebaseCandidates(ctx);
-  const diffCandidates = await diffDriverCandidates(ctx);
-  const candidates: ReadonlyArray<EagerCandidate | undefined> = [
+  return [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
     comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },
     boolCore === undefined ? undefined : { kind: 'boolean', line: boolCore.line, entry: boolCore },
@@ -298,14 +306,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
       ? undefined
       : { kind: 'enum', line: disambiguate.line, entry: disambiguate },
     checkStat === undefined ? undefined : { kind: 'enum', line: checkStat.line, entry: checkStat },
-    ...branchCandidates,
-    ...diffCandidates,
   ];
-  const selected = candidates.reduce<EagerCandidate | undefined>(
-    (winner, candidate) => pickLowerLine(winner, candidate),
-    undefined,
-  );
-  if (selected !== undefined) throwEagerCandidate(selected);
 };
 
 /**
@@ -460,7 +461,6 @@ export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Pr
   return root;
 };
 
-const CHECK_STAT_KEY = 'checkstat';
 const WORKTREE_BOOLEAN_KEYS: ReadonlyArray<string> = [
   'sparsecheckout',
   'sparsecheckoutcone',
@@ -471,18 +471,6 @@ const WORKTREE_GATED_KEYS: ReadonlySet<string> = new Set([
   ...WORKTREE_BOOLEAN_KEYS,
   CHECK_STAT_KEY,
 ]);
-
-/**
- * A valueless boolean parses as true, so only a written value can be refused;
- * a valueless `checkstat` is refused too, as it has no default to fall back on.
- */
-const isRefusedWorktreeEntry = (entry: CoreKeyEntry): boolean =>
-  entry.key === CHECK_STAT_KEY
-    ? parseCheckStat(entry.value) === undefined
-    : isRefusedBoolean(entry);
-
-const isRefusedBoolean = (entry: CoreKeyEntry): boolean =>
-  entry.value !== null && !parseGitBoolean(entry.value).ok;
 
 /** The refusal git meets first in `config.worktree`, in file order across the gated keys. */
 const firstWorktreeRefusal = async (
@@ -509,14 +497,14 @@ const firstWorktreeRefusal = async (
  * or `core.checkstat`, and `repo_config_get_bool` on a bad sparse key, wherever the
  * layered config holds them. The local scope is covered by the memoised eager gate;
  * this covers `config.worktree`, kept outside the memo because that verdict is
- * keyed on the local file only. The cached sections decide cheaply whether anything
- * is refused; only then is the file re-read for the refusal's line. `core.ignorecase`
+ * keyed on the local file only. The cached sections decide cheaply whether any gated key
+ * is present; only then is the file re-read and resolved. `core.ignorecase`
  * in the worktree file is not checked here.
  */
 export const assertWorktreeCoreBooleansValid = async (ctx: Context): Promise<void> => {
   if (!(await isWorktreeConfigExtensionOn(ctx))) return;
   const entries = coreKeyEntries(await readActiveWorktreeSections(ctx), WORKTREE_GATED_KEYS);
-  if (!entries.some(isRefusedWorktreeEntry)) return;
+  if (entries.length === 0) return;
   const refusal = await firstWorktreeRefusal(ctx, resolveWorktreeScopePath(ctx, { active: true }));
   if (refusal !== undefined) throwEagerCandidate(refusal);
 };

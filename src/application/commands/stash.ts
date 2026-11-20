@@ -328,7 +328,7 @@ const snapshotState = (
   { indexed }: { readonly indexed: boolean },
   { delta, directoryInPlace }: RefreshedComparison,
 ): SnapshotState => {
-  if (directoryInPlace === true && delta.status !== 'unchanged') return 'occluded';
+  if (directoryInPlace === true) return 'occluded';
   if (delta.status === 'absent') return indexed ? 'absent' : 'unchanged';
   return delta.status;
 };
