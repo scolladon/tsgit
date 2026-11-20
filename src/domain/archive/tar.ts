@@ -15,7 +15,7 @@
  *   kind:    byte-identical
  *   format:  git-archive-tar
  */
-import { FILE_MODE } from '../objects/file-mode.js';
+import { FILE_MODE, isRegularFileMode } from '../objects/file-mode.js';
 import type { ArchiveEntry, ArchiveResult } from './types.js';
 
 // Module-level TextEncoder instance; reuse to avoid repeated allocation.
@@ -342,7 +342,7 @@ function modeTypeflag(mode: ArchiveEntry['mode']): number {
 
 /** True for modes that contribute a data block (regular and exec only). */
 function hasDataBlock(mode: ArchiveEntry['mode']): boolean {
-  return mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+  return isRegularFileMode(mode);
 }
 
 /** True for modes whose tar name must carry a trailing '/'. */

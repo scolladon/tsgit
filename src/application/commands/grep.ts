@@ -8,7 +8,7 @@ import {
   type GrepPattern,
   type MatchSpan,
 } from '../../domain/grep/index.js';
-import { FILE_MODE } from '../../domain/objects/file-mode.js';
+import { isRegularFileMode } from '../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
@@ -89,9 +89,6 @@ interface Candidate {
   readonly load: () => Promise<Uint8Array>;
 }
 
-const isSearchableMode = (mode: string): boolean =>
-  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
-
 const enumerateWorkingTree = async (
   ctx: Context,
   workDir: string,
@@ -100,7 +97,7 @@ const enumerateWorkingTree = async (
   const candidates: Candidate[] = [];
   for (const entry of index.entries) {
     if (entry.flags.stage !== 0) continue;
-    if (!isSearchableMode(entry.mode)) continue;
+    if (!isRegularFileMode(entry.mode)) continue;
     const absPath = joinPath(workDir, entry.path);
     const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
     // A tracked path absent from the working tree, or whose working-tree entry is no
@@ -117,7 +114,7 @@ const enumerateWorkingTree = async (
 
 const enumerateIndex = (ctx: Context, index: GitIndex): ReadonlyArray<Candidate> =>
   index.entries
-    .filter((entry) => entry.flags.stage === 0 && isSearchableMode(entry.mode))
+    .filter((entry) => entry.flags.stage === 0 && isRegularFileMode(entry.mode))
     .map((entry) => ({
       path: entry.path,
       load: async (): Promise<Uint8Array> => {
@@ -130,7 +127,7 @@ const enumerateTree = async (ctx: Context, treeId: ObjectId): Promise<ReadonlyAr
   const candidates: Candidate[] = [];
   // Stryker disable next-line ObjectLiteral: equivalent — `walkTree`'s `recursive` option defaults to `true` when omitted (see `walk-tree.ts`), so `{}` and `{ recursive: true }` produce identical traversals.
   for await (const { path, id, mode } of walkTree(ctx, treeId, { recursive: true })) {
-    if (!isSearchableMode(mode)) continue;
+    if (!isRegularFileMode(mode)) continue;
     const capturedId: ObjectId = id;
     candidates.push({
       path,

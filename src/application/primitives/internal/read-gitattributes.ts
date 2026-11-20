@@ -9,7 +9,7 @@ import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
 import { decode } from '../../../domain/objects/encoding.js';
-import { FILE_MODE, isDirectory } from '../../../domain/objects/file-mode.js';
+import { FILE_MODE, isDirectory, isRegularFileMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -52,10 +52,6 @@ const workTreeDirReader: DirReader = (ctx, dir) => {
 type DirReader = (ctx: Context, dir: FilePath | '') => Promise<ParsedAttributes | undefined>;
 
 const GITATTRIBUTES_FILE = '.gitattributes';
-
-/** Symlink-mode entries are never read (git refuses to follow them for attributes). */
-const isReadableMode = (mode: string): boolean =>
-  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 
 /** Refuses on the header's claim so a hostile tree never allocates an oversize blob. */
 const assertDeclaredSizeWithinCap = async (ctx: Context, id: ObjectId): Promise<void> => {
@@ -122,7 +118,8 @@ const treeDirReader = (tree: ObjectId): DirReader => {
     const entry = await (dirTree === undefined
       ? findTreeEntry(ctx, tree, `${dir}/${GITATTRIBUTES_FILE}`)
       : findTreeEntry(ctx, dirTree, GITATTRIBUTES_FILE));
-    if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
+    // Symlink-mode entries are never read: git refuses to follow them for attributes.
+    if (entry === undefined || !isRegularFileMode(entry.mode)) return undefined;
     return parseBlobAttributes(ctx, entry.id);
   };
 };
