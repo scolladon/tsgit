@@ -164,12 +164,11 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit THROW {"code":"OPERATION_IN_PROGRESS","operation":"merge"}; nothing written
   ```
 
-- **32.62** `readConfig` ignores every non-sparse key in `config.worktree` — pre-existing, pinned against git 2.56.0. With `extensions.worktreeConfig = true`, git reads `config.worktree` for every key; tsgit reads it for the sparse keys only, `readConfig` stays local-only (`src/application/primitives/config-read.ts`). Well-formed case: local `core.fileMode = true`, `git config --worktree core.fileMode false`, `chmod +x x` — git `status` clean, tsgit `status()` `clean: false`. Corrupt case: `core.ignorecase = bogus` in `config.worktree` — git `fatal: bad boolean config value 'bogus' for 'core.ignorecase'`, tsgit `status()` succeeds. Not folded: out of scope (every reader's config layer, outside the sparse keys).
+- **32.62** `readConfig` ignores every key in `config.worktree` but the sparse, `core.fileMode`, `core.trustctime` and `core.checkstat` ones — pre-existing, pinned against git 2.56.0. With `extensions.worktreeConfig = true`, git reads `config.worktree` for every key; tsgit reads it for the sparse keys, `core.fileMode`, `core.trustctime` and `core.checkstat` only, `readConfig` stays local-only (`src/application/primitives/config-read.ts`). A bad `core.fileMode`, `core.trustctime` or `core.checkstat` in `config.worktree` is refused, as git does. Every other key in `config.worktree` is still ignored. Corrupt case: `core.ignorecase = bogus` in `config.worktree` — git `fatal: bad boolean config value 'bogus' for 'core.ignorecase'`, tsgit `status()` succeeds. Not folded: out of scope (every reader's config layer, outside the sparse keys).
   ```
-  git config extensions.worktreeConfig true; git config --worktree core.fileMode false; chmod +x x
-  git status --porcelain: (clean)     tsgit status {"clean":false}
+  git config extensions.worktreeConfig true; git config --worktree core.ignorecase bogus
+  git status: fatal: bad boolean config value 'bogus' for 'core.ignorecase'     tsgit status() succeeds
   ```
-  The fileMode case is not specific to `config.worktree`: tsgit ignores a local `core.fileMode = false` too, tracked as backlog 32.74.
 
 - **32.64** Non-cone `/*` and `!/*/` mis-match, so checkout drops and deletes top-level files — pre-existing, pinned against git 2.56.0. Local `core.sparseCheckout = true`, no cone key. With `/*\n!/*/\n/b/\n`, git keeps `H top` with `top` on disk, tsgit marks `S top` and deletes it; with `/*` alone git keeps everything `H`, tsgit marks every path inside a directory `S` (`src/domain/sparse/parse-sparse-checkout.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.32; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
   ```
