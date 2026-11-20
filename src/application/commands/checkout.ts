@@ -418,7 +418,11 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
   const headOid = await resolveRefOrMissing(ctx, HEAD_NAME);
   if (opts.rev === undefined && headOid === undefined) return switchUnbornToNewBranch(ctx, opts);
-  return switchToCommit(ctx, { ...opts, rev: opts.rev ?? HEAD_NAME }, priorHead, headOid);
+  const targeted = { ...opts, rev: opts.rev ?? HEAD_NAME };
+  if (headOid !== undefined && keepsWorkingTreeAsIs(opts)) {
+    return switchInPlace(ctx, targeted, priorHead, headOid);
+  }
+  return switchToCommit(ctx, targeted, priorHead, headOid);
 };
 
 /** git's switch_unborn_to_new_branch: an unborn HEAD only changes the branch it names. */
@@ -449,6 +453,18 @@ const switchRequestOf = async (
   return { opts, targetTree: target.id, headOid, matcher, ...resolved };
 };
 
+/**
+ * git's `checkout -b <name>` with nothing else on the line leaves index and work tree alone
+ * (only_merge_on_switching_branches): the branch is made and HEAD moves, nothing is merged.
+ */
+const keepsWorkingTreeAsIs = (opts: CheckoutSwitchOptions): boolean =>
+  opts.createBranch !== undefined &&
+  opts.rev === undefined &&
+  opts.force !== true &&
+  opts.detach !== true &&
+  opts.createBranch.track === undefined &&
+  opts.createBranch.noTrack !== true;
+
 const switchToCommit = async (
   ctx: Context,
   opts: TargetedSwitch,
@@ -467,6 +483,16 @@ const switchToCommit = async (
     changedPaths: written + deleted,
     ...resolved,
   });
+};
+
+const switchInPlace = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  priorHead: HeadState,
+  headOid: ObjectId,
+): Promise<CheckoutResult> => {
+  const resolved = await resolveCommitSwitch(ctx, opts);
+  return finishSwitch(ctx, { opts, priorHead, oldOid: headOid, changedPaths: 0, ...resolved });
 };
 
 /** A path of the restore universe with the content the restore would write. */
