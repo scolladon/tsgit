@@ -125,6 +125,12 @@ const ROWS: ReadonlyArray<Row> = [
     expected: ALL,
   },
   {
+    id: 'worktree trustctime holding a checkstat word',
+    local: EXT_ON,
+    worktree: '[core]\n\ttrustctime = minimal\n',
+    expected: ALL,
+  },
+  {
     id: 'worktree key under a subsection',
     local: EXT_ON,
     worktree: '[core "x"]\n\ttrustctime = false\n',
