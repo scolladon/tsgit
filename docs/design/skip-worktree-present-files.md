@@ -320,7 +320,7 @@ export const clearSkipWorktreeFromPresentFiles = async (
   `commonDirPrefix`), with the `lstat` injected. A domain function holds the prefix arithmetic
   (`src/domain/sparse/missing-directory.ts`). The application primitive owns the I/O.
 - Presence means any successful `lstat`. A failure (any errno) means absent (X1). The probe is a
-  new `fs-probes.ts` helper `isLstatable(fs, path): Promise<boolean>`. It is the one place that
+  new `fs-probes.ts` helper `lstatSucceeds(fs, path): Promise<boolean>`. It is the one place that
   reads a refusal as absence. Its doc comment explains why: git's `path_found` does the same.
 - The function returns a new `GitIndex` with only the cleared entries replaced
   (`{ ...entry, flags: { ...entry.flags, skipWorktree: false } }`). `version`, `extensions`,
