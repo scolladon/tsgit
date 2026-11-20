@@ -43,7 +43,7 @@ moved 21 entries and 10 sub-rows there.
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
 | 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · ~~32.56~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
-| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · ~~32.60~~ · ~~32.67~~ · ~~32.74~~ · 32.82 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
+| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · ~~32.60~~ · ~~32.67~~ · ~~32.74~~ · 32.82 · 32.87 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
@@ -813,3 +813,19 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
 - npm 10.9.x has a broken trusted-publisher OIDC PUT path; pin publish workflow to Node 24 (npm 11.x).
 - npm validates `package.json#repository.url` against sigstore attestation — set `repository`/`homepage`/`bugs` BEFORE first publish.
 - Scoped name `@scolladon/tsgit` was forced after npm rejected unscoped `tsgit` as too similar to `ts-git`.
+
+### Open (scoped 2026-11-20 — follow-ups surfaced by the core-filemode-false run, triaged)
+
+- [ ] **32.87** `checkout -- <path>` rewrites a clean file whose ctime moved within the index's second where git leaves it — pinned against git 2.56.0 on a well-formed repository, default config. `git add f`, then `chmod g+w f` in the same second, then restore `f` from the index: git compares stat fields in whole seconds (`ce_match_stat_basic`, built without `USE_NSEC`) and its racy check settles the entry by content, so the file is untouched (same inode, `g+w` kept). tsgit's `matchesContentStat` (`src/application/primitives/internal/is-entry-stat-clean.ts`) compares mtime and ctime to the nanosecond; reached through `matchesCachedStat` (materialize-tree, stale-entries, sparse-left-dirty, occupant-clash), `isEntryStatClean` (compare-working-tree-entry, add) and smudge-racily-clean, it reads a sub-second ctime drift as a change, so `checkout({ paths: ['f'] })` rewrites the file (new inode, permission bits reset to 0644). Fix: route these callers through `matchesStatFields` (whole seconds, fields chosen by `readStatCheck`), as the assume-unchanged path already does; keep the racy content check. Pin interop rows for `checkout -- f`, a branch switch and `status` with a same-second chmod. Also resolves ledger row 32.90.
+  Not folded: out of scope.
+  ```
+  # git 2.56.0, scrubbed env; seed: commit base; echo f>f; git add f; chmod g+w f  (same second)
+  # columns: inode perms ctime, before -> after the restore
+  run1 git:   [1617946596 -rw-rw-r-- 10:57:01] -> [1617946596 -rw-rw-r-- 10:57:01]
+       tsgit: [1617946666 -rw-rw-r-- 10:57:01] -> [1617946675 -rw-r--r-- 10:57:01]
+  run2 git:   [1617946739 -rw-rw-r--] -> [1617946739 -rw-rw-r--]
+       tsgit: [1617946809 -rw-rw-r--] -> [1617946818 -rw-r--r--]
+  run3 git:   [1617946883 -rw-rw-r--] -> [1617946883 -rw-rw-r--]
+       tsgit: [1617946953 -rw-rw-r--] -> [1617946962 -rw-r--r--]
+  # git: checkout -- f ; tsgit: repo.checkout({ paths: ['f'] })
+  ```
