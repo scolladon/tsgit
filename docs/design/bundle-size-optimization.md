@@ -831,3 +831,24 @@ clean build (`rm -rf dist .wireit`). The user approved one raise; the review fol
 
 The npm tarball cap moved 1519 → 1520 KiB (1 555 460 B at the gate, 1 555 779 B final). The
 browser bundle stayed under its 365 kB cap (364 988 B final, 12 B headroom).
+
+## Size-limit raise — core.fileMode, assume-unchanged and stat-field rules
+
+Honouring `core.fileMode = false` (git's `ce_mode_from_stat` donor rule through `add`, `status`,
+`stash` and the stat-clean judges), the trusted exec-bit refusal on switch and merge, the
+directory-at-a-tracked-path split, the assume-unchanged trust with git's whole-second stat-drift
+refusal, and the layered `core.fileMode` / `core.trustctime` / `core.checkstat` readers with their
+eager and worktree-file gates crossed six caps, measured once on a clean build
+(`rm -rf dist .wireit`) after review converged: measurement plus 0.1 kB, rounded up to the next 0.1 kB.
+
+| Row | cap | measured | raised to | headroom |
+|---|--:|--:|--:|--:|
+| Browser bundle (no-build) | 370.3 kB | 371 693 | 371.8 kB | 107 B |
+| Command (add) | 6.4 kB | 6 564 | 6.7 kB | 136 B |
+| Full library | 429.8 kB | 430 978 | 431.1 kB | 122 B |
+| Chunks: domain | 129.9 kB | 129 918 | 130.1 kB | 182 B |
+| Chunks: primitives | 118.2 kB | 119 070 | 119.2 kB | 130 B |
+| Chunks: commands-internal | 94.3 kB | 94 365 | 94.5 kB | 135 B |
+
+The npm tarball cap moved 1538 → 1542 KiB (1 578 748 B measured); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
