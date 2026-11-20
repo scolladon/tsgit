@@ -65,6 +65,18 @@ const ROWS: ReadonlyArray<Row> = [
     expected: ALL,
   },
   {
+    id: 'worktree default then minimal',
+    local: EXT_ON,
+    worktree: '[core]\n\tcheckstat = default\n\tcheckstat = minimal\n',
+    expected: MINIMAL,
+  },
+  {
+    id: 'worktree minimal then default',
+    local: EXT_ON,
+    worktree: '[core]\n\tcheckstat = minimal\n\tcheckstat = default\n',
+    expected: ALL,
+  },
+  {
     id: 'trustctime false then true',
     local: '[core]\n\ttrustctime = false\n\ttrustctime = true\n',
     worktree: '',

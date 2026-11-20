@@ -658,6 +658,7 @@ describe('matchesStatFields', () => {
     ['inode', { ino: 43 }, MINIMAL, true],
     ['size', { size: 8 }, MINIMAL, false],
     ['size beyond 32 bits that wraps to the recorded one', { size: 2 ** 32 + 7 }, ALL, true],
+    ['inode beyond 32 bits that wraps to the recorded one', { ino: 2 ** 32 + 42 }, ALL, true],
   ] as const)('Given a stat drifted in %s', (_label, drift, check, expected) => {
     describe('When matched against the entry', () => {
       it('Then it matches only when git compares no drifted field', () => {

@@ -2269,34 +2269,42 @@ describe('compareAndRefresh on an assume-valid entry the overwrite check judges'
     });
   });
 
+  type EntryDrift = (entry: IndexEntry) => Partial<IndexEntry>;
+  const ctimeSecondDrift: EntryDrift = (entry) => ({ ctimeSeconds: entry.ctimeSeconds - 5 });
+  const mtimeSecondDrift: EntryDrift = (entry) => ({ mtimeSeconds: entry.mtimeSeconds - 5 });
+  const uidDrift: EntryDrift = (entry) => ({ uid: entry.uid + 1_001 });
+  const gidDrift: EntryDrift = (entry) => ({ gid: entry.gid + 1_001 });
+  const inodeDrift: EntryDrift = (entry) => ({ ino: entry.ino + 1_001 });
+  const sizeDrift: EntryDrift = (entry) => ({ fileSize: entry.fileSize + 1_001 });
+
   describe.each([
-    ['a ctime second drift', { ctimeSeconds: -5 }, '\ttrustctime = false\n', 'unchanged'],
-    ['a ctime second drift', { ctimeSeconds: -5 }, '', 'modified'],
-    ['a ctime second drift', { ctimeSeconds: -5 }, '\tcheckstat = minimal\n', 'unchanged'],
-    ['a uid drift', { uid: 1 }, '\tcheckstat = minimal\n', 'unchanged'],
-    ['a gid drift', { gid: 1 }, '\tcheckstat = minimal\n', 'unchanged'],
-    ['an inode drift', { ino: 1 }, '\tcheckstat = minimal\n', 'unchanged'],
-    ['a uid drift', { uid: 1 }, '\ttrustctime = false\n', 'modified'],
-    ['a gid drift', { gid: 1 }, '\tcheckstat = default\n', 'modified'],
-    ['an inode drift', { ino: 1 }, '', 'modified'],
-    ['a size drift', { fileSize: 1 }, '\tcheckstat = minimal\n\ttrustctime = false\n', 'modified'],
-    ['an mtime second drift', { mtimeSeconds: -5 }, '\tcheckstat = minimal\n', 'modified'],
+    ['a ctime second drift', ctimeSecondDrift, '\ttrustctime = false\n', 'unchanged'],
+    ['a ctime second drift', ctimeSecondDrift, '', 'modified'],
+    ['a ctime second drift', ctimeSecondDrift, '\tcheckstat = minimal\n', 'unchanged'],
+    ['a uid drift', uidDrift, '\tcheckstat = minimal\n', 'unchanged'],
+    ['a gid drift', gidDrift, '\tcheckstat = minimal\n', 'unchanged'],
+    ['an inode drift', inodeDrift, '\tcheckstat = minimal\n', 'unchanged'],
+    ['a uid drift', uidDrift, '\ttrustctime = false\n', 'modified'],
+    ['a gid drift', gidDrift, '\tcheckstat = default\n', 'modified'],
+    ['an inode drift', inodeDrift, '', 'modified'],
+    ['a size drift', sizeDrift, '\tcheckstat = minimal\n\ttrustctime = false\n', 'modified'],
+    ['an mtime second drift', mtimeSecondDrift, '\tcheckstat = minimal\n', 'modified'],
     [
       'a ctime second drift',
-      { ctimeSeconds: -5 },
+      ctimeSecondDrift,
       '\ttrustctime = false\n\ttrustctime = true\n',
       'modified',
     ],
     [
       'a ctime second drift',
-      { ctimeSeconds: -5 },
+      ctimeSecondDrift,
       '\ttrustctime = true\n\ttrustctime = false\n',
       'unchanged',
     ],
-    ['a uid drift', { uid: 1 }, '\tcheckstat = default\n\tcheckstat = minimal\n', 'unchanged'],
-    ['a uid drift', { uid: 1 }, '\tcheckstat = minimal\n\tcheckstat = default\n', 'modified'],
-    ['a uid drift', { uid: 1 }, '\tcheckstat = nonsense\n', 'modified'],
-    ['a uid drift', { uid: 1 }, '\tcheckstat = MINIMAL\n', 'unchanged'],
+    ['a uid drift', uidDrift, '\tcheckstat = default\n\tcheckstat = minimal\n', 'unchanged'],
+    ['a uid drift', uidDrift, '\tcheckstat = minimal\n\tcheckstat = default\n', 'modified'],
+    ['a uid drift', uidDrift, '\tcheckstat = nonsense\n', 'modified'],
+    ['a uid drift', uidDrift, '\tcheckstat = MINIMAL\n', 'unchanged'],
   ] as const)(
     'Given an assume-valid entry with %s and config %j',
     (_label, drift, core, status) => {
@@ -2305,24 +2313,10 @@ describe('compareAndRefresh on an assume-valid entry the overwrite check judges'
           // Arrange
           const { ctx, entry, armed } = await assumedEntry();
           await configure(ctx, core);
-          const base = entry as unknown as Record<string, number>;
-          const delta = drift as Record<string, number>;
-          const drifted = Object.fromEntries(
-            Object.entries(delta).map(([key, value]) => [
-              key,
-              key.endsWith('Nanoseconds') ||
-              key === 'uid' ||
-              key === 'gid' ||
-              key === 'ino' ||
-              key === 'fileSize'
-                ? (base[key] ?? 0) + value + 1_000
-                : (base[key] ?? 0) + value,
-            ]),
-          );
           const sut = compareAndRefresh;
 
           // Act
-          const result = await sut(ctx, { ...entry, ...drifted }, armed);
+          const result = await sut(ctx, { ...entry, ...drift(entry) }, armed);
 
           // Assert
           expect(result.delta.status).toBe(status);
