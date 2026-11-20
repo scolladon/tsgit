@@ -6,7 +6,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { readIndex, readRawIndex } from '../../../../src/application/primitives/read-index.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -809,7 +809,7 @@ describe('reset — sparse checkout', () => {
 
         // Assert — `docs/b.txt` is excluded, `src/a.txt` stays in-pattern.
         expect(result.mode).toBe('mixed');
-        const index = await readIndex(ctx);
+        const index = await readRawIndex(ctx);
         expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
         expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
       });
@@ -834,8 +834,33 @@ describe('reset — sparse checkout', () => {
   });
 
   describe('Given sparse on and an in-pattern entry carrying the bit', () => {
-    describe('When reset --mixed to HEAD runs', () => {
+    describe('When reset --mixed to HEAD runs and its file is absent', () => {
       it('Then the entry keeps the bit', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(ctx);
+        const index = await readIndex(ctx);
+        const marked = index.entries.map((e) =>
+          e.path === 'src/a.txt' ? { ...e, flags: { ...e.flags, skipWorktree: true } } : e,
+        );
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(marked, 'update');
+        await lock.release();
+        await ctx.fs.rm(`${ctx.layout.workDir}/src/a.txt`);
+
+        // Act
+        await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Assert
+        const after = await readIndex(ctx);
+        expect(after.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given sparse on and an in-pattern entry carrying the bit', () => {
+    describe('When reset --mixed to HEAD runs and its file is present', () => {
+      it('Then the entry loses the bit as git reads it cleared', async () => {
         // Arrange
         const { ctx, c1 } = await seedSrcAndDocs();
         await enableSparseSrcOnly(ctx);
@@ -851,8 +876,8 @@ describe('reset — sparse checkout', () => {
         await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert
-        const after = await readIndex(ctx);
-        expect(after.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(true);
+        const after = await readRawIndex(ctx);
+        expect(after.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
       });
     });
   });

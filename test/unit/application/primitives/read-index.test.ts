@@ -3,8 +3,9 @@ import { deriveContext } from '../../../../src/application/primitives/derive-con
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { readIndex, readIndexAt } from '../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { skipWorktreeEntry } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -776,6 +777,113 @@ describe('readIndex', () => {
           (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
         );
         expect(configStats).toHaveLength(0);
+      });
+    });
+  });
+});
+
+const SPARSE_ON = '[core]\n\tsparseCheckout = true\n';
+
+const seedSkipWorktreeIndex = async (ctx: Context, ...paths: string[]): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, SPARSE_ON);
+  const entries = paths.map((p) =>
+    skipWorktreeEntry({ path: p as FilePath, id: FAKE_OBJECT_ID, mode: FILE_MODE.REGULAR }),
+  );
+  const bytes = await serializeIndexFixtureAsync(
+    { version: 3, entries, extensions: [], trailerSha: new Uint8Array(0) },
+    ctx,
+  );
+  await ctx.fs.write('/repo/.git/index', bytes);
+};
+
+const bitsOf = (index: Awaited<ReturnType<typeof readIndex>>): boolean[] =>
+  index.entries.map((e) => e.flags.skipWorktree);
+
+describe('readIndex under sparse checkout', () => {
+  describe('Given sparse on and a skip-worktree entry whose file is on disk', () => {
+    describe('When readIndex runs', () => {
+      it('Then the entry has no bit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedSkipWorktreeIndex(ctx, 'a/f');
+        await ctx.fs.writeUtf8('/repo/a/f', 'x');
+
+        // Act
+        const result = await readIndex(ctx);
+
+        // Assert
+        expect(bitsOf(result)).toEqual([false]);
+      });
+    });
+  });
+
+  describe('Given the same session', () => {
+    describe('When a file appears at a skip-worktree path between two reads with no index write', () => {
+      it('Then the second read clears it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedSkipWorktreeIndex(ctx, 'a/f');
+        const first = await readIndex(ctx);
+        await ctx.fs.writeUtf8('/repo/a/f', 'x');
+
+        // Act
+        const result = await readIndex(ctx);
+
+        // Assert
+        expect(bitsOf(first)).toEqual([true]);
+        expect(bitsOf(result)).toEqual([false]);
+      });
+    });
+
+    describe('When the file vanishes between two reads with no index write', () => {
+      it('Then the second read keeps the bit again', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedSkipWorktreeIndex(ctx, 'a/f');
+        await ctx.fs.writeUtf8('/repo/a/f', 'x');
+        const first = await readIndex(ctx);
+        await ctx.fs.rm('/repo/a/f');
+
+        // Act
+        const result = await readIndex(ctx);
+
+        // Assert
+        expect(bitsOf(first)).toEqual([false]);
+        expect(bitsOf(result)).toEqual([true]);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree entry whose file is on disk', () => {
+    describe('When readIndexAt runs', () => {
+      it('Then the bit is kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedSkipWorktreeIndex(ctx, 'a/f');
+        await ctx.fs.writeUtf8('/repo/a/f', 'x');
+
+        // Act
+        const result = await readIndexAt(ctx, await ctx.fs.stat('/repo/.git/index'));
+
+        // Assert
+        expect(bitsOf(result)).toEqual([true]);
+      });
+    });
+  });
+
+  describe('Given nothing to clear', () => {
+    describe('When readIndex runs twice', () => {
+      it('Then both calls return the cached object', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedSkipWorktreeIndex(ctx, 'a/f');
+
+        // Act
+        const first = await readIndex(ctx);
+        const second = await readIndex(ctx);
+
+        // Assert
+        expect(second).toBe(first);
       });
     });
   });
