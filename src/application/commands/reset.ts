@@ -20,6 +20,7 @@ import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { applyResetSkipWorktree } from '../primitives/internal/reset-skip-worktree.js';
 import { materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -105,8 +106,8 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
     throw unexpectedObjectType('commit', commit.type, commitId);
   }
   // loadSparseMatcher is a pure config/pattern-file read — no index lock
-  // needed. A defined matcher marks excluded paths skip-worktree in the
-  // rebuilt index; `undefined` ⇒ sparse inactive and the rebuild is unchanged.
+  // needed. A defined matcher decides the bit of a path the index did not hold;
+  // `undefined` ⇒ sparse inactive.
   const matcher = await loadSparseMatcher(ctx);
   // Acquire the index lock BEFORE reading the index. A concurrent writer
   // (another reset, add, rm…) between read and commit would otherwise let
@@ -115,12 +116,11 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
-    const newEntries = await buildIndexFromTree(ctx, {
+    const rebuilt = await buildIndexFromTree(ctx, {
       targetTree: commit.data.tree,
       currentIndex,
-      // `exactOptionalPropertyTypes`: spread `sparse` only when defined.
-      ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
+    const newEntries = applyResetSkipWorktree(rebuilt, currentIndex, matcher);
     // --mixed always replaces the whole index with the rebuilt projection, so
     // the commit is unconditional — unlike --hard, which can skip it when the
     // materialise wrote and deleted nothing.

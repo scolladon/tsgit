@@ -795,10 +795,14 @@ describe('reset — sparse checkout', () => {
 
   describe('Given a sparse repo', () => {
     describe('When reset --mixed runs', () => {
-      it('Then the rebuilt index marks excluded paths skip-worktree', async () => {
-        // Arrange — sparse enabled after the commit; both entries are still normal.
+      it('Then a path the index did not hold follows the patterns', async () => {
+        // Arrange — `docs/b.txt` is in HEAD but absent from the index, so reset adds it back.
         const { ctx, c1 } = await seedSrcAndDocs();
         await enableSparseSrcOnly(ctx);
+        const held = (await readIndex(ctx)).entries.filter((e) => e.path !== 'docs/b.txt');
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(held, 'update');
+        await lock.release();
 
         // Act
         const result = await reset(ctx, { mode: 'mixed', rev: c1 });
@@ -808,6 +812,47 @@ describe('reset — sparse checkout', () => {
         const index = await readIndex(ctx);
         expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
         expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given sparse on and an out-of-pattern entry without the bit', () => {
+    describe('When reset --mixed to HEAD runs', () => {
+      it('Then the entry stays without the bit', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(ctx);
+
+        // Act
+        await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Assert
+        const index = await readIndex(ctx);
+        expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given sparse on and an in-pattern entry carrying the bit', () => {
+    describe('When reset --mixed to HEAD runs', () => {
+      it('Then the entry keeps the bit', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(ctx);
+        const index = await readIndex(ctx);
+        const marked = index.entries.map((e) =>
+          e.path === 'src/a.txt' ? { ...e, flags: { ...e.flags, skipWorktree: true } } : e,
+        );
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(marked, 'update');
+        await lock.release();
+
+        // Act
+        await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Assert
+        const after = await readIndex(ctx);
+        expect(after.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(true);
       });
     });
   });
