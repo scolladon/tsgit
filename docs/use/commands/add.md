@@ -114,7 +114,7 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
 - `WORKING_TREE_FILE_TOO_LARGE` — a file exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB).
 - `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` — `core.safecrlf=true` and a path's line endings would not survive the round trip. See [Line-ending conversion](#line-ending-conversion-coreautocrlf-coreeol-text-eol-ident).
-- `CONFIG_BAD_BOOLEAN_VALUE` — `core.autocrlf`, `core.safecrlf` or `core.fileMode` holds a value git's boolean grammar refuses (`core.autocrlf` also accepts `input`, `core.safecrlf` also accepts `warn`); `core.fileMode` is refused in local config and in an active `config.worktree`. `core.trustctime` and `core.checkstat` are refused the same way (a non-boolean `trustctime`, a `checkstat` other than `default` / `minimal`). Checked before anything is staged, as on every command.
+- `CONFIG_BAD_BOOLEAN_VALUE` — `core.autocrlf`, `core.safecrlf` or `core.fileMode` holds a value git's boolean grammar refuses (`core.autocrlf` also accepts `input`, `core.safecrlf` also accepts `warn`); `core.fileMode` is refused in local config and in an active `config.worktree`. `core.trustctime` is refused the same way; a `core.checkstat` other than `default` / `minimal` refuses `CONFIG_INVALID_ENUM_VALUE`, and a valueless one `CONFIG_MISSING_VALUE`. Checked before anything is staged, as on every command.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
 

@@ -95,7 +95,7 @@ await repo.checkout({ rev: 'main', force: true });
 
 ## Throws
 
-- `CONFIG_BAD_BOOLEAN_VALUE` — `core.fileMode`, `core.trustctime` or `core.checkstat` holds a value git refuses, in local config or an active `config.worktree`.
+- `CONFIG_BAD_BOOLEAN_VALUE` — `core.fileMode` or `core.trustctime` holds a value git refuses, in local config or an active `config.worktree`; a bad `core.checkstat` refuses `CONFIG_INVALID_ENUM_VALUE` (valueless: `CONFIG_MISSING_VALUE`).
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree (an exec-bit-only change under a trusted `core.fileMode` and an assume-unchanged file with drifted stat included), or whose target would overwrite a staged change (`localChanges`).
 - `CHECKOUT_NON_COMMIT` — switch mode where `rev` names a tree.
 - `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision, including any start point on an unborn HEAD; `revision` and `branch` carry both.
