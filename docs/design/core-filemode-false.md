@@ -165,7 +165,7 @@ against an esbuild bundle of `src/index.node.ts`.
 | R1t | R1 under `true` | refuses "has local modifications" | same | match |
 | T1 | `stash push`, exec-only change | "No local changes to save", exit 0, `f` keeps `+x` | saves a stash (w-tree `100755`), chmods `f` `-x` | diverge |
 | T1t | T1 under `true` | saves; w-tree `100755`; `f` `-x` | same | match |
-| T2 | `stash push`, content + exec change on a `100644` entry | w-tree `100644`; `f` `-x`; apply → `.M`, `-x` | w-tree `100644`, `-x` | match |
+| T2 | `stash push`, content + exec change on a `100644` entry | w-tree `100644`; `f` `-x`; apply → `.M`, `-x` | w-tree `100755` (mode from `lstat`) | diverge (the first pin read it as a match; the interop row proved otherwise) |
 | T3 | `stash push`, content change on a `100755` entry, file `-x` | w-tree `100755`; after `pop` `f` `+x` | not run (follows `hashFileAt`'s mode → `100644` today) | expected diverge |
 
 ### Axis C — config layers and values (`status` after `chmod +x` on a `100644` entry)
