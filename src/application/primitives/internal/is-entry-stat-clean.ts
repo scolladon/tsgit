@@ -1,5 +1,6 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
+import type { StatCheck } from '../../../domain/git-index/stat-check.js';
 import {
   type ExecutableBitTrust,
   FILE_MODE,
@@ -77,6 +78,22 @@ export const matchesContentStat = (entry: IndexEntry, stat: FileStat): boolean =
   entry.uid === stat.uid &&
   entry.gid === stat.gid &&
   truncate32(entry.ino) === truncate32(stat.ino) &&
+  truncate32(entry.fileSize) === truncate32(stat.size);
+
+const wholeSecond = (ms: number): number => Math.floor(ms / 1000);
+
+/**
+ * `ce_match_stat_basic` as git builds it without nanosecond stat support: whole seconds, and
+ * only the fields `check` lets count. Same-second drift is no drift here — the racy guard
+ * settles that by content.
+ */
+export const matchesStatFields = (entry: IndexEntry, stat: FileStat, check: StatCheck): boolean =>
+  entry.mtimeSeconds === wholeSecond(stat.mtimeMs) &&
+  (!check.ctime || entry.ctimeSeconds === wholeSecond(stat.ctimeMs)) &&
+  (!check.ownerAndInode ||
+    (entry.uid === stat.uid &&
+      entry.gid === stat.gid &&
+      truncate32(entry.ino) === truncate32(stat.ino))) &&
   truncate32(entry.fileSize) === truncate32(stat.size);
 
 /**

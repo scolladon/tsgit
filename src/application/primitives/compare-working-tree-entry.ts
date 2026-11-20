@@ -42,6 +42,7 @@ import {
   type IndexMtime,
   isEntryStatClean,
   matchesContentStat,
+  matchesStatFields,
   type RacyContentCheck,
 } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
@@ -58,6 +59,7 @@ import {
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { readExecutableBitTrust } from './read-executable-bit-trust.js';
+import { readStatCheck } from './read-stat-check.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 
@@ -217,7 +219,7 @@ export interface RefreshedComparison {
   readonly refreshed?: IndexEntry;
   /**
    * A plain directory stands at a non-gitlink path. git's `check_removed` reads it as removed
-   * (the delta is `absent`, or `unchanged` for an assume-valid entry), while `verify_uptodate` counts it as a change; this lets the
+   * (the delta is `absent`), while `verify_uptodate` counts it as a change; this lets the
    * overwrite check tell it from a path that is simply gone.
    */
   readonly directoryInPlace?: true;
@@ -354,41 +356,63 @@ const resolveScope = async (ctx: Context, scope: ComparisonScope): Promise<Resol
 
 /**
  * git's `CE_VALID`: once the stat cache is armed an assume-valid entry is trusted over any
- * work-tree change — a mode, a kind, a directory — without a probe or a read.
+ * work-tree change — a mode, a kind, a directory, a missing path — without a probe or a read.
  */
-const isTrusted = (entry: IndexEntry, scope: ComparisonScope): boolean =>
+export const isTrusted = (entry: IndexEntry, scope: ComparisonScope): boolean =>
   entry.flags.assumeValid && scope.indexMtime !== undefined && scope.ignoreAssumeValid !== true;
 
-const judgedEntry = (entry: IndexEntry, scope: ComparisonScope): IndexEntry =>
-  scope.ignoreAssumeValid === true
-    ? { ...entry, flags: { ...entry.flags, assumeValid: false } }
-    : entry;
-
-/**
- * A directory where a file is indexed reads removed to git's `check_removed`, except for a
- * trusted entry, which refresh marks up to date so the removal check never sees it.
- */
-const directoryDelta = (entry: IndexEntry, scope: ComparisonScope): WorkingTreeDelta =>
-  isTrusted(entry, scope) ? { status: 'unchanged' } : { status: 'absent' };
+const withoutAssumeValid = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, assumeValid: false },
+});
 
 /**
  * git's `verify_uptodate` on an assume-valid entry: refresh leaves its stat data stale, so
- * `ie_match_stat` calls any stat drift a change without reading the content.
+ * `ie_match_stat` calls any drift of the stat fields git compares a change without reading
+ * the content. The config is read only for such an entry.
  */
-export const isStaleAssumedEntry = (entry: IndexEntry, stat: FileStat): boolean =>
-  entry.flags.assumeValid && !matchesContentStat(entry, stat);
+export const isStaleAssumedEntry = async (
+  ctx: Context,
+  entry: IndexEntry,
+  stat: FileStat,
+): Promise<boolean> =>
+  entry.flags.assumeValid && !matchesStatFields(entry, stat, await readStatCheck(ctx));
 
-const staleAssumedStatDelta = (
+const staleAssumedStatDelta = async (
+  ctx: Context,
   entry: IndexEntry,
   stat: FileStat,
   scope: ResolvedScope,
-): WorkingTreeDelta | undefined => {
-  if (scope.ignoreAssumeValid !== true || !isStaleAssumedEntry(entry, stat)) return undefined;
+): Promise<WorkingTreeDelta | undefined> => {
+  if (!(await isStaleAssumedEntry(ctx, entry, stat))) return undefined;
   const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
   return {
     status: isSameKind(worktreeMode, entry.mode) ? 'modified' : 'type-changed',
     worktreeMode,
   };
+};
+
+const compareJudgedByStat = async (
+  ctx: Context,
+  entry: IndexEntry,
+  absPath: string,
+  stat: FileStat,
+  scope: ResolvedScope,
+): Promise<WorkingTreeDelta> =>
+  (await staleAssumedStatDelta(ctx, entry, stat, scope)) ??
+  (await compareFile(ctx, withoutAssumeValid(entry), absPath, stat, scope));
+
+const compareOccupant = (
+  ctx: Context,
+  entry: IndexEntry,
+  absPath: string,
+  stat: FileStat,
+  scope: ResolvedScope,
+): Promise<WorkingTreeDelta> => {
+  if (entry.mode === FILE_MODE.GITLINK) return compareGitlink(ctx, entry, stat, scope);
+  if (scope.ignoreAssumeValid === true)
+    return compareJudgedByStat(ctx, entry, absPath, stat, scope);
+  return compareFile(ctx, entry, absPath, stat, scope);
 };
 
 /**
@@ -400,21 +424,17 @@ export const compareAndRefresh = async (
   entry: IndexEntry,
   scope: ComparisonScope = {},
 ): Promise<RefreshedComparison> => {
+  if (isTrusted(entry, scope)) return { delta: { status: 'unchanged', worktreeMode: entry.mode } };
   if (isLossy(entry)) return { delta: { status: 'absent' } };
   const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
   if (await belowSymlinkedDirectory(ctx, entry, scope)) return { delta: { status: 'absent' } };
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };
   if (stat.isDirectory && entry.mode !== FILE_MODE.GITLINK) {
-    return { delta: directoryDelta(entry, scope), directoryInPlace: true };
+    return { delta: { status: 'absent' }, directoryInPlace: true };
   }
-  if (isTrusted(entry, scope)) return { delta: { status: 'unchanged', worktreeMode: entry.mode } };
   const resolved = await resolveScope(ctx, scope);
-  const delta =
-    entry.mode === FILE_MODE.GITLINK
-      ? await compareGitlink(ctx, entry, stat, resolved)
-      : (staleAssumedStatDelta(entry, stat, resolved) ??
-        (await compareFile(ctx, judgedEntry(entry, scope), absPath, stat, resolved)));
+  const delta = await compareOccupant(ctx, entry, absPath, stat, resolved);
   if (delta.status === 'unchanged' && shouldRefresh(entry, stat)) {
     return { delta, refreshed: withStatData(entry, stat) };
   }

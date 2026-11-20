@@ -284,13 +284,24 @@ const survivorClash = async (
 // git's verify_uptodate ignores CE_VALID and refresh skips such an entry, so any drift of its
 // cached stat counts as a change before the content is looked at.
 const staleAssumedEntry = async (
+  ctx: Context,
   scope: ClashScope,
   path: FilePath,
   stat: FileStat,
 ): Promise<boolean> => {
   const tracked = await scope.tracked(path);
-  return tracked !== undefined && isStaleAssumedEntry(tracked.entry, stat);
+  return tracked !== undefined && (await isStaleAssumedEntry(ctx, tracked.entry, stat));
 };
+
+const changedBeforeContent = async (
+  ctx: Context,
+  probe: DirtyProbe,
+  entry: ChangesetEntry,
+  stat: FileStat,
+  scope: ClashScope,
+): Promise<boolean> =>
+  modeChanged(probe, entry.previousMode, stat) ||
+  (await staleAssumedEntry(ctx, scope, entry.path, stat));
 
 const evaluateChangedPath = async (
   ctx: Context,
@@ -309,20 +320,12 @@ const evaluateChangedPath = async (
   const verdict = await classifyOccupant(ctx, { kind, path: entry.path }, scope);
   if (verdict.kind !== 'compare-content') return verdictClash(verdict);
   const dirtyProbe = await probe();
-  if (modeChanged(dirtyProbe, entry.previousMode, verdict.stat)) {
-    return { class: 'local-changes', path: entry.path };
-  }
-  if (await staleAssumedEntry(scope, entry.path, verdict.stat)) {
-    return { class: 'local-changes', path: entry.path };
-  }
-  const matches = await blobMatches(
-    ctx,
-    dirtyProbe,
-    entry.path,
-    joinPath(scope.workdir, entry.path),
-    previousId,
-  );
-  return matches ? undefined : { class: 'local-changes', path: entry.path };
+  const localChanges: OccupantClash = { class: 'local-changes', path: entry.path };
+  if (await changedBeforeContent(ctx, dirtyProbe, entry, verdict.stat, scope)) return localChanges;
+  const absPath = joinPath(scope.workdir, entry.path);
+  return (await blobMatches(ctx, dirtyProbe, entry.path, absPath, previousId))
+    ? undefined
+    : localChanges;
 };
 
 const evaluateDirtyPath = async (

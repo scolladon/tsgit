@@ -360,6 +360,8 @@
     "trustexitcode",
     "istate",
     "trustctime",
+    "checkstat",
+    "subsecond",
     "uptodate",
     "unmodelled",
     "unreadably",

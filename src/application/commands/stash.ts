@@ -56,7 +56,9 @@ import {
 } from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import {
+  type ComparisonScope,
   compareAndRefresh,
+  isTrusted,
   type RefreshedComparison,
   scopeOf,
   type WorkingTreeComparison,
@@ -340,6 +342,15 @@ const ridesOnIndexId = async (ctx: Context, entry: IndexEntry): Promise<boolean>
   isGitlink(entry.mode) &&
   (entry.pathBytes !== undefined || (await isDirectoryAt(ctx, entry.path)));
 
+// git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink;
+// an armed assume-unchanged entry is never looked at, so it never gets that far.
+const isBeyondSymlink = async (
+  entry: IndexEntry,
+  scope: SnapshotScope,
+  comparisonScope: ComparisonScope,
+): Promise<boolean> =>
+  !isTrusted(entry, comparisonScope) && (await scope.scanner.hasSymlinkedLeadingPath(entry.path));
+
 /** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
 const classifyEntry = async (
   ctx: Context,
@@ -352,14 +363,14 @@ const classifyEntry = async (
   if (entry.flags.skipWorktree) return { kind: 'indexed', entry, state: 'unchanged' };
   if (await ridesOnIndexId(ctx, entry)) return { kind: 'indexed', entry, state: 'unchanged' };
   const indexed = scope.head === undefined || scope.head.entries.has(escapedPathOf(entry));
-  // git lists only the paths HEAD and the index share, and its add_to_index dies beyond a symlink.
-  if (indexed && (await scope.scanner.hasSymlinkedLeadingPath(entry.path))) {
-    return { kind: 'indexed', entry, state: 'beyond-symlink' };
-  }
-  const comparison = await compareAndRefresh(ctx, entry, {
+  const comparisonScope = {
     ...scopeOf(scope.provider, scope.indexMtime, scope.scanner),
     executableBit: scope.executableBit,
-  });
+  };
+  if (indexed && (await isBeyondSymlink(entry, scope, comparisonScope))) {
+    return { kind: 'indexed', entry, state: 'beyond-symlink' };
+  }
+  const comparison = await compareAndRefresh(ctx, entry, comparisonScope);
   return { kind: 'indexed', entry, state: snapshotState({ indexed }, comparison) };
 };
 

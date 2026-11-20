@@ -340,13 +340,13 @@ describe('compareWorkingTreeEntry', () => {
   });
 
   describe.each([
-    ['armed', true, 'unchanged'],
-    ['unarmed', false, 'absent'],
+    ['an armed', true, { delta: { status: 'unchanged', worktreeMode: '100644' } }],
+    ['an unarmed', false, { delta: { status: 'absent' }, directoryInPlace: true }],
   ] as const)(
-    'Given an assume-valid file replaced by a directory and a %s stat cache',
-    (_label, armed, status) => {
+    'Given an assume-valid file replaced by a directory and %s stat cache',
+    (_label, armed, expected) => {
       describe('When comparing with the refresh verdict', () => {
-        it(`Then reports ${status} with the directory standing in place`, async () => {
+        it(`Then reports ${expected.delta.status}`, async () => {
           // Arrange
           const { ctx, entry } = await seedFile('a.txt', 'hello\n');
           await ctx.fs.rm(work(ctx, 'a.txt'));
@@ -361,17 +361,17 @@ describe('compareWorkingTreeEntry', () => {
           const result = await sut(ctx, assumed, indexMtime === undefined ? {} : { indexMtime });
 
           // Assert
-          expect(result).toEqual({ delta: { status }, directoryInPlace: true });
+          expect(result).toEqual(expected);
         });
       });
     },
   );
 
   describe.each([
-    ['armed', true, 'unchanged', FILE_MODE.REGULAR],
-    ['unarmed', false, 'mode-changed', FILE_MODE.EXECUTABLE],
+    ['an armed', true, 'unchanged', FILE_MODE.REGULAR],
+    ['an unarmed', false, 'mode-changed', FILE_MODE.EXECUTABLE],
   ] as const)(
-    'Given an assume-valid file whose exec bit was set and a %s stat cache',
+    'Given an assume-valid file whose exec bit was set and %s stat cache',
     (_label, armed, status, worktreeMode) => {
       describe('When comparing', () => {
         it(`Then reports ${status}`, async () => {
@@ -395,10 +395,10 @@ describe('compareWorkingTreeEntry', () => {
   );
 
   describe.each([
-    ['armed', true, 'unchanged', FILE_MODE.REGULAR],
-    ['unarmed', false, 'type-changed', FILE_MODE.SYMLINK],
+    ['an armed', true, 'unchanged', FILE_MODE.REGULAR],
+    ['an unarmed', false, 'type-changed', FILE_MODE.SYMLINK],
   ] as const)(
-    'Given an assume-valid file replaced by a symlink and a %s stat cache',
+    'Given an assume-valid file replaced by a symlink and %s stat cache',
     (_label, armed, status, worktreeMode) => {
       describe('When comparing', () => {
         it(`Then reports ${status}`, async () => {
@@ -2140,6 +2140,307 @@ describe('compareWorkingTreeEntry under core.fileMode = false', () => {
 
         // Assert
         expect(result.delta.status).toBe('unchanged');
+      });
+    });
+  });
+});
+
+describe('compareAndRefresh on an assume-valid entry the overwrite check judges', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const assumedEntry = async (): Promise<{
+    ctx: Context;
+    entry: IndexEntry;
+    armed: ArmedScope;
+  }> => {
+    const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+    const assumed = { ...entry, flags: { ...entry.flags, assumeValid: true } };
+    const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+    return { ctx, entry: assumed, armed: { indexMtime, ignoreAssumeValid: true } };
+  };
+
+  type ArmedScope = {
+    readonly indexMtime: { seconds: number; nanoseconds: number };
+    readonly ignoreAssumeValid: true;
+  };
+
+  const configure = async (ctx: Context, core: string): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n${core}`);
+    invalidateConfigCache(ctx);
+  };
+
+  describe('Given an assume-valid entry whose stat matches but is racy and whose content changed in place', () => {
+    describe('When comparing it as the overwrite check does', () => {
+      it("Then it is 'modified' as the racy guard reads the content", async () => {
+        // Arrange
+        const { ctx, entry } = await assumedEntry();
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'HELLO\n');
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+        const racy = {
+          ...entry,
+          mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
+          mtimeNanoseconds: Number((stat.mtimeNs ?? 0n) % 1_000_000_000n),
+          ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
+          ctimeNanoseconds: Number((stat.ctimeNs ?? 0n) % 1_000_000_000n),
+          uid: stat.uid,
+          gid: stat.gid,
+          ino: stat.ino,
+          fileSize: stat.size,
+        };
+        const indexMtime = { seconds: racy.mtimeSeconds, nanoseconds: racy.mtimeNanoseconds };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, racy, { indexMtime, ignoreAssumeValid: true });
+
+        // Assert
+        expect(result.delta.status).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given an assume-valid entry whose stat drifted but whose content is identical', () => {
+    describe('When comparing it without a stat cache', () => {
+      it("Then it is 'unchanged'", async () => {
+        // Arrange
+        const { ctx, entry } = await assumedEntry();
+        const drifted = { ...entry, mtimeSeconds: entry.mtimeSeconds - 5 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, drifted, {});
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+      });
+    });
+
+    describe('When comparing it with the stat cache armed and the assume-valid bit ignored', () => {
+      it("Then it is 'modified' with the regular mode", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        const drifted = { ...entry, mtimeSeconds: entry.mtimeSeconds - 5 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, drifted, armed);
+
+        // Assert
+        expect(result.delta).toEqual({ status: 'modified', worktreeMode: FILE_MODE.REGULAR });
+      });
+    });
+  });
+
+  describe('Given an assume-valid entry whose file became a symlink', () => {
+    describe('When comparing it with the stat cache armed and the assume-valid bit ignored', () => {
+      it("Then it is 'type-changed' with the symlink mode", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        await ctx.fs.symlink('elsewhere', work(ctx, 'a.txt'));
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, armed);
+
+        // Assert
+        expect(result.delta).toEqual({ status: 'type-changed', worktreeMode: FILE_MODE.SYMLINK });
+      });
+    });
+  });
+
+  describe('Given an assume-valid entry whose file became a directory', () => {
+    describe('When comparing it with the stat cache armed and the assume-valid bit ignored', () => {
+      it("Then it is 'absent' with the directory in place", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt/inner'), 'inner\n');
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, armed);
+
+        // Assert
+        expect(result).toEqual({ delta: { status: 'absent' }, directoryInPlace: true });
+      });
+    });
+  });
+
+  describe.each([
+    ['a ctime second drift', { ctimeSeconds: -5 }, '\ttrustctime = false\n', 'unchanged'],
+    ['a ctime second drift', { ctimeSeconds: -5 }, '', 'modified'],
+    ['a ctime second drift', { ctimeSeconds: -5 }, '\tcheckstat = minimal\n', 'unchanged'],
+    ['a uid drift', { uid: 1 }, '\tcheckstat = minimal\n', 'unchanged'],
+    ['a gid drift', { gid: 1 }, '\tcheckstat = minimal\n', 'unchanged'],
+    ['an inode drift', { ino: 1 }, '\tcheckstat = minimal\n', 'unchanged'],
+    ['a uid drift', { uid: 1 }, '\ttrustctime = false\n', 'modified'],
+    ['a gid drift', { gid: 1 }, '\tcheckstat = default\n', 'modified'],
+    ['an inode drift', { ino: 1 }, '', 'modified'],
+    ['a size drift', { fileSize: 1 }, '\tcheckstat = minimal\n\ttrustctime = false\n', 'modified'],
+    ['an mtime second drift', { mtimeSeconds: -5 }, '\tcheckstat = minimal\n', 'modified'],
+    [
+      'a ctime second drift',
+      { ctimeSeconds: -5 },
+      '\ttrustctime = false\n\ttrustctime = true\n',
+      'modified',
+    ],
+    [
+      'a ctime second drift',
+      { ctimeSeconds: -5 },
+      '\ttrustctime = true\n\ttrustctime = false\n',
+      'unchanged',
+    ],
+    ['a uid drift', { uid: 1 }, '\tcheckstat = default\n\tcheckstat = minimal\n', 'unchanged'],
+    ['a uid drift', { uid: 1 }, '\tcheckstat = minimal\n\tcheckstat = default\n', 'modified'],
+    ['a uid drift', { uid: 1 }, '\tcheckstat = nonsense\n', 'modified'],
+    ['a uid drift', { uid: 1 }, '\tcheckstat = MINIMAL\n', 'unchanged'],
+  ] as const)(
+    'Given an assume-valid entry with %s and config %j',
+    (_label, drift, core, status) => {
+      describe('When the overwrite check judges it', () => {
+        it(`Then it is '${status}' as git's stat comparison reads it`, async () => {
+          // Arrange
+          const { ctx, entry, armed } = await assumedEntry();
+          await configure(ctx, core);
+          const base = entry as unknown as Record<string, number>;
+          const delta = drift as Record<string, number>;
+          const drifted = Object.fromEntries(
+            Object.entries(delta).map(([key, value]) => [
+              key,
+              key.endsWith('Nanoseconds') ||
+              key === 'uid' ||
+              key === 'gid' ||
+              key === 'ino' ||
+              key === 'fileSize'
+                ? (base[key] ?? 0) + value + 1_000
+                : (base[key] ?? 0) + value,
+            ]),
+          );
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, { ...entry, ...drifted }, armed);
+
+          // Assert
+          expect(result.delta.status).toBe(status);
+        });
+      });
+    },
+  );
+
+  describe('Given an assume-valid entry whose nanoseconds differ in the same second', () => {
+    describe('When the overwrite check judges it', () => {
+      it("Then it is 'unchanged' as git compares whole seconds", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        const lstat = ctx.fs.lstat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => ({
+          ...(await lstat(path)),
+          mtimeNs: BigInt(entry.mtimeSeconds) * 1_000_000_000n + 7n,
+          ctimeNs: BigInt(entry.ctimeSeconds) * 1_000_000_000n + 7n,
+        }));
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, armed);
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given an assume-valid entry the stat cache trusts', () => {
+    describe.each([
+      [
+        'deleted',
+        async (ctx: Context) => {
+          await ctx.fs.rm(work(ctx, 'a.txt'));
+        },
+      ],
+      [
+        'replaced by a directory',
+        async (ctx: Context) => {
+          await ctx.fs.rm(work(ctx, 'a.txt'));
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt/inner'), 'inner\n');
+        },
+      ],
+    ])('and its file %s', (_label, disturb) => {
+      describe('When comparing it with the stat cache armed', () => {
+        it("Then it is 'unchanged' without the file system being asked", async () => {
+          // Arrange
+          const { ctx, entry } = await assumedEntry();
+          await disturb(ctx);
+          const lstat = vi.spyOn(ctx.fs, 'lstat');
+          const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, entry, { indexMtime });
+
+          // Assert
+          expect(result).toEqual({ delta: { status: 'unchanged', worktreeMode: entry.mode } });
+          expect(lstat).toHaveBeenCalledTimes(0);
+        });
+      });
+
+      describe('When comparing it with the assume-valid bit ignored', () => {
+        it("Then it is not trusted and reads 'absent'", async () => {
+          // Arrange
+          const { ctx, entry, armed } = await assumedEntry();
+          await disturb(ctx);
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, entry, armed);
+
+          // Assert
+          expect(result.delta).toEqual({ status: 'absent' });
+        });
+      });
+    });
+
+    describe('and a leading directory replaced by a symlink', () => {
+      describe('When comparing it with the stat cache armed', () => {
+        it("Then it is 'unchanged'", async () => {
+          // Arrange
+          const { ctx, entry } = await seedFile('d/f', 'x\n');
+          const assumed = { ...entry, flags: { ...entry.flags, assumeValid: true } };
+          await replaceDirWithLink(ctx, 'd', 'copy');
+          const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, assumed, { indexMtime });
+
+          // Assert
+          expect(result.delta.status).toBe('unchanged');
+        });
+      });
+    });
+
+    describe('and a lossy path', () => {
+      describe('When comparing it with the stat cache armed', () => {
+        it("Then it is 'unchanged' as git trusts it before any lstat", async () => {
+          // Arrange
+          const { ctx, entry } = await seedFile('�.txt', 'u\n');
+          const lossy = {
+            ...entry,
+            flags: { ...entry.flags, assumeValid: true },
+            pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+          };
+          const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+          const sut = compareAndRefresh;
+
+          // Act
+          const result = await sut(ctx, lossy, { indexMtime });
+
+          // Assert
+          expect(result.delta.status).toBe('unchanged');
+        });
       });
     });
   });
