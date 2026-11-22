@@ -259,6 +259,20 @@ A well-formed repository, but a configuration, layout or argument shape few call
   core.checkstat=minimal: git ""     | tsgit unstaged:"modified"
   ```
 
+- **(status)** Under `core.ignorecase = true`, `status` lists an untracked file that is the case variant of a tracked one, where git folds it onto the tracked entry — pinned against git 2.56.0 on a case-insensitive file system (macOS), no sparse checkout needed. Tracked `a/f`, the directory `a` replaced on disk by `A` holding `A/f`: git `status --porcelain` prints ` M a/f` only; tsgit reports `a/f` modified and `A/f` untracked, because the working-tree walk does not fold case against the index (`src/application/primitives/walk-working-tree.ts`). Same row under sparse checkout with the entry skip-worktree: git ` M a/f`, tsgit ` M a/f` plus `?? A/f`. Pinned in `test/integration/skip-worktree-present-files-status-interop.test.ts` (`TSGIT_CASE_VARIANT`). Not folded: out of scope (untracked walk, not the skip-worktree clear).
+  ```
+  core.ignorecase=true; tracked a/f; rm -r a; mkdir A; echo hi > A/f
+  git status --porcelain -> " M a/f"
+  tsgit status()         -> changes [a/f modified], untracked ["A/f"]
+  ```
+
+- **(status)** `status` throws `PERMISSION_DENIED` on a directory the process cannot read, where git warns and exits 0 — pinned against git 2.56.0 (POSIX, not root). Tracked skip-worktree `a/f` under `a` at mode 000: git `status --porcelain -uall` exits 0 with `warning: could not open directory 'a/': Permission denied`; tsgit's working-tree walk throws `{"code":"PERMISSION_DENIED","path":"<repo>/a"}`. Pinned in `test/integration/posix-only/skip-worktree-present-files-interop.test.ts`. Not folded: out of scope (the walk's refusal on an unreadable directory, shared with `add`; see 32.68 for the same warn-and-walk-on shape).
+  ```
+  chmod 000 a
+  git status --porcelain -uall -> exit 0, warning: could not open directory 'a/': Permission denied
+  tsgit status()               -> threw {"code":"PERMISSION_DENIED","path":"<repo>/a"}
+  ```
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
