@@ -419,6 +419,73 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
     });
   });
 
+  describe('Given a synchronous probe that cannot answer the first path but answers the second', () => {
+    describe('When clearing two present files', () => {
+      it('Then the run is redone async and both bits clear', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'a');
+        await place(base, 'b');
+        let asked = 0;
+        const fs = new Proxy(base.fs, {
+          get: (target, key) =>
+            key === 'lstatReachableSync'
+              ? () => (asked++ === 0 ? undefined : true)
+              : Reflect.get(target, key),
+        });
+        const index = indexOf(rowOf('a'), rowOf('b'));
+
+        // Act
+        const result = await sut({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result)).toEqual([false, false]);
+      });
+    });
+  });
+
+  describe('Given a present path spelled like a placeholder, in the only run', () => {
+    describe('When clearing', () => {
+      it('Then the bit clears, no earlier missing directory being assumed', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'Stryker was here!x');
+        const index = indexOf(rowOf('Stryker was here!x'));
+
+        // Act
+        const result = await sut(base, index);
+
+        // Assert
+        expect(flagsOf(result)).toEqual([false]);
+      });
+    });
+  });
+
+  describe('Given a first run the sync probe cannot answer and a present path spelled like a placeholder in the next', () => {
+    describe('When clearing', () => {
+      it('Then no missing directory is carried over the async redo', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'Stryker was here!x');
+        let asked = 0;
+        const fs = new Proxy(base.fs, {
+          get: (target, key) =>
+            key === 'lstatReachableSync'
+              ? (path: string) => (asked++ === 0 ? undefined : path.endsWith('here!x'))
+              : Reflect.get(target, key),
+        });
+        const first = Array.from({ length: 64 }, (_, i) => `0${String(i).padStart(2, '0')}`);
+        const index = indexOf(...first.map((path) => rowOf(path)), rowOf('Stryker was here!x'));
+
+        // Act
+        const result = await sut({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result).at(-1)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a synchronous probe whose turn budget runs out every 70 probes', () => {
     describe('When clearing 200 present files across several runs', () => {
       it('Then each cut run yields through the async probe, the walk resumes synchronously and every bit clears', async () => {
