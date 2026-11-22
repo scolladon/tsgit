@@ -21,7 +21,7 @@ import type {
   WriteOptions,
 } from '../../ports/file-system.js';
 import type { FsOperations, SyncFsOperations } from './fs-operations.js';
-import { realFsOps } from './fs-operations.js';
+import { realFsOps, realSyncFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
 import type { SyncIoPolicy, TurnBudget } from './sync-io-budget.js';
@@ -302,7 +302,9 @@ function containedByPrefix(
   normalizedParent: string,
   parentWithSep: string,
 ): boolean {
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(parentWithSep);
+  if (normalizedChild === normalizedParent) return true;
+  // `slice` + `===` outruns `startsWith` on a long prefix; the two are equivalent here.
+  return normalizedChild.slice(0, parentWithSep.length) === parentWithSep;
 }
 
 /** @internal */
@@ -1388,6 +1390,25 @@ export class NodeFileSystem implements FileSystem {
     return sync === undefined
       ? orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path)
       : tryLstatSync(sync, real, this.pathPolicy.dirname(real), path);
+  };
+
+  /**
+   * One synchronous `lstat`: `true` when it succeeds, `false` for every refusal (a miss, a regular
+   * file in the path, a permission or containment refusal) — absence is the defined answer, as for
+   * `lstat` in a presence decision. `undefined` until an async read has resolved the root set,
+   * since containment cannot be decided without it.
+   */
+  lstatReachableSync = (path: string): boolean | undefined => {
+    const roots = this.resolvedRootSet;
+    if (roots === undefined) return undefined;
+    try {
+      const real = this.resolveRead(path, roots.all);
+      return (
+        (this.syncIo?.ops ?? realSyncFsOps).lstatSync(real, { throwIfNoEntry: false }) !== undefined
+      );
+    } catch {
+      return false;
+    }
   };
 
   /** `tryLstat` blind to the miss's cause: one `lstat`, never the parent `stat` that tells `ENOTDIR` apart. */

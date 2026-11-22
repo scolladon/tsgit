@@ -226,6 +226,15 @@ export class MemoryFileSystem implements FileSystem {
     }
   };
 
+  /** The synchronous presence probe: any refusal of the no-follow lookup reads as absent. */
+  lstatReachableSync = (path: string): boolean => {
+    try {
+      return this.lstatEntry(this.walkLookup(path, 'no-follow')) !== undefined;
+    } catch {
+      return false;
+    }
+  };
+
   /** Shared no-follow resolution for `lstat`/`tryLstat`: `undefined` when nothing stands there. */
   private lstatEntry(normalized: string): FileStat | undefined {
     const target = this.symlinks.get(normalized);

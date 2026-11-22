@@ -240,6 +240,18 @@ async function lstatIfReachable(fs: FileSystem, path: string): Promise<FileStat 
   return fs.lstatIfReachable(path);
 }
 
+/**
+ * Every adapter this suite runs against provides the optional synchronous presence probe. A root
+ * set the adapter has not resolved yet answers `undefined`, so one async read settles it first.
+ */
+async function lstatReachableSync(fs: FileSystem, path: string): Promise<boolean | undefined> {
+  if (fs.lstatReachableSync === undefined) {
+    throw new Error('the adapter under contract provides no lstatReachableSync');
+  }
+  await fs.exists(path).catch(() => false);
+  return fs.lstatReachableSync(path);
+}
+
 /** Every adapter this suite runs against provides the optional non-throwing UTF-8 read probe. */
 async function tryReadUtf8(fs: FileSystem, path: string): Promise<string | undefined> {
   if (fs.tryReadUtf8 === undefined) {
@@ -2105,6 +2117,54 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           } finally {
             await env.fs.chmod(dir, 0o755);
           }
+        });
+      });
+    });
+
+    describe('lstatReachableSync — the synchronous presence probe', () => {
+      describe('Given a path with no entry', () => {
+        it('Then lstatReachableSync answers false', async () => {
+          // Arrange
+          const path = `${env.rootDir}/sync-missing.bin`;
+
+          // Act
+          const result = await lstatReachableSync(env.fs, path);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+
+      describe('Given a regular file occupying an intermediate path segment', () => {
+        it('Then lstatReachableSync answers false', async () => {
+          // Arrange
+          await env.fs.write(`${env.rootDir}/sync-file.bin`, new Uint8Array([1]));
+
+          // Act
+          const result = await lstatReachableSync(env.fs, `${env.rootDir}/sync-file.bin/x`);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+
+      describe('Given a present regular file, a dangling symlink and a directory', () => {
+        it('Then lstatReachableSync answers true for each', async () => {
+          // Arrange
+          const file = `${env.rootDir}/sync-present.bin`;
+          const link = `${env.rootDir}/sync-dangling`;
+          const dir = `${env.rootDir}/sync-dir`;
+          await env.fs.write(file, new Uint8Array([1, 2, 3]));
+          await env.fs.symlink('sync-dangling-target', link);
+          await env.fs.mkdir(dir);
+
+          // Act
+          const result = await Promise.all(
+            [file, link, dir].map((p) => lstatReachableSync(env.fs, p)),
+          );
+
+          // Assert
+          expect(result).toEqual([true, true, true]);
         });
       });
     });

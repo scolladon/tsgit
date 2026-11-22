@@ -14,6 +14,7 @@ import {
 import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import type { FileSystem } from '../../../../../src/ports/file-system.js';
 
 const SPARSE_ON = '[core]\n\tsparseCheckout = true\n';
 const EXPECT_FILES = '[sparse]\n\texpectFilesOutsideOfPatterns = true\n';
@@ -40,6 +41,12 @@ const indexOf = (...entries: IndexEntry[]): GitIndex => ({
 
 const place = (ctx: Context, path: string): Promise<void> =>
   ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, 'x');
+
+/** The same file system minus its synchronous probe, so the async probes are the ones under test. */
+const withoutSyncProbe = (fs: FileSystem): FileSystem =>
+  new Proxy(fs, {
+    get: (target, key) => (key === 'lstatReachableSync' ? undefined : Reflect.get(target, key)),
+  });
 
 const flagsOf = (index: GitIndex): boolean[] => index.entries.map((e) => e.flags.skipWorktree);
 
@@ -173,9 +180,9 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         // Arrange
         const base = await withConfig(SPARSE_ON);
         await place(base, 'a');
-        const fs = new Proxy(base.fs, {
+        const fs = new Proxy(withoutSyncProbe(base.fs), {
           get: (target, key) =>
-            key === 'lstat'
+            key === 'lstatIfReachable'
               ? () => Promise.reject(permissionDenied('a'))
               : Reflect.get(target, key),
         });
@@ -244,6 +251,193 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         // Assert
         expect(result).not.toBe(index);
         expect(flagsOf(index)).toEqual([true]);
+      });
+    });
+  });
+
+  describe('Given many present skip-worktree files and a parallelism of 3', () => {
+    describe('When clearing', () => {
+      it('Then lstat calls overlap up to 3 and never beyond, and every bit is cleared', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        const paths = Array.from({ length: 200 }, (_, i) => `d${i % 10}/f${i}`).sort();
+        for (const path of paths) await place(base, path);
+        let inFlight = 0;
+        let peak = 0;
+        const fs = new Proxy(withoutSyncProbe(base.fs), {
+          get: (target, key) =>
+            key === 'lstatIfReachable'
+              ? async (path: string) => {
+                  inFlight += 1;
+                  peak = Math.max(peak, inFlight);
+                  await Promise.resolve();
+                  try {
+                    return await target.lstatIfReachable?.(path);
+                  } finally {
+                    inFlight -= 1;
+                  }
+                }
+              : Reflect.get(target, key),
+        });
+        const ctx = { ...base, fs, config: { parallelism: 3 } } as Context;
+        const index = indexOf(...paths.map((path) => rowOf(path)));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+
+        // Assert
+        expect(peak).toBe(3);
+        expect(flagsOf(result).every((bit) => !bit)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given absent directories holding many skip-worktree files', () => {
+    describe('When clearing', () => {
+      it('Then the bits are kept with far fewer probes than files', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        const paths = Array.from(
+          { length: 200 },
+          (_, i) => `gone${i % 4}/f${String(i).padStart(3, '0')}`,
+        ).sort();
+        let probes = 0;
+        const fs = new Proxy(withoutSyncProbe(base.fs), {
+          get: (target, key) =>
+            key === 'lstatIfReachable'
+              ? (path: string) => {
+                  probes += 1;
+                  return target.lstatIfReachable?.(path);
+                }
+              : Reflect.get(target, key),
+        });
+        const ctx = { ...base, fs, config: { parallelism: 3 } } as Context;
+        const index = indexOf(...paths.map((path) => rowOf(path)));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+
+        // Assert
+        expect(result).toBe(index);
+        expect(probes).toBeLessThan(paths.length / 2);
+      });
+    });
+  });
+
+  describe('Given a file system with a refusal-free miss probe', () => {
+    describe('When clearing a present file and an absent one', () => {
+      it('Then the probe answers both and lstat is never asked', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'here');
+        const fs = new Proxy(withoutSyncProbe(base.fs), {
+          get: (target, key) => {
+            if (key === 'lstat') return () => Promise.reject(permissionDenied('lstat'));
+            if (key === 'lstatIfReachable') {
+              return (path: string) => target.lstat(path).catch(() => undefined);
+            }
+            return Reflect.get(target, key);
+          },
+        });
+        const index = indexOf(rowOf('gone'), rowOf('here'));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result)).toEqual([true, false]);
+      });
+    });
+  });
+
+  describe('Given a file system without the refusal-free miss probe', () => {
+    describe('When clearing a present file and an absent one', () => {
+      it('Then lstat answers both', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'here');
+        const fs = new Proxy(withoutSyncProbe(base.fs), {
+          get: (target, key) => (key === 'lstatIfReachable' ? undefined : Reflect.get(target, key)),
+        });
+        const index = indexOf(rowOf('gone'), rowOf('here'));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result)).toEqual([true, false]);
+      });
+    });
+  });
+
+  describe('Given a file system with a synchronous presence probe', () => {
+    describe('When clearing a present file and an absent one', () => {
+      it('Then the sync probe answers both and no async probe is asked', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'here');
+        const fs = new Proxy(base.fs, {
+          get: (target, key) => {
+            if (key === 'lstat' || key === 'lstatIfReachable') {
+              return () => Promise.reject(permissionDenied('async'));
+            }
+            if (key === 'lstatReachableSync') return (path: string) => path.endsWith('/here');
+            return Reflect.get(target, key);
+          },
+        });
+        const index = indexOf(rowOf('gone'), rowOf('here'));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result)).toEqual([true, false]);
+      });
+    });
+  });
+
+  describe('Given a synchronous probe that cannot answer yet', () => {
+    describe('When clearing a present file and an absent one', () => {
+      it('Then the async probe answers instead', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'here');
+        const fs = new Proxy(base.fs, {
+          get: (target, key) =>
+            key === 'lstatReachableSync' ? () => undefined : Reflect.get(target, key),
+        });
+        const index = indexOf(rowOf('gone'), rowOf('here'));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result)).toEqual([true, false]);
+      });
+    });
+  });
+
+  describe('Given a synchronous probe that throws', () => {
+    describe('When clearing', () => {
+      it('Then the entry reads absent and nothing is thrown', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        await place(base, 'here');
+        const fs = new Proxy(base.fs, {
+          get: (target, key) =>
+            key === 'lstatReachableSync'
+              ? () => {
+                  throw permissionDenied('here');
+                }
+              : Reflect.get(target, key),
+        });
+        const index = indexOf(rowOf('here'));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(result).toBe(index);
       });
     });
   });

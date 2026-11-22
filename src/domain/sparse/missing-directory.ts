@@ -45,3 +45,35 @@ export const presentPaths = async (
   }
   return present;
 };
+
+/**
+ * The same decisions as {@link presentPaths} for a probe that answers at once. A twin rather than
+ * a shared generator: a promise-free loop is the point, and a generator costs more per probe than
+ * the `lstat` it wraps.
+ */
+export const presentPathsSync = (
+  paths: ReadonlyArray<string>,
+  probe: (path: string) => boolean,
+): ReadonlySet<string> => {
+  const present = new Set<string>();
+  let missing = '';
+  for (const path of paths) {
+    if (missing !== '' && path.startsWith(missing)) continue;
+    if (probe(path)) present.add(path);
+    else missing = firstMissingDirectorySync(path, missing, probe);
+  }
+  return present;
+};
+
+const firstMissingDirectorySync = (
+  path: string,
+  known: string,
+  probe: (path: string) => boolean,
+): string => {
+  let end = commonDirectoryPrefix(path, known);
+  for (let slash = path.indexOf(SLASH, end); slash !== -1; slash = path.indexOf(SLASH, end)) {
+    end = slash + 1;
+    if (!probe(path.slice(0, end))) return path.slice(0, end);
+  }
+  return `${path}${SLASH}`;
+};
