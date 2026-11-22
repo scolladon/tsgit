@@ -2349,3 +2349,25 @@ describe('NodeFileSystem — read over the sync gate, real fs', () => {
     });
   });
 });
+
+describe('NodeFileSystem lstatReachableSync', () => {
+  describe('Given a fresh adapter whose root set no async read has resolved yet', () => {
+    describe('When the synchronous presence probe is asked', () => {
+      it('Then it answers undefined so the caller falls back to the async probe', async () => {
+        // Arrange
+        const rootDir = await fsPromises.realpath(
+          await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-')),
+        );
+        await fsPromises.writeFile(nodePath.join(rootDir, 'present'), 'x');
+        const sut = new NodeFileSystem(rootDir);
+
+        // Act
+        const result = sut.lstatReachableSync(`${rootDir}/present`);
+
+        // Assert
+        expect(result).toBeUndefined();
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+});
