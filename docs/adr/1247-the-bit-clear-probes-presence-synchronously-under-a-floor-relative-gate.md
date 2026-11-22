@@ -38,9 +38,11 @@ past the pool width of 4) against 24 ms for synchronous `lstatSync` with `throwI
 adapters that cannot answer synchronously omit it and the walk falls back to the async probe. Any
 probe failure still reads absent.
 
-The gate on the present-directories row becomes: the clear costs at most 10% more than one bare
-synchronous `lstat` per probed entry on the same fixture. The removed-directories row keeps the
-10%-of-`status`-against-main gate.
+Both rows are gated against the faithful floor on the same fixture: the clear costs at most 10%
+more than one bare synchronous `lstat` per probe git's `path_found` makes plus one scan of the
+candidate paths. On the removed-directories row that floor is about 1 ms (400 probes and a
+20000-path scan the base does not do), so a main-relative gate there measured git's own work, not
+an overhead: user-ratified on 2026-11-22 after the row stood at a +12.0% median against main.
 
 Superseded from ADR-1243: the sequential async walk and the 10%-of-`status`-against-main gate on
 the present-directories row.
