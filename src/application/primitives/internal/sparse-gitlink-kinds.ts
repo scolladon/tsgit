@@ -1,4 +1,6 @@
+import type { IndexEntry } from '../../../domain/git-index/index.js';
 import { isLossy } from '../../../domain/git-index/index-path-key.js';
+import type { MergeOutcome } from '../../../domain/merge/index.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -77,3 +79,34 @@ export async function withGitlinkKinds(
   if (directories.size === 0) return sparse;
   return (path, kind) => sparse(path, kind ?? (directories.has(path) ? 'directory' : 'file'));
 }
+
+/** How a merge judges its gitlinks: `judging` the matcher to write by, `assumedDirectories` what a retirement must judge the same way. */
+export interface MergeGitlinkKinds {
+  readonly judging: SparseMatcher | undefined;
+  readonly assumedDirectories: ReadonlyArray<FilePath>;
+}
+
+const gitlinkOutcomes = (outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<KindCandidate> =>
+  outcomes.flatMap((outcome) => ('mode' in outcome ? [outcome] : []));
+
+/**
+ * The kinds of the gitlinks a merge meets, in the index and in its result. An operation that
+ * refreshes the index first (git's `merge`) also takes each skip-worktree gitlink as a directory.
+ */
+export const mergeGitlinkKinds = async (
+  ctx: Context,
+  sparse: SparseMatcher | undefined,
+  entries: ReadonlyArray<IndexEntry>,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  refreshedIndex: boolean,
+): Promise<MergeGitlinkKinds> => {
+  const assumedDirectories = refreshedIndex ? skippedGitlinkPaths(entries) : [];
+  const judging = await withGitlinkKinds(
+    ctx,
+    'merge',
+    sparse,
+    [entries, gitlinkOutcomes(outcomes)],
+    assumedDirectories,
+  );
+  return { judging, assumedDirectories };
+};

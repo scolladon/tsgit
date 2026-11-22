@@ -114,6 +114,7 @@ import {
 } from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
+import { mergeGitlinkKinds } from '../primitives/internal/sparse-gitlink-kinds.js';
 import {
   NOTHING_RETIRED,
   retireSparseMovers,
@@ -1573,12 +1574,13 @@ const persistOctopusConflict = async (
   const refusal = await findOverwriteRefusal(ctx, changed, outcomes);
   if (refusal !== undefined) return refusal;
   validateMergeWritePaths(indexPathRulesOf(ctx), outcomes, result.conflicts, changed);
-  const matcher = await loadSparseMatcher(ctx);
+  const kinds = await loadConflictStopKinds(ctx, outcomes);
+  const { matcher } = kinds;
   const merged = outcomesBetween(new Map(), result.merged, new Set());
   const remotes = commit.parents.filter((id) => id !== commit.ourId);
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
-    const retirement = await retireOnConflictStop(ctx, result.conflicts, matcher);
+    const retirement = await retireOnConflictStop(ctx, result.conflicts, kinds);
     const paths = sortedRecordedPaths(result.conflicts);
     await writeStopState(ctx, commit.opts, commit.ourId, remotes, paths);
     const kept = keepingLeftDirty(matcher, retirement.leftDirty);
@@ -1587,14 +1589,40 @@ const persistOctopusConflict = async (
   return conflictOutcome(commit.opts, result.conflicts, remotes[0]!, commit.ourId);
 };
 
+/** The sparse matcher a conflict stop writes by, with the raw one and what a retirement must judge alike. */
+interface ConflictStopKinds {
+  readonly matcher: SparseMatcher | undefined;
+  readonly rawMatcher: SparseMatcher | undefined;
+  readonly assumedDirectories: ReadonlyArray<FilePath>;
+}
+
+/** git refreshes the index before a merge, so a skip-worktree gitlink counts as a directory and any other is judged by what stands at its path. */
+const loadConflictStopKinds = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+): Promise<ConflictStopKinds> => {
+  const rawMatcher = await loadSparseMatcher(ctx);
+  if (rawMatcher === undefined) return { matcher: undefined, rawMatcher, assumedDirectories: [] };
+  const { entries } = await readIndex(ctx);
+  const { judging, assumedDirectories } = await mergeGitlinkKinds(
+    ctx,
+    rawMatcher,
+    entries,
+    outcomes,
+    true,
+  );
+  return { matcher: judging, rawMatcher, assumedDirectories };
+};
+
 /** The index is read only when sparse is on: without a matcher nothing can retire. */
 const retireOnConflictStop = async (
   ctx: Context,
   conflicts: ReadonlyArray<MergeConflict>,
-  matcher: SparseMatcher | undefined,
+  { rawMatcher, assumedDirectories }: ConflictStopKinds,
 ): Promise<SparseRetirement> => {
-  if (matcher === undefined) return NOTHING_RETIRED;
-  return retireSparseMovers(ctx, { currentIndex: await readIndex(ctx), conflicts }, matcher);
+  if (rawMatcher === undefined) return NOTHING_RETIRED;
+  const currentIndex = await readIndex(ctx);
+  return retireSparseMovers(ctx, { currentIndex, conflicts, assumedDirectories }, rawMatcher);
 };
 
 type MergeTreeResult =
@@ -1974,7 +2002,8 @@ const writeConflictState = async (
   },
   changed: ReturnType<typeof changedPaths>,
 ): Promise<void> => {
-  const matcher = await loadSparseMatcher(ctx);
+  const kinds = await loadConflictStopKinds(ctx, result.outcomes);
+  const { matcher } = kinds;
   const merged = await mergedBlobEntries(ctx, result.outcomes);
   // Recorded before the first write: a broken AUTO_MERGE fails the merge as git's does.
   await writeAutoMerge(
@@ -1983,7 +2012,7 @@ const writeConflictState = async (
   );
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
-    const retirement = await retireOnConflictStop(ctx, result.conflicts, matcher);
+    const retirement = await retireOnConflictStop(ctx, result.conflicts, kinds);
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
     const kept = keepingLeftDirty(matcher, retirement.leftDirty);
     return buildConflictIndexEntries(result.outcomes, result.conflicts, kept, merged);

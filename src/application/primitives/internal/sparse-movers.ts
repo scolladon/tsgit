@@ -39,6 +39,8 @@ export const NOTHING_RETIRED: SparseRetirement = { retired: new Set(), leftDirty
 interface RetirementScope {
   readonly currentIndex: GitIndex;
   readonly conflicts: ReadonlyArray<MergeConflict>;
+  /** Gitlinks judged a directory whatever stands at their path. */
+  readonly assumedDirectories?: ReadonlyArray<FilePath>;
 }
 
 /** A conflicted path is always written, so it never retires. */
@@ -97,7 +99,13 @@ export const retireSparseMovers = async (
 ): Promise<SparseRetirement> => {
   if (sparse === undefined) return NOTHING_RETIRED;
   const workdir = requireWorkTree(ctx, 'merge');
-  const judging = await withGitlinkKinds(ctx, 'merge', sparse, [scope.currentIndex.entries]);
+  const judging = await withGitlinkKinds(
+    ctx,
+    'merge',
+    sparse,
+    [scope.currentIndex.entries],
+    scope.assumedDirectories,
+  );
   const candidates = await reachableCandidates(ctx, moverCandidates(scope, judging));
   const leftDirty = await notUpToDate(ctx, workdir, candidates, scope.currentIndex.indexMtime);
   const isClean = (entry: IndexEntry): boolean => !leftDirty.has(indexPathKey(entry));

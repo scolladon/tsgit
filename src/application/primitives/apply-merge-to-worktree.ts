@@ -66,6 +66,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { mergeGitlinkKinds } from './internal/sparse-gitlink-kinds.js';
 import { retireSparseMovers, withRetiredSkipped } from './internal/sparse-movers.js';
 import { withConflictStopStats } from './internal/stat-conflict-index.js';
 import {
@@ -502,8 +503,18 @@ const materialiseConflict = async (
   },
   changed: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
-  sparse: SparseMatcher | undefined,
+  {
+    sparse: rawSparse,
+    refreshedIndex,
+  }: { sparse: SparseMatcher | undefined; refreshedIndex: boolean },
 ): Promise<ApplyMergeResult> => {
+  const { judging: sparse, assumedDirectories } = await mergeGitlinkKinds(
+    ctx,
+    rawSparse,
+    currentIndex.entries,
+    merged.outcomes,
+    refreshedIndex,
+  );
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
   // partway through it.
@@ -517,8 +528,8 @@ const materialiseConflict = async (
   );
   const retirement = await retireSparseMovers(
     ctx,
-    { currentIndex, conflicts: merged.conflicts },
-    sparse,
+    { currentIndex, conflicts: merged.conflicts, assumedDirectories },
+    rawSparse,
   );
   return {
     kind: 'conflict',
@@ -617,7 +628,10 @@ export const applyMergeToWorktree = async (
       : mergedTree;
     return { kind: 'clean', mergedTree, indexTree, result: materialized };
   }
-  return materialiseConflict(ctx, merged, changed, input.currentIndex, sparse);
+  return materialiseConflict(ctx, merged, changed, input.currentIndex, {
+    sparse,
+    refreshedIndex: input.refreshedIndex === true,
+  });
 };
 
 /**

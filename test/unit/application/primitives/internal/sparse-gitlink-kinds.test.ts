@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { requireWorkTree } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
+  mergeGitlinkKinds,
   skippedGitlinkPaths,
   withGitlinkKinds,
 } from '../../../../../src/application/primitives/internal/sparse-gitlink-kinds.js';
+import type { IndexEntry } from '../../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
+import type { MergeOutcome } from '../../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
-import type { FilePath } from '../../../../../src/domain/objects/index.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { SparseEntryKind } from '../../../../../src/domain/sparse/index.js';
 import { buildSeededContext } from '../fixtures.js';
 
@@ -212,6 +216,113 @@ describe('skippedGitlinkPaths', () => {
 
         // Assert
         expect(result).toEqual(['kept']);
+      });
+    });
+  });
+});
+
+describe('mergeGitlinkKinds', () => {
+  const GITLINK_ID = '1'.repeat(40) as ObjectId;
+  const skipped = (p: string): IndexEntry =>
+    ({
+      path: path(p),
+      mode: FILE_MODE.GITLINK,
+      id: GITLINK_ID,
+      flags: { ...STAGE0_FLAGS, skipWorktree: true },
+    }) as IndexEntry;
+  const enteringGitlink = (p: string): MergeOutcome => ({
+    status: 'resolved-known',
+    path: path(p),
+    id: GITLINK_ID,
+    mode: FILE_MODE.GITLINK,
+  });
+  const deleted = (p: string): MergeOutcome => ({ status: 'resolved-deleted', path: path(p) });
+
+  describe('Given a refreshing operation and a skip-worktree gitlink with no directory', () => {
+    describe('When the kinds are taken', () => {
+      it('Then the gitlink is assumed and judged a directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const matcher = directoriesOnly();
+        const sut = mergeGitlinkKinds;
+
+        // Act
+        const { judging, assumedDirectories } = await sut(
+          ctx,
+          matcher,
+          [skipped('sub')],
+          [deleted('gone')],
+          true,
+        );
+
+        // Assert
+        expect(assumedDirectories).toEqual(['sub']);
+        expect(judging?.(path('sub'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an operation that does not refresh and the same gitlink', () => {
+    describe('When the kinds are taken', () => {
+      it('Then nothing is assumed and the matcher is returned as given', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const matcher = directoriesOnly();
+        const sut = mergeGitlinkKinds;
+
+        // Act
+        const { judging, assumedDirectories } = await sut(
+          ctx,
+          matcher,
+          [skipped('sub')],
+          [],
+          false,
+        );
+
+        // Assert
+        expect(assumedDirectories).toEqual([]);
+        expect(judging).toBe(matcher);
+      });
+    });
+  });
+
+  describe('Given a gitlink the merge brings whose directory is present', () => {
+    describe('When the kinds are taken', () => {
+      it('Then it is judged a directory and a deleted path is not probed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/sub`);
+        const matcher = directoriesOnly();
+        const sut = mergeGitlinkKinds;
+
+        // Act
+        const { judging } = await sut(
+          ctx,
+          matcher,
+          [],
+          [enteringGitlink('sub'), deleted('sub2')],
+          false,
+        );
+
+        // Assert
+        expect(judging?.(path('sub'))).toBe(true);
+        expect(judging?.(path('sub2'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given no sparse matcher', () => {
+    describe('When the kinds are taken', () => {
+      it('Then there is nothing to judge with', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = mergeGitlinkKinds;
+
+        // Act
+        const { judging } = await sut(ctx, undefined, [skipped('sub')], [], true);
+
+        // Assert
+        expect(judging).toBeUndefined();
       });
     });
   });
