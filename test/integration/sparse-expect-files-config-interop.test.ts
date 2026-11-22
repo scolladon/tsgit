@@ -31,7 +31,8 @@ const EXTENSION_ON = '[extensions]\n\tworktreeConfig = true\n';
 type Command = 'status' | 'rev-parse';
 
 interface Row {
-  readonly id: string;
+  readonly label: string;
+  readonly skipWorktreeEntry?: boolean;
   readonly command: Command;
   readonly core: (ignorecase: string) => string;
   readonly local: (core: string) => string;
@@ -44,14 +45,14 @@ const coreSection = (ignorecase: string, formatVersion = 0): string =>
 
 const ROWS: ReadonlyArray<Row> = [
   {
-    id: 'E3 local bogus',
+    label: 'a bogus value in the local config',
     command: 'status',
     core: (ic) => coreSection(ic),
     local: (core) => `${core}${SPARSE_BOGUS}`,
     expectedKey: 'sparse.expectfilesoutsideofpatterns',
   },
   {
-    id: 'E3b worktree bogus with the extension on',
+    label: 'a bogus value in config.worktree with the extension on',
     command: 'status',
     core: (ic) => coreSection(ic, 1),
     local: (core) => `${core}${EXTENSION_ON}`,
@@ -59,27 +60,45 @@ const ROWS: ReadonlyArray<Row> = [
     expectedKey: 'sparse.expectfilesoutsideofpatterns',
   },
   {
-    id: 'O1 sparse key before a bad core.fileMode',
+    label: 'the sparse key before a bad core.fileMode',
     command: 'status',
     core: (ic) => `${coreSection(ic)}\tfileMode = bogus\n`,
     local: (core) => `${SPARSE_BOGUS}${core}`,
     expectedKey: 'sparse.expectfilesoutsideofpatterns',
   },
   {
-    id: 'O2 bad core.fileMode before the sparse key',
+    label: 'a bad core.fileMode before the sparse key',
     command: 'status',
     core: (ic) => `${coreSection(ic)}\tfileMode = bogus\n`,
     local: (core) => `${core}${SPARSE_BOGUS}`,
     expectedKey: 'core.filemode',
   },
   {
-    id: 'O3 sparse checkout off, rev-parse',
+    label: 'rev-parse with sparse checkout off',
     command: 'rev-parse',
     core: (ic) => coreSection(ic),
     local: (core) => `${core}${SPARSE_BOGUS}`,
     expectedKey: 'sparse.expectfilesoutsideofpatterns',
   },
+  {
+    label: 'a bogus value with sparse checkout on and a skip-worktree index entry',
+    command: 'status',
+    skipWorktreeEntry: true,
+    core: (ic) => coreSection(ic),
+    local: (core) => `${core}\tsparseCheckout = true\n${SPARSE_BOGUS}`,
+    expectedKey: 'sparse.expectfilesoutsideofpatterns',
+  },
 ];
+
+const SKIP_WORKTREE_PATH = 'held';
+
+const seedSkipWorktreeEntry = (dir: string): void => {
+  writeFileSync(path.join(dir, SKIP_WORKTREE_PATH), 'held\n');
+  runGit(['-C', dir, 'add', SKIP_WORKTREE_PATH], { env: runGitEnv() });
+  runGit(['-C', dir, 'update-index', '--skip-worktree', SKIP_WORKTREE_PATH], {
+    env: runGitEnv(),
+  });
+};
 
 const arm = (dir: string, ignorecase: string, row: Row): void => {
   runGit(['init', '-q', '-b', 'main', dir]);
@@ -101,6 +120,7 @@ const arm = (dir: string, ignorecase: string, row: Row): void => {
       env: runGitEnv(),
     },
   );
+  if (row.skipWorktreeEntry === true) seedSkipWorktreeEntry(dir);
   writeFileSync(path.join(dir, '.git', 'config'), row.local(row.core(ignorecase)));
   if (row.worktree !== undefined)
     writeFileSync(path.join(dir, '.git', 'config.worktree'), row.worktree);
@@ -139,7 +159,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
 
         describe('When a command runs against a bogus value', () => {
-          it.each(ROWS)('Then $id refuses in both tools', async (row) => {
+          it.each(ROWS)('Then $label refuses in both tools', async (row) => {
             // Arrange
             arm(pair.peer, ignorecase, row);
             arm(pair.ours, ignorecase, row);
