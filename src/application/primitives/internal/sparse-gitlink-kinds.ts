@@ -13,7 +13,7 @@ export interface KindCandidate {
   readonly pathBytes?: Uint8Array;
 }
 
-/** The skip-worktree gitlinks among `entries`: a two-way switch judges what it left out of the work tree as a directory. */
+/** The skip-worktree gitlinks among `entries`: a switch refreshes the index first, which marks them up to date, and an up-to-date gitlink is a directory. */
 export const skippedGitlinkPaths = (
   entries: ReadonlyArray<KindCandidate & { readonly flags: { readonly skipWorktree: boolean } }>,
 ): ReadonlyArray<FilePath> =>
@@ -22,9 +22,10 @@ export const skippedGitlinkPaths = (
     .map((e) => e.path);
 
 /**
- * git reads the kind of a gitlink from the work tree: a directory standing at its path makes it a
- * directory, which is what a directory-only pattern judges. A lossy path is never probed — its
- * decoded name is another file.
+ * git cannot read the kind of an index entry from its mode, so it asks the index (an up-to-date
+ * gitlink is a directory) and then the work tree: a directory standing at its path makes the
+ * gitlink a directory, which is what a directory-only pattern judges. A lossy path is never
+ * probed — its decoded name is another file.
  */
 const presentGitlinkDirectories = async (
   ctx: Context,
