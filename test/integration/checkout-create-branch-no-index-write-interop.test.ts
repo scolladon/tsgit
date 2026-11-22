@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const PINNED_DATE = '@1700000000 +0000';
@@ -81,6 +82,7 @@ interface Row {
   readonly git: ReadonlyArray<string>;
   readonly opts: CheckoutOptions;
   readonly gitExit: number;
+  readonly refusal?: Readonly<Record<string, unknown>>;
   readonly rewrites: boolean;
 }
 
@@ -133,6 +135,7 @@ const ROWS: ReadonlyArray<Row> = [
     git: ['checkout', '-b', 'other', 'HEAD'],
     opts: { rev: 'HEAD', createBranch: BRANCH },
     gitExit: 1,
+    refusal: { code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['b/f'] },
     rewrites: false,
   },
 ];
@@ -152,7 +155,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
     });
 
     describe.each(['false', 'true'])('with core.ignorecase=%s', (ignorecase) => {
-      describe.each(ROWS)('Given $label', ({ setup, git, opts, gitExit, rewrites }) => {
+      describe.each(ROWS)('Given $label', ({ setup, git, opts, gitExit, refusal, rewrites }) => {
         describe('When git and tsgit run it', () => {
           it(
             'Then both treat the index file alike and leave the same entries',
@@ -171,14 +174,18 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
               // Act
               const gitRun = tryRunGitWithExit(['-C', gitRepo, ...git]);
-              const outcome = await sut(createNodeContext({ workDir: tsgitRepo }), opts).then(
-                () => 0,
-                () => 1,
+              const failure = await sut(createNodeContext({ workDir: tsgitRepo }), opts).then(
+                () => undefined,
+                (error: unknown) => error,
               );
 
               // Assert
               expect(gitRun.exitCode).toBe(gitExit);
-              expect(outcome).toBe(gitExit);
+              if (refusal === undefined) expect(failure).toBeUndefined();
+              else {
+                expect(failure).toBeInstanceOf(TsgitError);
+                expect((failure as TsgitError).data).toEqual(refusal);
+              }
               const rewritten = async (repo: string): Promise<boolean> => {
                 const now = await indexStat(repo);
                 const prior = before.get(repo);
