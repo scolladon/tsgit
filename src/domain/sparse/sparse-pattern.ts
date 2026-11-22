@@ -7,6 +7,8 @@ export interface SparseRule {
   readonly source: string;
   /** True when the line started with `!` (negation). */
   readonly negated: boolean;
+  /** True for a trailing-`/` line: the rule decides directories only. */
+  readonly directoryOnly: boolean;
   /** Compiled glob matcher — see `compileSparseRule`. */
   readonly matcher: GlobMatcher;
 }

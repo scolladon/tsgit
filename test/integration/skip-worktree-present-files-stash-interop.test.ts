@@ -191,16 +191,23 @@ const NON_CONE_FILES: Readonly<Record<string, string>> = {
   'd1/s1': 's\n',
 };
 
-const nonConeRepo = async (repo: string): Promise<void> => {
+interface NonConeSetup {
+  readonly files: Readonly<Record<string, string>>;
+  readonly patterns: string;
+}
+
+const SIBLINGS: NonConeSetup = { files: NON_CONE_FILES, patterns: '/*\n!/d*/s*\n' };
+
+const nonConeRepo = async (repo: string, setup: NonConeSetup = SIBLINGS): Promise<void> => {
   runGit(['init', '-q', '-b', 'main', repo]);
   gitIn(repo, ['config', 'user.name', 'A']);
   gitIn(repo, ['config', 'user.email', 'a@a']);
-  await writeFiles(repo, NON_CONE_FILES);
+  await writeFiles(repo, setup.files);
   gitIn(repo, ['add', '-A']);
   gitIn(repo, ['commit', '-qm', 'c']);
   gitIn(repo, ['config', 'core.sparseCheckout', 'true']);
   gitIn(repo, ['config', 'core.sparseCheckoutCone', 'false']);
-  await writeFile(path.join(repo, '.git/info/sparse-checkout'), '/*\n!/d*/s*\n');
+  await writeFile(path.join(repo, '.git/info/sparse-checkout'), setup.patterns);
   gitIn(repo, ['read-tree', '-mu', 'HEAD']);
   await writeFiles(repo, { 'top.txt': 'changed\n' });
 };
@@ -249,6 +256,33 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           // Assert
           expect(actual).toEqual(await sut(gitRepo));
           expect(actual.disk).toContain('d0/keep');
+        });
+      });
+    });
+
+    describe('Given "*" then "!x/" over files beneath the negated directory', () => {
+      describe('When git and tsgit stash push', () => {
+        it('Then both keep x/f and x/y/g on disk with the same index tags', async () => {
+          // Arrange
+          const setup: NonConeSetup = {
+            files: { 'top.txt': 't\n', 'x/f': 'f\n', 'x/y/g': 'g\n' },
+            patterns: '*\n!x/\n',
+          };
+          const gitRepo = path.join(root, 'git-star');
+          const tsgitRepo = path.join(root, 'tsgit-star');
+          await nonConeRepo(gitRepo, setup);
+          await nonConeRepo(tsgitRepo, setup);
+          gitIn(gitRepo, ['stash', 'push', '-q']);
+          const ctx = createNodeContext({ workDir: tsgitRepo });
+
+          // Act
+          const sut = stashPush;
+          await sut(ctx, {});
+
+          // Assert
+          const actual = await nonConeSnapshot(tsgitRepo);
+          expect(actual).toEqual(await nonConeSnapshot(gitRepo));
+          expect(actual.disk).toEqual(expect.arrayContaining(['x/f', 'x/y/g']));
         });
       });
     });

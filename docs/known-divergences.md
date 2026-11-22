@@ -177,13 +177,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
   git status: fatal: bad boolean config value 'bogus' for 'core.ignorecase'     tsgit status() succeeds
   ```
 
-- **32.64** Non-cone `/*` and `!/*/` mis-match, so checkout drops and deletes top-level files — pre-existing, pinned against git 2.56.0. Local `core.sparseCheckout = true`, no cone key. With `/*\n!/*/\n/b/\n`, git keeps `H top` with `top` on disk, tsgit marks `S top` and deletes it; with `/*` alone git keeps everything `H`, tsgit marks every path inside a directory `S` (`src/domain/sparse/parse-sparse-checkout.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.32; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
-  ```
-  pattern=/*\n!/*/\n/b/\n git: S a/f S a/g H b/f H top | tsgit: S a/f S a/g H b/f S top
-  pattern=/*\n            git: H a/f H a/g H b/f H top | tsgit: S a/f S a/g S b/f H top
-  pattern=/*\n (unborn HEAD, target dir/x g, checkout side) git: H dir/x H g | tsgit: S dir/x H g
-  ```
-
 - **32.65** Checkout clears a skip-worktree bit git keeps once sparse is off — pre-existing, pinned against git 2.56.0. Local cone sparse on `b`, `read-tree -mu HEAD`, then `core.sparseCheckout = false` (no `sparse-checkout disable`), then checkout `other` (changes `a/f`): git writes `a/f` and keeps its bit (`S a/f S a/g H b/f H top`); tsgit gives `H a/f S a/g H b/f H top` (`src/application/commands/checkout.ts`). The disk matches; only the index bit differs. Not folded: out of scope.
   ```
   ls-files -t  git:   S a/f S a/g H b/f H top    disk: ./a/f ./b/f ./top
@@ -220,13 +213,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
   ic=true  git checkout side -> exit 0; ls-files: DIR, dir/x; status: AD DIR; disk: dir/
   ic=true  tsgit checkout({rev:'side'}) -> {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":[],"untracked":["dir"]}; disk: DIR
   ic=false both refuse (git: untracked working tree files would be overwritten: dir)
-  ```
-
-- **32.77** A non-cone directory-only pattern matches a file of that name, so checkout writes a file git skips — pinned against git 2.56.0, both `core.ignorecase` values. Local `core.sparseCheckout = true`, pattern file `/g\n/dir/\n`, target tree holds a file `dir`. git marks `S dir` and does not write it. tsgit marks `H dir` and writes it, because `buildSparseMatcher(...)('dir')` is true (`src/domain/sparse/index.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.41; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
-  ```
-  matcher('/g\n/dir/\n', non-cone): dir true | dir/a true | g true | other false
-  git checkout side   -> ls-files -t: S dir H g   disk: g
-  tsgit checkout      -> ls-files -t: H dir H g   disk: dir g
   ```
 
 - **32.78** `checkout` `createBranch` does not expand `@{-N}` — pinned against git 2.56.0. git expands `@{-1}` in a new branch name: `checkout -b '@{-1}'` recreates a deleted previous branch, and `-B '@{-1}'` resets it. tsgit passes the name to `newBranchRef` unexpanded (`src/application/commands/checkout.ts`, `assertBranchCreatable`) and refuses `INVALID_REF`. Not folded: out of scope.

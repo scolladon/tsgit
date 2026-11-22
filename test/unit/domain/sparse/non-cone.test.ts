@@ -21,13 +21,13 @@ describe('compileSparseRule with caseFold', () => {
   };
 
   describe('Given "/b/"', () => {
-    describe('When tested against "B/f"', () => {
+    describe('When tested against "B"', () => {
       it('Then it matches', () => {
         // Arrange
         const sut = compileSparseRule;
 
         // Act
-        const result = sut(tokenized('/b/'), '/b/', { caseFold: true }).matcher.test('B/f');
+        const result = sut(tokenized('/b/'), '/b/', { caseFold: true }).matcher.test('B');
 
         // Assert
         expect(result).toBe(true);
@@ -55,27 +55,28 @@ describe('compileSparseRule with caseFold', () => {
 describe('compileSparseRule', () => {
   describe('Given "/src/"', () => {
     describe('When compiled', () => {
-      it('Then it covers "src" and every descendant', () => {
+      it('Then it judges "src" alone and is directory-only', () => {
         // Arrange / Act
         const result = rule('/src/');
 
         // Assert
         expect(result.matcher.test('src')).toBe(true);
-        expect(result.matcher.test('src/main.c')).toBe(true);
-        expect(result.matcher.test('src/a/b/c.ts')).toBe(true);
+        expect(result.matcher.test('src/main.c')).toBe(false);
+        expect(result.directoryOnly).toBe(true);
       });
     });
   });
 
   describe('Given "/src" (no wildcard)', () => {
     describe('When compiled', () => {
-      it('Then it covers "src" and every descendant', () => {
+      it('Then it judges "src" alone and is not directory-only', () => {
         // Arrange / Act
         const result = rule('/src');
 
         // Assert
         expect(result.matcher.test('src')).toBe(true);
-        expect(result.matcher.test('src/main.c')).toBe(true);
+        expect(result.matcher.test('src/main.c')).toBe(false);
+        expect(result.directoryOnly).toBe(false);
       });
     });
   });
@@ -109,14 +110,14 @@ describe('compileSparseRule', () => {
 
   describe('Given "build"', () => {
     describe('When compiled', () => {
-      it('Then it covers any build subtree at any depth', () => {
+      it('Then it judges a "build" component at any depth, not its descendants', () => {
         // Arrange / Act
         const result = rule('build');
 
         // Assert
         expect(result.matcher.test('build')).toBe(true);
-        expect(result.matcher.test('build/out.o')).toBe(true);
-        expect(result.matcher.test('pkg/build/out.o')).toBe(true);
+        expect(result.matcher.test('pkg/build')).toBe(true);
+        expect(result.matcher.test('build/out.o')).toBe(false);
       });
     });
   });
@@ -139,8 +140,8 @@ describe('compileSparseRule', () => {
 
   describe('Given a "?"-wildcard last segment', () => {
     describe('When compiled', () => {
-      it('Then it is non-recursive', () => {
-        // Arrange — `?` is a glob metacharacter, so the rule does not cover descendants.
+      it('Then it judges only the matching component', () => {
+        // Arrange
         const result = rule('/src/a?c');
 
         // Assert
@@ -152,14 +153,14 @@ describe('compileSparseRule', () => {
 
   describe('Given a directory-only rule with a wildcard last segment', () => {
     describe('When compiled', () => {
-      it('Then directoryOnly alone makes it recursive', () => {
-        // Arrange — `/src*/` has a glob (`*`) last segment, so the only reason it
-        // covers descendants is the trailing-slash directory-only flag.
+      it('Then the trailing slash sets directoryOnly and the glob judges one level', () => {
+        // Arrange
         const result = rule('/src*/');
 
         // Assert
+        expect(result.directoryOnly).toBe(true);
         expect(result.matcher.test('src-app')).toBe(true);
-        expect(result.matcher.test('src-app/deep/file.ts')).toBe(true);
+        expect(result.matcher.test('src-app/deep/file.ts')).toBe(false);
       });
     });
   });
@@ -285,6 +286,143 @@ describe('nonConeMatcher directory inheritance', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+});
+
+describe('nonConeMatcher level-by-level verdicts', () => {
+  // Every row is the verdict of `git read-tree -mu HEAD` followed by
+  // `git -c sparse.expectFilesOutsideOfPatterns=true ls-files -t` on git 2.56:
+  // `true` is an `H` (in the sparse set), `false` an `S` (skip-worktree).
+  describe.each([
+    { lines: ['/a/b/', '!/a/*'], filePath: 'a/b/f', expected: false },
+    { lines: ['/a/b/', '!/a/*'], filePath: 'a/x', expected: false },
+    { lines: ['a/'], filePath: 'b/a', expected: false },
+    { lines: ['sub/'], filePath: 'sub', expected: false },
+    { lines: ['sub/'], filePath: 'sub/f', expected: true },
+    { lines: ['sub/'], filePath: 'x/sub/f', expected: true },
+    { lines: ['a', '!a/'], filePath: 'x/a', expected: true },
+    { lines: ['/a', '!/a/*', '/a/k'], filePath: 'a/z/s', expected: false },
+    { lines: ['/a', '!/a/*', '/a/k'], filePath: 'a/k/q', expected: true },
+    { lines: ['*', '!x/'], filePath: 'x/f', expected: true },
+    { lines: ['*', '!x/'], filePath: 'x/y/g', expected: true },
+    { lines: ['*', '!x/'], filePath: 'top', expected: true },
+    { lines: ['/d0/', '!/d0/*'], filePath: 'd0/sub/y', expected: false },
+    { lines: ['/d0/', '!/d0/*'], filePath: 'd0/x', expected: false },
+    { lines: ['/*', '!/*/', '/b/'], filePath: 'top', expected: true },
+    { lines: ['/*', '!/*/', '/b/'], filePath: 'b/f', expected: true },
+    { lines: ['/*', '!/*/', '/b/'], filePath: 'c/f', expected: false },
+    { lines: ['/*', '!/a/', '/a/b/'], filePath: 'a/b/f', expected: true },
+    { lines: ['/*', '!/a/', '/a/b/'], filePath: 'a/f', expected: false },
+    { lines: ['/*', '!/a/', '/a/b/'], filePath: 'a/c/h', expected: false },
+    { lines: ['/d/*'], filePath: 'd/s/g', expected: true },
+    { lines: ['/d/*'], filePath: 'top', expected: false },
+    { lines: ['/a/**/c'], filePath: 'a/x/y/c', expected: true },
+    { lines: ['/a/**/c'], filePath: 'a/x/d', expected: false },
+    { lines: ['/a/**', '!/a/b/**'], filePath: 'a/b/c/h', expected: false },
+    { lines: ['/a/**', '!/a/b/**'], filePath: 'a/x/y', expected: true },
+    { lines: ['/*', '!/*/', '/a/', '!/a/b/', '/a/b/c/'], filePath: 'a/b/c/d/h', expected: true },
+    { lines: ['/*', '!/*/', '/a/', '!/a/b/', '/a/b/c/'], filePath: 'a/b/f', expected: false },
+    { lines: ['/*', '!/*/', '/a/', '!/a/b/', '/a/b/c/'], filePath: 'z/q', expected: false },
+    { lines: ['/*', '!/a/', '/a/keep'], filePath: 'a/keep', expected: true },
+    { lines: ['/*', '!/a/', '/a/keep'], filePath: 'a/q/r', expected: false },
+    { lines: ['b', '!a/b/c'], filePath: 'a/b/c', expected: false },
+    { lines: ['b', '!a/b/c'], filePath: 'a/b/d', expected: true },
+    { lines: ['/a/', '!/a/b'], filePath: 'a/b', expected: false },
+    { lines: ['/a/', '!/a/b'], filePath: 'a/b/d', expected: false },
+    { lines: ['/a/', '!/a/b'], filePath: 'a/x/y', expected: true },
+    { lines: ['/d0/', '!/d0/sub/', '/d0/sub/keep'], filePath: 'd0/sub/keep', expected: true },
+    { lines: ['/d0/', '!/d0/sub/', '/d0/sub/keep'], filePath: 'd0/sub/keep/z', expected: true },
+    { lines: ['/d0/', '!/d0/sub/', '/d0/sub/keep'], filePath: 'd0/sub/y', expected: false },
+    { lines: ['/*', '!/d0/', '/d0/keep/'], filePath: 'd0/keep/g', expected: true },
+    { lines: ['/*', '!/d0/', '/d0/keep/'], filePath: 'd0/x/y', expected: false },
+    { lines: ['/*'], filePath: 'a/f', expected: true },
+    { lines: ['/*'], filePath: 'top', expected: true },
+    { lines: ['/g', '/dir/'], filePath: 'dir', expected: false },
+    { lines: ['/g', '/dir/'], filePath: 'dir/a', expected: true },
+    { lines: ['/g', '/dir/'], filePath: 'g', expected: true },
+    { lines: ['/g', '/dir/'], filePath: 'other', expected: false },
+    { lines: ['/src/*', '!/src/f'], filePath: 'src/f', expected: false },
+    { lines: ['/src/*', '!/src/f'], filePath: 'src/d/f', expected: true },
+  ])('Given $lines', ({ lines, filePath, expected }) => {
+    describe(`When tested against ${filePath}`, () => {
+      it(`Then it is ${expected ? 'in' : 'out of'} the sparse set`, () => {
+        // Arrange
+        const sut = nonConeMatcher(lines.map(rule));
+
+        // Act
+        const result = sut(path(filePath));
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('nonConeMatcher cost', () => {
+  const countingRules = (): { rules: SparseRule[]; evaluations: () => number } => {
+    let evaluations = 0;
+    const counting = (source: string): SparseRule => ({
+      source,
+      negated: false,
+      directoryOnly: false,
+      matcher: {
+        test: () => {
+          evaluations++;
+          return false;
+        },
+      },
+    });
+    return { rules: [counting('x'), counting('y'), counting('z')], evaluations: () => evaluations };
+  };
+  const deep = `${'d/'.repeat(150)}`;
+
+  describe('Given a path 150 directories deep whose levels no rule decides', () => {
+    describe('When a sibling of an already judged path is judged', () => {
+      it('Then only the leaf is evaluated against the rules', () => {
+        // Arrange
+        const { rules, evaluations } = countingRules();
+        const sut = nonConeMatcher(rules);
+        sut(path(`${deep}first`));
+        const before = evaluations();
+
+        // Act
+        sut(path(`${deep}second`));
+
+        // Assert
+        expect(evaluations() - before).toBe(rules.length);
+      });
+    });
+
+    describe('When the path is judged first', () => {
+      it('Then each level is evaluated once', () => {
+        // Arrange
+        const { rules, evaluations } = countingRules();
+        const sut = nonConeMatcher(rules);
+
+        // Act
+        sut(path(`${deep}first`));
+
+        // Assert
+        expect(evaluations()).toBe(rules.length * 151);
+      });
+    });
+
+    describe('When a deeper directory under the judged chain is judged', () => {
+      it('Then only the new levels are evaluated', () => {
+        // Arrange
+        const { rules, evaluations } = countingRules();
+        const sut = nonConeMatcher(rules);
+        sut(path(`${deep}first`));
+        const before = evaluations();
+
+        // Act
+        sut(path(`${deep}e/second`));
+
+        // Assert
+        expect(evaluations() - before).toBe(rules.length * 2);
       });
     });
   });
