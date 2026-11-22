@@ -57,6 +57,14 @@ const symlinkOverDirectory = async (repo: string): Promise<void> => {
   await symlink('t', path.join(repo, 'd'));
 };
 
+/** Cone "b", an untracked "a/new" that "a/.gitignore" lists, and an untracked "a/other". */
+const ignoredOutsideCone = async (repo: string): Promise<void> => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  await writeFiles(repo, { 'a/f': 'f\n', 'b/f': 'b\n' });
+  commitAll(repo, ['b']);
+  await writeFiles(repo, { 'a/new': 'n\n', 'a/other': 'o\n', 'a/.gitignore': 'new\n' });
+};
+
 const diskOf = async (repo: string): Promise<string[]> =>
   (await readdir(repo, { recursive: true })).filter((name) => !name.startsWith('.git')).sort();
 
@@ -103,6 +111,36 @@ const ROWS: ReadonlyArray<Row> = [
     seed: symlinkOverDirectory,
     flags: ['-A'],
     spec: [],
+  },
+  {
+    label: 'an ignored out-of-pattern file by name',
+    seed: ignoredOutsideCone,
+    flags: [],
+    spec: ['a/new'],
+  },
+  {
+    label: 'an ignored out-of-pattern file by name beside a glob',
+    seed: ignoredOutsideCone,
+    flags: [],
+    spec: ['a/new', 'b/*'],
+  },
+  {
+    label: 'its directory holding an ignored and an out-of-pattern file',
+    seed: ignoredOutsideCone,
+    flags: [],
+    spec: ['a'],
+  },
+  {
+    label: 'the whole tree holding an ignored and an out-of-pattern file',
+    seed: ignoredOutsideCone,
+    flags: ['-A'],
+    spec: [],
+  },
+  {
+    label: 'an out-of-pattern file by name',
+    seed: ignoredOutsideCone,
+    flags: [],
+    spec: ['a/other'],
   },
 ];
 

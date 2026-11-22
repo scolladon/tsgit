@@ -344,7 +344,10 @@ interface IgnoreContext {
   readonly repositories: EmbeddedRepositories;
 }
 
-/** git reports a sparse literal first; the ignore verdict only concerns the literals left. */
+/**
+ * git reports a tracked sparse literal first, then the ignored untracked ones; only what no
+ * rule hides is checked against the sparse patterns, as git's walk does for its entries.
+ */
 const splitReportedLiterals = async (
   resolved: CommandPathspec,
   entries: ReadonlyMap<IndexPathKey, IndexEntry>,
@@ -355,26 +358,21 @@ const splitReportedLiterals = async (
   readonly ignored: ReadonlyArray<FilePath>;
   readonly stageable: ResolvedPathspec;
 }> => {
-  const {
-    sparse,
-    untracked,
-    stageable: unfiltered,
-  } = splitSparseLiterals(resolved, entries, exclusion);
-  const { ignored, stageable } = await splitIgnoredLiterals(
+  const { sparse, stageable: unfiltered } = splitSparseLiterals(resolved, entries, exclusion);
+  const { ignored, stageable: visible } = await splitIgnoredLiterals(
     unfiltered,
     entries,
     repoIgnore,
     repositories,
   );
+  const { untracked, stageable } = splitUntrackedOutside(visible, entries, exclusion);
   return { sparse: [...sparse.map(({ spelling }) => spelling), ...untracked], ignored, stageable };
 };
 
 /**
- * git leaves an excluded entry alone and reports the literal that names it; an
- * untracked literal outside the sparse patterns is reported by its path, after
- * those, as the walk reports it. Only the entry's own path counts: a literal
- * naming a symlink that replaced a directory is staged, and the excluded
- * entries beneath it just go.
+ * git leaves an excluded entry alone and reports the literal that names it. Only the
+ * entry's own path counts: a literal naming a symlink that replaced a directory is
+ * staged, and the excluded entries beneath it just go.
  */
 const splitSparseLiterals = (
   resolved: CommandPathspec,
@@ -382,25 +380,29 @@ const splitSparseLiterals = (
   exclusion: SparseExclusion,
 ): {
   readonly sparse: ReadonlyArray<PositivePathspec>;
-  readonly untracked: ReadonlyArray<FilePath>;
   readonly stageable: ResolvedPathspec;
 } => {
-  const entryNamedBy = ({ entry }: PositivePathspec) =>
-    entries.get(keyOfPath(entry.body as FilePath));
-  const namesExcluded = (positive: PositivePathspec): boolean => {
-    const named = entryNamedBy(positive);
+  const namesExcluded = ({ entry }: PositivePathspec): boolean => {
+    const named = entries.get(keyOfPath(entry.body as FilePath));
     return named !== undefined && exclusion.excludes(named);
   };
-  const namesUntrackedOutside = (positive: PositivePathspec): boolean =>
-    entryNamedBy(positive) === undefined && exclusion.outside(positive.entry.body as FilePath);
   const sparse = resolved.positives.filter(namesExcluded);
-  const untracked = resolved.positives
-    .filter(namesUntrackedOutside)
-    .map(({ entry }) => entry.body as FilePath)
-    .sort(comparePaths);
-  const reported = new Set<string>([...sparse.map(({ entry }) => entry.body), ...untracked]);
+  const reported = new Set<string>(sparse.map(({ entry }) => entry.body));
   const literalMustMatch = resolved.literalMustMatch.filter((body) => !reported.has(body));
-  return { sparse, untracked, stageable: { ...resolved, literalMustMatch } };
+  return { sparse, stageable: { ...resolved, literalMustMatch } };
+};
+
+/** An untracked literal outside the sparse patterns is reported by its path, after the tracked ones, as the walk reports it. */
+const splitUntrackedOutside = (
+  resolved: ResolvedPathspec,
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  exclusion: SparseExclusion,
+): { readonly untracked: ReadonlyArray<FilePath>; readonly stageable: ResolvedPathspec } => {
+  const namesUntrackedOutside = (body: FilePath): boolean =>
+    !entries.has(keyOfPath(body)) && exclusion.outside(body);
+  const untracked = resolved.literalMustMatch.filter(namesUntrackedOutside).sort(comparePaths);
+  const literalMustMatch = resolved.literalMustMatch.filter((body) => !untracked.includes(body));
+  return { untracked, stageable: { ...resolved, literalMustMatch } };
 };
 
 /**
@@ -1093,12 +1095,22 @@ const splitWalkBySparse = (
   const kept: WalkWorkingTreeEntry[] = [];
   const outside: FilePath[] = [];
   for (const walkEntry of walked) {
-    const tracked = existing.get(keyOfPath(walkEntry.path));
-    if (tracked !== undefined ? exclusion.excludes(tracked) : exclusion.outside(walkEntry.path)) {
-      if (tracked === undefined) outside.push(walkEntry.path);
-    } else kept.push(walkEntry);
+    const placement = placementOf(walkEntry, existing, exclusion);
+    if (placement === 'kept') kept.push(walkEntry);
+    else if (placement === 'outside') outside.push(walkEntry.path);
   }
   return { kept, outside };
+};
+
+/** Where a walked entry goes: staged, reported as untracked and outside the patterns, or left alone with its tracked entry. */
+const placementOf = (
+  { path }: WalkWorkingTreeEntry,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  exclusion: SparseExclusion,
+): 'kept' | 'outside' | 'excluded' => {
+  const tracked = existing.get(keyOfPath(path));
+  if (tracked !== undefined) return exclusion.excludes(tracked) ? 'excluded' : 'kept';
+  return exclusion.outside(path) ? 'outside' : 'kept';
 };
 
 const skipWorktreeOf = (
