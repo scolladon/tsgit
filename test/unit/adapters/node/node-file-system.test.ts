@@ -2460,6 +2460,31 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
     });
   });
 
+  describe('Given a sync policy whose turn budget has room and a missing path', () => {
+    describe('When the synchronous presence probe is asked', () => {
+      it('Then it answers false from a lookup that returned undefined instead of throwing', async () => {
+        // Arrange
+        const ops = { ...realSyncFsOps };
+        const lstatSync = vi.spyOn(ops, 'lstatSync');
+        const budget = { ...createTurnBudget(1), admit: () => undefined };
+        const { rootDir, sut } = await withResolvedRoot(() => ({
+          syncIo: { ops, budget, maxSyncReadBytes: 1 },
+        }));
+        lstatSync.mockClear();
+
+        // Act
+        const result = sut.lstatReachableSync?.(`${rootDir}/missing`);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(lstatSync).toHaveBeenCalledTimes(1);
+        expect(lstatSync.mock.calls[0]?.[1]).toEqual({ throwIfNoEntry: false });
+        expect(lstatSync.mock.results[0]).toEqual({ type: 'return', value: undefined });
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+
   describe('Given a sync policy whose turn budget has room', () => {
     describe('When the synchronous presence probe is asked 17 times in a row', () => {
       it('Then the budget is consulted on the first and the seventeenth probe only', async () => {
