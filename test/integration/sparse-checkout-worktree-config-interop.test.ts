@@ -53,7 +53,11 @@ const tagView = async (repo: Repository): Promise<string> =>
   (await readIndex(repo.ctx)).entries
     .map((e) => `${e.flags.skipWorktree ? 'S' : 'H'} ${e.path}\n`)
     .join('');
+// Reader parity: tsgit's read view against git's own read view, which clears present files.
 const gitTagView = (dir: string): string => runGit(['-C', dir, 'ls-files', '-t']);
+// Twin comparison: the stored bits, which git's own read would clear on a present file.
+const storedTagView = (dir: string): string =>
+  runGit(['-C', dir, '-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t']);
 
 const writeConeFile = (dir: string): void => {
   mkdirSync(join(dir, '.git', 'info'), { recursive: true });
@@ -827,8 +831,9 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
           runGit(['-C', pair.ours, 'checkout', '-q', 'other']);
 
           // Assert
-          expect(gitTagView(pair.ours)).toBe(gitTagView(pair.peer));
-          expect(gitTagView(pair.ours)).toBe('S a/f\nS a/g\nH b/f\nH top\n');
+          expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
+          expect(storedTagView(pair.ours)).toBe('S a/f\nS a/g\nH b/f\nH top\n');
         });
       });
     });
@@ -852,7 +857,8 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
           expect(listOurs.stderr).toBe(listPeer.stderr);
           runGit(['-C', pair.peer, 'checkout', '-q', 'other']);
           runGit(['-C', pair.ours, 'checkout', '-q', 'other']);
-          expect(gitTagView(pair.ours)).toBe(gitTagView(pair.peer));
+          expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
+          expect(listing(pair.ours)).toEqual(listing(pair.peer));
         });
       });
     });

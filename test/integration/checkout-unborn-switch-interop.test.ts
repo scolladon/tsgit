@@ -157,7 +157,8 @@ const stateOfOne = async (dir: string): Promise<ReadonlyArray<string>> => [
   headOf(dir),
   probe(dir, ['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads']),
   probe(dir, ['ls-files', '-s']),
-  probe(dir, ['ls-files', '-t']),
+  // git clears the bit of a present file on read unless told to expect files outside the patterns.
+  probe(dir, ['-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t']),
   probe(dir, ['status', '--porcelain', '--untracked-files=all']),
   await headLogOf(dir),
   probe(dir, ['config', '--get-regexp', '^branch\\.']),

@@ -825,7 +825,8 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
 
     const stateOf = (dir: string, names: ReadonlyArray<string>): RenormalizeState => ({
       stage: lsStage(dir),
-      tags: git(dir, 'ls-files', '-t'),
+      // git clears the bit of a present file on read unless told to expect files outside the patterns.
+      tags: git(dir, '-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t'),
       objects: looseObjectIds(dir),
       worktree: Object.fromEntries(
         names.map((name) => [name, readFileSync(path.join(dir, name)).toString('latin1')]),

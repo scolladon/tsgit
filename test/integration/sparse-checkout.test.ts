@@ -377,6 +377,7 @@ describe.skipIf(GIT === undefined)(
 
           // Act — narrow the cone so `out/gone.ts` becomes skip-worktree.
           await repo.sparseCheckout.set({ patterns: ['kept.ts'], cone: true });
+          // Single repo whose subject is git's own read view: stock config on purpose.
           const lsFiles = runGit(['-C', tmpdir, 'ls-files', '-t']);
 
           // Assert — canonical git surfaces the skip-worktree bit as the `S` tag.
