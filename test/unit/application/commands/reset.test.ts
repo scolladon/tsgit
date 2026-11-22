@@ -816,6 +816,37 @@ describe('reset — sparse checkout', () => {
     });
   });
 
+  describe('Given a path the index did not hold, now a directory on disk, under a rule excluding that directory', () => {
+    describe('When reset --mixed runs', () => {
+      it('Then the path is judged a directory and rebuilt skip-worktree', async () => {
+        // Arrange
+        const { updateCoreConfig } = await import(
+          '../../../../src/application/primitives/update-config.js'
+        );
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 't');
+        await add(ctx, ['top']);
+        const first = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '*\n!top/\n');
+        await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([], 'update');
+        await lock.release();
+        await ctx.fs.rm(`${ctx.layout.workDir}/top`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top/y`, 'y');
+        const sut = reset;
+
+        // Act
+        await sut(ctx, { mode: 'mixed', rev: first.id });
+
+        // Assert
+        const entries = (await readRawIndex(ctx)).entries;
+        expect(entries.map((e) => [e.path, e.flags.skipWorktree])).toEqual([['top', true]]);
+      });
+    });
+  });
+
   describe('Given sparse on and an out-of-pattern entry without the bit', () => {
     describe('When reset --mixed to HEAD runs', () => {
       it('Then the entry stays without the bit', async () => {
