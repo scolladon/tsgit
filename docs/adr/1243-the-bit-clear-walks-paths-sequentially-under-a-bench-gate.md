@@ -5,7 +5,12 @@ subjects:
 ---
 # 1243 — The bit clear walks paths sequentially under a bench gate
 
-- **Status:** accepted
+> **Superseded by [ADR-1247](1247-the-bit-clear-probes-presence-synchronously-under-a-floor-relative-gate.md)**
+> for the walk and the gate: presence is probed synchronously where the adapter can, and the
+> present-directories row is gated against one bare `lstat` per probed entry. The missing-directory
+> cache and git's probe count are carried forward.
+
+- **Status:** superseded by ADR-1247
 - **Date:** 2026-11-20
 - **Design:** docs/design/skip-worktree-present-files.md (D-H, R3) · **Supersedes/Refines:** applies ADR-226
 
