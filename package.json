@@ -1378,7 +1378,7 @@
     "@types/node": "26.6.6",
     "@vitest/coverage-v8": "4.1.11",
     "cspell": "10.5.2",
-    "dependency-cruiser": "18.8.0",
+    "dependency-cruiser": "18.9.0",
     "fast-check": "4.11.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.44.18",
