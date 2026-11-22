@@ -15,6 +15,8 @@ const probeOver = (existing: ReadonlyArray<string>) => {
 };
 
 describe('presentPaths', () => {
+  const sut = presentPaths;
+
   describe('Given an absent top-level directory', () => {
     describe('When later siblings sit under it', () => {
       it('Then they are skipped without a probe', async () => {
@@ -22,7 +24,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver([]);
 
         // Act
-        const result = await presentPaths(['d/a', 'd/b', 'd/c'], probe);
+        const result = await sut(['d/a', 'd/b', 'd/c'], probe);
 
         // Assert
         expect([...result]).toEqual([]);
@@ -38,7 +40,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver(['a/']);
 
         // Act
-        const result = await presentPaths(['a/b/x', 'a/b/y'], probe);
+        const result = await sut(['a/b/x', 'a/b/y'], probe);
 
         // Assert
         expect([...result]).toEqual([]);
@@ -54,7 +56,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver(['a/', 'a/b/']);
 
         // Act
-        const result = await presentPaths(['a/b/leaf', 'a/b/leaf/inner'], probe);
+        const result = await sut(['a/b/leaf', 'a/b/leaf/inner'], probe);
 
         // Assert
         expect([...result]).toEqual([]);
@@ -70,7 +72,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver(['a/', 'a/ok']);
 
         // Act
-        const result = await presentPaths(['a/m/x', 'a/ok', 'a/n/y'], probe);
+        const result = await sut(['a/m/x', 'a/ok', 'a/n/y'], probe);
 
         // Assert
         expect([...result]).toEqual(['a/ok']);
@@ -86,7 +88,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver(['d']);
 
         // Act
-        const result = await presentPaths(['d/a', 'd'], probe);
+        const result = await sut(['d/a', 'd'], probe);
 
         // Assert
         expect([...result]).toEqual(['d']);
@@ -102,7 +104,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver(['a/x', 'a/y']);
 
         // Act
-        const result = await presentPaths(['a/x', 'a/y'], probe);
+        const result = await sut(['a/x', 'a/y'], probe);
 
         // Assert
         expect([...result]).toEqual(['a/x', 'a/y']);
@@ -118,7 +120,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver(['a/']);
 
         // Act
-        const result = await presentPaths(['a/f', 'a/f/z'], probe);
+        const result = await sut(['a/f', 'a/f/z'], probe);
 
         // Assert
         expect([...result]).toEqual([]);
@@ -134,7 +136,7 @@ describe('presentPaths', () => {
         const { probe, calls } = probeOver([]);
 
         // Act
-        const result = await presentPaths([], probe);
+        const result = await sut([], probe);
 
         // Assert
         expect(result.size).toBe(0);
@@ -145,6 +147,8 @@ describe('presentPaths', () => {
 });
 
 describe('commonDirectoryPrefix', () => {
+  const sut = commonDirectoryPrefix;
+
   describe.each([
     ['a/b/c', 'a/b/d', 4],
     ['a/x', 'b/x', 0],
@@ -156,7 +160,7 @@ describe('commonDirectoryPrefix', () => {
     describe('When computing the prefix', () => {
       it(`Then it is ${expected}`, () => {
         // Arrange / Act
-        const result = commonDirectoryPrefix(a, b);
+        const result = sut(a, b);
 
         // Assert
         expect(result).toBe(expected);
