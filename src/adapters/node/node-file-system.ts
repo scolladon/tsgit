@@ -1011,6 +1011,7 @@ export class NodeFileSystem implements FileSystem {
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
     this.syncIo = syncIo;
+    if (syncIo !== undefined) this.lstatReachableSync = (path) => this.reachableSync(syncIo, path);
     this.rootsArePreResolved = rootsArePreResolved;
     this.removeTreeConcurrency = removeTreeConcurrency;
   }
@@ -1399,15 +1400,16 @@ export class NodeFileSystem implements FileSystem {
    * One synchronous `lstat`: `true` when it succeeds, `false` for every refusal (a miss, a regular
    * file in the path, a permission or containment refusal) — absence is the defined answer, as for
    * `lstat` in a presence decision. `undefined` ("ask the async probe") until an async read has
-   * resolved the root set, since containment cannot be decided without it; under the `threadpool`
-   * opt-out, which allows no blocking call; and once the turn's sync budget is spent, so a long
-   * walk yields to the event loop instead of monopolizing it.
+   * resolved the root set, since containment cannot be decided without it, and once the turn's
+   * sync budget is spent, so a long walk yields to the event loop instead of monopolizing it.
+   * Under the `threadpool` opt-out, which allows no blocking call, the probe is not offered at all,
+   * so a caller can tell an adapter that never answers from one whose turn is merely spent.
    */
-  lstatReachableSync = (path: string): boolean | undefined => {
+  readonly lstatReachableSync?: (path: string) => boolean | undefined;
+
+  private readonly reachableSync = (sync: SyncIoPolicy, path: string): boolean | undefined => {
     const roots = this.resolvedRootSet;
-    const sync = this.syncIo;
-    if (roots === undefined || sync === undefined) return undefined;
-    if (!this.admitsSyncProbe(sync.budget)) return undefined;
+    if (roots === undefined || !this.admitsSyncProbe(sync.budget)) return undefined;
     try {
       const real = this.resolveRead(path, roots.all);
       return sync.ops.lstatSync(real, { throwIfNoEntry: false }) !== undefined;

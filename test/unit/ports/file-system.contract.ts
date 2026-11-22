@@ -43,8 +43,7 @@ export interface FileSystemContractEnv {
   readonly createBackdatedFile?: (path: string) => Promise<void>;
   /**
    * Declares an adapter configured to refuse blocking calls (the threadpool opt-out): its
-   * synchronous presence probe answers `undefined` for every path, sending the caller to the
-   * async probe.
+   * synchronous presence probe is not offered, so the caller takes the async probe.
    */
   readonly syncProbe?: 'declined';
 }
@@ -251,15 +250,12 @@ async function lstatIfReachable(fs: FileSystem, path: string): Promise<FileStat 
 }
 
 /**
- * Every adapter this suite runs against provides the optional synchronous presence probe. A root
- * set the adapter has not resolved yet answers `undefined`, so one async read settles it first.
+ * The optional synchronous presence probe, `undefined` for an adapter that declines to offer it. A
+ * root set the adapter has not resolved yet answers `undefined`, so one async read settles it first.
  */
 async function lstatReachableSync(fs: FileSystem, path: string): Promise<boolean | undefined> {
-  if (fs.lstatReachableSync === undefined) {
-    throw new Error('the adapter under contract provides no lstatReachableSync');
-  }
   await fs.exists(path).catch(() => false);
-  return fs.lstatReachableSync(path);
+  return fs.lstatReachableSync?.(path);
 }
 
 /** Every adapter this suite runs against provides the optional non-throwing UTF-8 read probe. */

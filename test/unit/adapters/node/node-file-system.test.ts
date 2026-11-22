@@ -2363,7 +2363,7 @@ describe('NodeFileSystem lstatReachableSync', () => {
         const sut = new NodeFileSystem(rootDir);
 
         // Act
-        const result = sut.lstatReachableSync(`${rootDir}/present`);
+        const result = sut.lstatReachableSync?.(`${rootDir}/present`);
 
         // Assert
         expect(result).toBeUndefined();
@@ -2388,12 +2388,12 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
 
   describe('Given the threadpool opt-out (no sync policy) and a resolved root set', () => {
     describe('When the synchronous presence probe is asked about a present file', () => {
-      it('Then it answers undefined and never touches the file system synchronously', async () => {
+      it('Then the adapter offers no synchronous probe at all', async () => {
         // Arrange
         const { rootDir, sut } = await withResolvedRoot(() => ({}));
 
         // Act
-        const result = sut.lstatReachableSync(`${rootDir}/present`);
+        const result = sut.lstatReachableSync;
 
         // Assert
         expect(result).toBeUndefined();
@@ -2417,7 +2417,7 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
         lstatSync.mockClear();
 
         // Act
-        const result = sut.lstatReachableSync(`${rootDir}/present`);
+        const result = sut.lstatReachableSync?.(`${rootDir}/present`);
 
         // Assert
         expect(result).toBeUndefined();
@@ -2442,7 +2442,7 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
         charge.mockClear();
 
         // Act
-        const result = sut.lstatReachableSync(`${rootDir}/present`);
+        const result = sut.lstatReachableSync?.(`${rootDir}/present`);
 
         // Assert
         expect(result).toBe(true);
@@ -2466,7 +2466,7 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
 
         // Act
         const answers = Array.from({ length: 17 }, () =>
-          sut.lstatReachableSync(`${rootDir}/present`),
+          sut.lstatReachableSync?.(`${rootDir}/present`),
         );
 
         // Assert

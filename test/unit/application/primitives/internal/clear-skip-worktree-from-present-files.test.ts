@@ -460,6 +460,47 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
     });
   });
 
+  describe('Given a synchronous probe whose turn budget is already spent when the walk starts', () => {
+    describe('When clearing 200 present files across several runs', () => {
+      it('Then only the cut first run is redone async and the walk resumes synchronously', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        const paths = Array.from({ length: 200 }, (_, i) => `d/f${String(i).padStart(3, '0')}`);
+        await Promise.all(paths.map((path) => place(base, path)));
+        const turn = { spent: true };
+        const asked = { sync: 0, async: 0 };
+        const fs = new Proxy(base.fs, {
+          get: (target, key) => {
+            if (key === 'lstatReachableSync') {
+              return () => {
+                if (turn.spent) return undefined;
+                asked.sync++;
+                return true;
+              };
+            }
+            if (key === 'lstatIfReachable') {
+              return (path: string) => {
+                asked.async++;
+                turn.spent = false;
+                return target.lstatIfReachable?.(path);
+              };
+            }
+            return Reflect.get(target, key);
+          },
+        });
+        const index = indexOf(...paths.map((path) => rowOf(path)));
+
+        // Act
+        const result = await sut({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result).every((flag) => !flag)).toBe(true);
+        expect(asked.async).toBe(64);
+        expect(asked.sync).toBe(136);
+      });
+    });
+  });
+
   describe('Given 130 files, spread over several runs, all beneath one missing directory', () => {
     describe('When clearing', () => {
       it('Then the missing directory is found once and no run asks again', async () => {
@@ -491,30 +532,19 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
     });
   });
 
-  describe('Given a synchronous probe that never answers', () => {
+  describe('Given a file system that never answers synchronously (no probe)', () => {
     describe('When clearing several runs of files', () => {
-      it('Then it is asked once and the async probe answers every path', async () => {
+      it('Then the async probe answers every path', async () => {
         // Arrange
         const base = await withConfig(SPARSE_ON);
         const paths = Array.from({ length: 130 }, (_, i) => `d/f${i}`);
         await Promise.all(paths.map((path) => place(base, path)));
-        let syncAsked = 0;
-        const fs = new Proxy(base.fs, {
-          get: (target, key) =>
-            key === 'lstatReachableSync'
-              ? () => {
-                  syncAsked++;
-                  return undefined;
-                }
-              : Reflect.get(target, key),
-        });
         const index = indexOf(...paths.map((path) => rowOf(path)));
 
         // Act
-        const result = await sut({ ...base, fs }, index);
+        const result = await sut({ ...base, fs: withoutSyncProbe(base.fs) }, index);
 
         // Assert
-        expect(syncAsked).toBe(1);
         expect(flagsOf(result).every((flag) => !flag)).toBe(true);
       });
     });

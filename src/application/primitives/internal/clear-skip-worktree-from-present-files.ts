@@ -80,7 +80,7 @@ interface RunOutcome extends SyncPass {
   readonly answerable: boolean;
 }
 
-/** One run in a synchronous pass; stops asking once a probe cannot answer (the turn's budget is spent, or the adapter never can). */
+/** One run in a synchronous pass; stops asking once a probe cannot answer (the turn's budget is spent, or the roots are not resolved yet). */
 const presentByRunSync = (
   probe: (path: string) => boolean | undefined,
   workDir: string,
@@ -104,9 +104,10 @@ const presentByRunSync = (
 /**
  * Synchronous while the adapter answers, run by run, a missing directory carried from one run to
  * the next. A run the adapter cannot finish is redone through the async probe, which waits for the
- * next turn, then the sync walk resumes: the event loop is never held past the adapter's budget.
- * An adapter answering nothing from the first run (the `threadpool` opt-out, roots not yet
- * resolved) takes the concurrent async walk throughout.
+ * next turn, then the sync walk resumes: the event loop is never held past the adapter's budget,
+ * and a turn already spent when the walk starts costs one run, not the whole walk. An adapter
+ * offering no synchronous probe (the `threadpool` opt-out) takes the concurrent async walk
+ * throughout.
  */
 const presentBySyncProbe = async (
   ctx: Context,
@@ -117,9 +118,8 @@ const presentBySyncProbe = async (
   if (probe === undefined) return presentByAsyncProbe(ctx, workDir, paths);
   const found: ReadonlySet<string>[] = [];
   let missing = '';
-  for (const [index, run] of runsOf(paths).entries()) {
+  for (const run of runsOf(paths)) {
     const outcome = presentByRunSync(probe, workDir, run, missing);
-    if (index === 0 && !outcome.answerable) return presentByAsyncProbe(ctx, workDir, paths);
     found.push(outcome.answerable ? outcome.present : await presentByAsyncProbe(ctx, workDir, run));
     missing = outcome.answerable ? outcome.missing : '';
   }
