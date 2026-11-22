@@ -186,11 +186,40 @@ const matchTokens = (
   return dp[0] === 1;
 };
 
+// A pattern's leading run of literal tokens: every match must carry it, so a
+// path that cannot is refused before any layer is built. Git's wildmatch
+// refuses on its literal prefix the same way; the table fill is the part that
+// costs, and a rule set of many literal-led patterns pays it once per rule.
+const literalPrefixOf = (tokens: ReadonlyArray<GlobToken>): string => {
+  let run = '';
+  for (const token of tokens) {
+    if (token.kind !== 'literal') break;
+    run += token.char;
+  }
+  return run;
+};
+
+// An unanchored pattern is `(.*/)?` then the body: the prefix starts the path or follows a `/`.
+const carriesPrefix = (prefix: string, anchored: boolean, path: string): boolean =>
+  anchored ? path.startsWith(prefix) : path.startsWith(prefix) || path.includes(`/${prefix}`);
+
+const matchesLiteral = (literal: string, anchored: boolean, path: string): boolean =>
+  path === literal || (!anchored && path.endsWith(`/${literal}`));
+
+const matcherFor = (tokens: ReadonlyArray<GlobToken>, options: CompileGlobOptions) => {
+  const prefix = literalPrefixOf(tokens);
+  if (prefix.length === tokens.length) {
+    return (path: string): boolean => matchesLiteral(prefix, options.anchored, path);
+  }
+  return (path: string): boolean =>
+    carriesPrefix(prefix, options.anchored, path) && matchTokens(tokens, options, path);
+};
+
 export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobMatcher => {
   if (options.caseFold !== true) {
-    const tokens = tokenize(pattern);
-    return { test: (path: string): boolean => matchTokens(tokens, options, path) };
+    const test = matcherFor(tokenize(pattern), options);
+    return { test };
   }
-  const folded = tokenize(asciiLower(pattern));
-  return { test: (path: string): boolean => matchTokens(folded, options, asciiLower(path)) };
+  const test = matcherFor(tokenize(asciiLower(pattern)), options);
+  return { test: (path: string): boolean => test(asciiLower(path)) };
 };
