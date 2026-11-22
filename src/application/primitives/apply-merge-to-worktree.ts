@@ -508,7 +508,7 @@ const materialiseConflict = async (
     refreshedIndex,
   }: { sparse: SparseMatcher | undefined; refreshedIndex: boolean },
 ): Promise<ApplyMergeResult> => {
-  const { judging: sparse, assumedDirectories } = await mergeGitlinkKinds(
+  const { judging: sparse, assumed } = await mergeGitlinkKinds(
     ctx,
     rawSparse,
     currentIndex.entries,
@@ -528,7 +528,7 @@ const materialiseConflict = async (
   );
   const retirement = await retireSparseMovers(
     ctx,
-    { currentIndex, conflicts: merged.conflicts, assumedDirectories },
+    { currentIndex, conflicts: merged.conflicts, assumed },
     rawSparse,
   );
   return {

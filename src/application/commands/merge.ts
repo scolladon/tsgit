@@ -114,7 +114,10 @@ import {
 } from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
-import { mergeGitlinkKinds } from '../primitives/internal/sparse-gitlink-kinds.js';
+import {
+  type AssumedKinds,
+  mergeGitlinkKinds,
+} from '../primitives/internal/sparse-gitlink-kinds.js';
 import {
   NOTHING_RETIRED,
   retireSparseMovers,
@@ -1593,7 +1596,7 @@ const persistOctopusConflict = async (
 interface ConflictStopKinds {
   readonly matcher: SparseMatcher | undefined;
   readonly rawMatcher: SparseMatcher | undefined;
-  readonly assumedDirectories: ReadonlyArray<FilePath>;
+  readonly assumed: AssumedKinds;
 }
 
 /** git refreshes the index before a merge, so a skip-worktree gitlink counts as a directory and any other is judged by what stands at its path. */
@@ -1602,27 +1605,21 @@ const loadConflictStopKinds = async (
   outcomes: ReadonlyArray<MergeOutcome>,
 ): Promise<ConflictStopKinds> => {
   const rawMatcher = await loadSparseMatcher(ctx);
-  if (rawMatcher === undefined) return { matcher: undefined, rawMatcher, assumedDirectories: [] };
+  if (rawMatcher === undefined) return { matcher: undefined, rawMatcher, assumed: {} };
   const { entries } = await readIndex(ctx);
-  const { judging, assumedDirectories } = await mergeGitlinkKinds(
-    ctx,
-    rawMatcher,
-    entries,
-    outcomes,
-    true,
-  );
-  return { matcher: judging, rawMatcher, assumedDirectories };
+  const { judging, assumed } = await mergeGitlinkKinds(ctx, rawMatcher, entries, outcomes, true);
+  return { matcher: judging, rawMatcher, assumed };
 };
 
 /** The index is read only when sparse is on: without a matcher nothing can retire. */
 const retireOnConflictStop = async (
   ctx: Context,
   conflicts: ReadonlyArray<MergeConflict>,
-  { rawMatcher, assumedDirectories }: ConflictStopKinds,
+  { rawMatcher, assumed }: ConflictStopKinds,
 ): Promise<SparseRetirement> => {
   if (rawMatcher === undefined) return NOTHING_RETIRED;
   const currentIndex = await readIndex(ctx);
-  return retireSparseMovers(ctx, { currentIndex, conflicts, assumedDirectories }, rawMatcher);
+  return retireSparseMovers(ctx, { currentIndex, conflicts, assumed }, rawMatcher);
 };
 
 type MergeTreeResult =

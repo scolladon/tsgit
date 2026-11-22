@@ -18,7 +18,7 @@ import { removeGitlinkDirectory } from '../apply-changeset.js';
 import { joinPath } from './join-working-tree-path.js';
 import { pruneEmptiedDirectories, type SurvivingDirectories } from './prune-emptied-directories.js';
 import { requireWorkTree } from './repo-state.js';
-import { withGitlinkKinds } from './sparse-gitlink-kinds.js';
+import { type AssumedKinds, withGitlinkKinds } from './sparse-gitlink-kinds.js';
 import { notUpToDate, warnLeftDespiteSparse } from './sparse-left-dirty.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
 import { removeWorkingTreeFile } from './write-working-tree-file.js';
@@ -39,8 +39,8 @@ export const NOTHING_RETIRED: SparseRetirement = { retired: new Set(), leftDirty
 interface RetirementScope {
   readonly currentIndex: GitIndex;
   readonly conflicts: ReadonlyArray<MergeConflict>;
-  /** Gitlinks judged a directory whatever stands at their path. */
-  readonly assumedDirectories?: ReadonlyArray<FilePath>;
+  /** What git took as up to date before looking at the work tree. */
+  readonly assumed?: AssumedKinds;
 }
 
 /** A conflicted path is always written, so it never retires. */
@@ -104,7 +104,7 @@ export const retireSparseMovers = async (
     'merge',
     sparse,
     [scope.currentIndex.entries],
-    scope.assumedDirectories,
+    scope.assumed,
   );
   const candidates = await reachableCandidates(ctx, moverCandidates(scope, judging));
   const leftDirty = await notUpToDate(ctx, workdir, candidates, scope.currentIndex.indexMtime);

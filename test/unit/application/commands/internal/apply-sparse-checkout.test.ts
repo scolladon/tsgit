@@ -515,6 +515,26 @@ describe('commands/internal/apply-sparse-checkout', () => {
     });
   });
 
+  describe('Given an excluded entry whose path now holds a directory', () => {
+    describe('When applySparseCheckout narrows', () => {
+      it('Then the entry is retained and the directory is left', async () => {
+        // Arrange — git finds a directory where a file is tracked never up to date and keeps it.
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [makeEntry('docs/b', await writeBlob(ctx, 'bbb'))]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/docs/b`);
+        await seedWorkFile(ctx, 'docs/b/inner', 'x');
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: ['docs/b'] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b/inner`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given an excluded entry whose file is already absent', () => {
     describe('When applySparseCheckout narrows', () => {
       it('Then it is a noop and the bit is set', async () => {

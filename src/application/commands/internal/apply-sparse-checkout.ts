@@ -73,12 +73,19 @@ interface Partitioned {
 const isIncluded = (matcher: SparseMatcher | undefined, entry: IndexEntry): boolean =>
   matcher === undefined ? true : matcher(escapedPathOf(entry));
 
-/** A gitlink is never compared with its directory's content: git removes it by `rmdir`, so a populated one stays. */
+/**
+ * A gitlink is never compared with its directory's content: git removes it by `rmdir`, so a populated one stays.
+ * A directory standing where a file is tracked is never up to date, so the file is kept as a local change.
+ */
 const isDirtyEntry = async (
   isDirty: ReturnType<typeof createWorkingTreeDirtyCheck>,
   absPath: string,
   entry: IndexEntry,
-): Promise<boolean> => entry.mode !== FILE_MODE.GITLINK && isDirty(absPath, entry.id);
+  stat: { readonly isDirectory: boolean },
+): Promise<boolean> => {
+  if (entry.mode === FILE_MODE.GITLINK) return false;
+  return stat.isDirectory || isDirty(absPath, entry.id);
+};
 
 /** `path`, plus `pathBytes` only for a lossy entry — a lossy entry never aliases its UTF-8 twin. */
 const changesetPathOf = (entry: IndexEntry): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({
@@ -112,8 +119,9 @@ const partition = async (
       continue;
     }
     const absPath = joinPath(workdir, entry.path);
-    const present = (await lstatIfReachable(ctx.fs, absPath)) !== undefined;
-    const dirty = present ? await isDirtyEntry(isDirty, absPath, entry) : false;
+    const stat = await lstatIfReachable(ctx.fs, absPath);
+    const present = stat !== undefined;
+    const dirty = stat === undefined ? false : await isDirtyEntry(isDirty, absPath, entry, stat);
     if (dirty && opts.force !== true) retained.push(entry);
     else removable.push({ entry, present });
   }

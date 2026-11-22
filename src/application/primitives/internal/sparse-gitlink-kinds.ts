@@ -15,29 +15,48 @@ export interface KindCandidate {
   readonly pathBytes?: Uint8Array;
 }
 
-/** The skip-worktree gitlinks among `entries`: a switch refreshes the index first, which marks them up to date, and an up-to-date gitlink is a directory. */
-export const skippedGitlinkPaths = (
+/** What git decided before it looked at the work tree: a refreshed index marks each skip-worktree entry up to date. */
+export interface AssumedKinds {
+  /** Up-to-date gitlinks: directories whatever stands at their path. */
+  readonly directories?: ReadonlyArray<FilePath>;
+  /** Up-to-date files: never probed, a directory at their path does not make them directories. */
+  readonly files?: ReadonlyArray<FilePath>;
+}
+
+/** The skip-worktree entries among `entries`, which a refresh marks up to date: gitlinks are directories, anything else a file. */
+export const upToDateKinds = (
   entries: ReadonlyArray<KindCandidate & { readonly flags: { readonly skipWorktree: boolean } }>,
-): ReadonlyArray<FilePath> =>
-  entries
-    .filter((e) => e.mode === FILE_MODE.GITLINK && e.flags.skipWorktree && !isLossy(e))
-    .map((e) => e.path);
+): AssumedKinds => {
+  const skipped = entries.filter((e) => e.flags.skipWorktree && !isLossy(e));
+  const isGitlink = (e: KindCandidate): boolean => e.mode === FILE_MODE.GITLINK;
+  return {
+    directories: skipped.filter(isGitlink).map((e) => e.path),
+    files: skipped.filter((e) => !isGitlink(e)).map((e) => e.path),
+  };
+};
+
+/** Whether a directory-only rule could tell the path's two kinds apart: only then does what stands there matter. */
+const kindMatters = (sparse: SparseMatcher, path: FilePath): boolean =>
+  sparse(path, 'directory') !== sparse(path, 'file');
 
 /**
  * git cannot read the kind of an index entry from its mode, so it asks the index (an up-to-date
- * gitlink is a directory) and then the work tree: a directory standing at its path makes the
- * gitlink a directory, which is what a directory-only pattern judges. A lossy path is never
- * probed — its decoded name is another file.
+ * entry keeps its mode's kind) and then the work tree: a directory standing at the path of an
+ * entry makes it a directory, which is what a directory-only pattern judges. A lossy path is
+ * never probed — its decoded name is another file.
  */
-const presentGitlinkDirectories = async (
+const presentDirectories = async (
   ctx: Context,
   workdir: string,
+  sparse: SparseMatcher,
   candidates: ReadonlyArray<Iterable<KindCandidate>>,
+  upToDateFiles: ReadonlySet<FilePath>,
 ): Promise<ReadonlySet<FilePath>> => {
   const directories = new Set<FilePath>();
   for (const group of candidates) {
     for (const candidate of group) {
-      if (candidate.mode !== FILE_MODE.GITLINK || isLossy(candidate)) continue;
+      if (isLossy(candidate) || upToDateFiles.has(candidate.path)) continue;
+      if (!kindMatters(sparse, candidate.path)) continue;
       const stat = await lstatIfReachable(ctx.fs, joinPath(workdir, candidate.path));
       if (stat?.isDirectory === true) directories.add(candidate.path);
     }
@@ -46,8 +65,8 @@ const presentGitlinkDirectories = async (
 };
 
 /**
- * `sparse` judging each gitlink among `candidates` by what stands at its path, and each of
- * `assumedDirectories` as a directory whatever stands there. The matcher is
+ * `sparse` judging each of `candidates` by what stands at its path, and each assumed directory as
+ * a directory whatever stands there. The matcher is
  * returned as given when sparse checkout is off or no gitlink has a directory, so the common case
  * costs no wrapper.
  */
@@ -56,42 +75,48 @@ export async function withGitlinkKinds(
   operation: string,
   sparse: SparseMatcher,
   candidates: ReadonlyArray<Iterable<KindCandidate>>,
-  assumedDirectories?: ReadonlyArray<FilePath>,
+  assumed?: AssumedKinds,
 ): Promise<SparseMatcher>;
 export async function withGitlinkKinds(
   ctx: Context,
   operation: string,
   sparse: SparseMatcher | undefined,
   candidates: ReadonlyArray<Iterable<KindCandidate>>,
-  assumedDirectories?: ReadonlyArray<FilePath>,
+  assumed?: AssumedKinds,
 ): Promise<SparseMatcher | undefined>;
 export async function withGitlinkKinds(
   ctx: Context,
   operation: string,
   sparse: SparseMatcher | undefined,
   candidates: ReadonlyArray<Iterable<KindCandidate>>,
-  assumedDirectories: ReadonlyArray<FilePath> = [],
+  assumed: AssumedKinds = {},
 ): Promise<SparseMatcher | undefined> {
   if (sparse === undefined) return undefined;
-  const directories = new Set(assumedDirectories);
-  const present = await presentGitlinkDirectories(ctx, requireWorkTree(ctx, operation), candidates);
+  const directories = new Set(assumed.directories);
+  const present = await presentDirectories(
+    ctx,
+    requireWorkTree(ctx, operation),
+    sparse,
+    candidates,
+    new Set(assumed.files),
+  );
   for (const path of present) directories.add(path);
   if (directories.size === 0) return sparse;
   return (path, kind) => sparse(path, kind ?? (directories.has(path) ? 'directory' : 'file'));
 }
 
-/** How a merge judges its gitlinks: `judging` the matcher to write by, `assumedDirectories` what a retirement must judge the same way. */
+/** How a merge judges its entries: `judging` the matcher to write by, `assumed` what a retirement must judge the same way. */
 export interface MergeGitlinkKinds {
   readonly judging: SparseMatcher | undefined;
-  readonly assumedDirectories: ReadonlyArray<FilePath>;
+  readonly assumed: AssumedKinds;
 }
 
-const gitlinkOutcomes = (outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<KindCandidate> =>
+const moddedOutcomes = (outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<KindCandidate> =>
   outcomes.flatMap((outcome) => ('mode' in outcome ? [outcome] : []));
 
 /**
- * The kinds of the gitlinks a merge meets, in the index and in its result. An operation that
- * refreshes the index first (git's `merge`) also takes each skip-worktree gitlink as a directory.
+ * The kinds of the entries a merge meets, in the index and in its result. An operation that
+ * refreshes the index first (git's `merge`) also takes each skip-worktree entry as up to date.
  */
 export const mergeGitlinkKinds = async (
   ctx: Context,
@@ -100,13 +125,13 @@ export const mergeGitlinkKinds = async (
   outcomes: ReadonlyArray<MergeOutcome>,
   refreshedIndex: boolean,
 ): Promise<MergeGitlinkKinds> => {
-  const assumedDirectories = refreshedIndex ? skippedGitlinkPaths(entries) : [];
+  const assumed = refreshedIndex ? upToDateKinds(entries) : {};
   const judging = await withGitlinkKinds(
     ctx,
     'merge',
     sparse,
-    [entries, gitlinkOutcomes(outcomes)],
-    assumedDirectories,
+    [entries, moddedOutcomes(outcomes)],
+    assumed,
   );
-  return { judging, assumedDirectories };
+  return { judging, assumed };
 };

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { requireWorkTree } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
   mergeGitlinkKinds,
-  skippedGitlinkPaths,
+  upToDateKinds,
   withGitlinkKinds,
 } from '../../../../../src/application/primitives/internal/sparse-gitlink-kinds.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index.js';
@@ -136,8 +136,8 @@ describe('withGitlinkKinds', () => {
   });
 
   describe('Given a directory standing at the path of a regular file', () => {
-    describe('When the matcher is wrapped', () => {
-      it('Then the path is left a file', async () => {
+    describe('When a directory-only rule could judge the path', () => {
+      it('Then the path is judged a directory, as git judges an entry that is not up to date', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/f`);
@@ -147,9 +147,46 @@ describe('withGitlinkKinds', () => {
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[regular]]);
+        wrapped?.(path('f'));
+
+        // Assert
+        expect(matcher).toHaveBeenLastCalledWith('f', 'directory');
+      });
+    });
+
+    describe('When the file is up to date', () => {
+      it('Then it is left a file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/f`);
+        const matcher = directoriesOnly();
+        const regular = { path: path('f'), mode: FILE_MODE.REGULAR };
+        const sut = withGitlinkKinds;
+
+        // Act
+        const wrapped = await sut(ctx, 'test', matcher, [[regular]], { files: [path('f')] });
 
         // Assert
         expect(wrapped).toBe(matcher);
+      });
+    });
+
+    describe('When no rule tells a file from a directory', () => {
+      it('Then the work tree is not probed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/f`);
+        const matcher = vi.fn(() => true);
+        const regular = { path: path('f'), mode: FILE_MODE.REGULAR };
+        const probe = vi.spyOn(ctx.fs, 'lstatIfReachable');
+        const sut = withGitlinkKinds;
+
+        // Act
+        const wrapped = await sut(ctx, 'test', matcher, [[regular]]);
+
+        // Assert
+        expect(wrapped).toBe(matcher);
+        expect(probe).not.toHaveBeenCalled();
       });
     });
   });
@@ -182,7 +219,7 @@ describe('withGitlinkKinds', () => {
         const sut = withGitlinkKinds;
 
         // Act
-        const wrapped = await sut(ctx, 'test', matcher, [], [path('sub')]);
+        const wrapped = await sut(ctx, 'test', matcher, [], { directories: [path('sub')] });
         const result = wrapped?.(path('sub'));
 
         // Assert
@@ -192,7 +229,7 @@ describe('withGitlinkKinds', () => {
   });
 });
 
-describe('skippedGitlinkPaths', () => {
+describe('upToDateKinds', () => {
   const entry = (p: string, mode: string, skipWorktree: boolean, pathBytes?: Uint8Array) => ({
     path: path(p),
     mode,
@@ -202,7 +239,7 @@ describe('skippedGitlinkPaths', () => {
 
   describe('Given gitlinks and files, with and without the bit, one lossy', () => {
     describe('When listed', () => {
-      it('Then only the skip-worktree gitlinks with an exact path remain', () => {
+      it('Then the skip-worktree gitlinks are directories and the skip-worktree files files, lossy paths left out', () => {
         // Arrange
         const entries = [
           entry('kept', FILE_MODE.GITLINK, true),
@@ -212,10 +249,10 @@ describe('skippedGitlinkPaths', () => {
         ];
 
         // Act
-        const result = skippedGitlinkPaths(entries);
+        const result = upToDateKinds(entries);
 
         // Assert
-        expect(result).toEqual(['kept']);
+        expect(result).toEqual({ directories: ['kept'], files: ['file'] });
       });
     });
   });
@@ -247,7 +284,7 @@ describe('mergeGitlinkKinds', () => {
         const sut = mergeGitlinkKinds;
 
         // Act
-        const { judging, assumedDirectories } = await sut(
+        const { judging, assumed } = await sut(
           ctx,
           matcher,
           [skipped('sub')],
@@ -256,7 +293,7 @@ describe('mergeGitlinkKinds', () => {
         );
 
         // Assert
-        expect(assumedDirectories).toEqual(['sub']);
+        expect(assumed).toEqual({ directories: ['sub'], files: [] });
         expect(judging?.(path('sub'))).toBe(true);
       });
     });
@@ -271,16 +308,10 @@ describe('mergeGitlinkKinds', () => {
         const sut = mergeGitlinkKinds;
 
         // Act
-        const { judging, assumedDirectories } = await sut(
-          ctx,
-          matcher,
-          [skipped('sub')],
-          [],
-          false,
-        );
+        const { judging, assumed } = await sut(ctx, matcher, [skipped('sub')], [], false);
 
         // Assert
-        expect(assumedDirectories).toEqual([]);
+        expect(assumed).toEqual({});
         expect(judging).toBe(matcher);
       });
     });
