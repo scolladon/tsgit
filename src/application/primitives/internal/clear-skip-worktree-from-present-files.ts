@@ -5,7 +5,11 @@
  */
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import { isLossy } from '../../../domain/git-index/index-path-key.js';
-import { presentPaths, presentPathsSync } from '../../../domain/sparse/missing-directory.js';
+import {
+  presentPaths,
+  presentPathsSync,
+  type SyncPass,
+} from '../../../domain/sparse/missing-directory.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import { readSparseConfig } from '../read-sparse-config.js';
@@ -59,23 +63,6 @@ const syncPresence = (probe: (path: string) => boolean | undefined, path: string
   }
 };
 
-/** The whole walk in one synchronous pass, or `undefined` when the file system cannot answer one probe. */
-const presentBySyncProbe = (
-  fs: FileSystem,
-  workDir: string,
-  paths: ReadonlyArray<string>,
-): ReadonlySet<string> | undefined => {
-  const probe = fs.lstatReachableSync?.bind(fs);
-  if (probe === undefined) return undefined;
-  let answerable = true;
-  const present = presentPathsSync(paths, (path) => {
-    const answer = syncPresence(probe, joinPath(workDir, path));
-    answerable &&= answer !== undefined;
-    return answer === true;
-  });
-  return answerable ? present : undefined;
-};
-
 const presentByAsyncProbe = async (
   ctx: Context,
   workDir: string,
@@ -88,12 +75,56 @@ const presentByAsyncProbe = async (
   return new Set(found.flatMap((present) => [...present]));
 };
 
-const probedPresent = async (
+interface RunOutcome extends SyncPass {
+  /** Every probe of the run was answered, so `present` is complete. */
+  readonly answerable: boolean;
+}
+
+/** One run in a synchronous pass; stops asking once a probe cannot answer (the turn's budget is spent, or the adapter never can). */
+const presentByRunSync = (
+  probe: (path: string) => boolean | undefined,
+  workDir: string,
+  run: ReadonlyArray<string>,
+  missing: string,
+): RunOutcome => {
+  let answerable = true;
+  const pass = presentPathsSync(
+    run,
+    (path) => {
+      if (!answerable) return false;
+      const answer = syncPresence(probe, joinPath(workDir, path));
+      answerable = answer !== undefined;
+      return answer === true;
+    },
+    missing,
+  );
+  return { ...pass, answerable };
+};
+
+/**
+ * Synchronous while the adapter answers, run by run, a missing directory carried from one run to
+ * the next. A run the adapter cannot finish is redone through the async probe, which waits for the
+ * next turn, then the sync walk resumes: the event loop is never held past the adapter's budget.
+ * An adapter answering nothing from the first run (the `threadpool` opt-out, roots not yet
+ * resolved) takes the concurrent async walk throughout.
+ */
+const presentBySyncProbe = async (
   ctx: Context,
   workDir: string,
   paths: ReadonlyArray<string>,
-): Promise<ReadonlySet<string>> =>
-  presentBySyncProbe(ctx.fs, workDir, paths) ?? presentByAsyncProbe(ctx, workDir, paths);
+): Promise<ReadonlySet<string>> => {
+  const probe = ctx.fs.lstatReachableSync?.bind(ctx.fs);
+  if (probe === undefined) return presentByAsyncProbe(ctx, workDir, paths);
+  const found: ReadonlySet<string>[] = [];
+  let missing = '';
+  for (const [index, run] of runsOf(paths).entries()) {
+    const outcome = presentByRunSync(probe, workDir, run, missing);
+    if (index === 0 && !outcome.answerable) return presentByAsyncProbe(ctx, workDir, paths);
+    found.push(outcome.answerable ? outcome.present : await presentByAsyncProbe(ctx, workDir, run));
+    missing = outcome.answerable ? outcome.missing : '';
+  }
+  return new Set(found.flatMap((present) => [...present]));
+};
 
 const withBitCleared = (entry: IndexEntry): IndexEntry => ({
   ...entry,
@@ -110,7 +141,7 @@ export const clearSkipWorktreeFromPresentFiles = async (
   if (candidates.length === 0) return index;
   const { enabled, expectFilesOutsideOfPatterns } = await readSparseConfig(ctx);
   if (!enabled || expectFilesOutsideOfPatterns) return index;
-  const present = await probedPresent(ctx, workDir, candidates);
+  const present = await presentBySyncProbe(ctx, workDir, candidates);
   if (present.size === 0) return index;
   const entries = index.entries.map((entry) =>
     isCandidate(entry) && present.has(entry.path) ? withBitCleared(entry) : entry,

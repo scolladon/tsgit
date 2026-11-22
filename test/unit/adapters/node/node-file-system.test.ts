@@ -98,6 +98,7 @@ async function buildContractEnv(
     rootDir,
     getRootDirSibling: async () => nodePath.join(siblingDir, 'file.txt'),
     getExistingInRoot: async () => existingFile,
+    ...(options.syncIo === undefined ? { syncProbe: 'declined' as const } : {}),
     symlinkReadEscape: {
       create: async () => {
         const escapeTarget = nodePath.join(siblingDir, 'escape-read-target.txt');
@@ -2366,6 +2367,111 @@ describe('NodeFileSystem lstatReachableSync', () => {
 
         // Assert
         expect(result).toBeUndefined();
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
+  const withResolvedRoot = async (
+    options: (rootDir: string) => ConstructorParameters<typeof NodeFileSystem>[1],
+  ) => {
+    const rootDir = await fsPromises.realpath(
+      await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-')),
+    );
+    await fsPromises.writeFile(nodePath.join(rootDir, 'present'), 'x');
+    const sut = new NodeFileSystem(rootDir, options(rootDir));
+    await sut.exists(`${rootDir}/present`);
+    return { rootDir, sut };
+  };
+
+  describe('Given the threadpool opt-out (no sync policy) and a resolved root set', () => {
+    describe('When the synchronous presence probe is asked about a present file', () => {
+      it('Then it answers undefined and never touches the file system synchronously', async () => {
+        // Arrange
+        const { rootDir, sut } = await withResolvedRoot(() => ({}));
+
+        // Act
+        const result = sut.lstatReachableSync(`${rootDir}/present`);
+
+        // Assert
+        expect(result).toBeUndefined();
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+
+  describe('Given a sync policy whose turn budget is spent', () => {
+    describe('When the synchronous presence probe is asked', () => {
+      it('Then it answers undefined without calling lstatSync', async () => {
+        // Arrange
+        const ops = { ...realSyncFsOps };
+        const lstatSync = vi.spyOn(ops, 'lstatSync');
+        const admit = vi.fn<() => Promise<void> | undefined>(() => undefined);
+        const budget = { ...createTurnBudget(1), admit };
+        const { rootDir, sut } = await withResolvedRoot(() => ({
+          syncIo: { ops, budget, maxSyncReadBytes: 1 },
+        }));
+        admit.mockReturnValue(Promise.resolve());
+        lstatSync.mockClear();
+
+        // Act
+        const result = sut.lstatReachableSync(`${rootDir}/present`);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(lstatSync).not.toHaveBeenCalled();
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+
+  describe('Given a sync policy whose turn budget has room', () => {
+    describe('When the synchronous presence probe is asked', () => {
+      it('Then it answers through the policy ops and charges the budget', async () => {
+        // Arrange
+        const ops = { ...realSyncFsOps };
+        const lstatSync = vi.spyOn(ops, 'lstatSync');
+        const charge = vi.fn();
+        const budget = { ...createTurnBudget(1), admit: () => undefined, charge };
+        const { rootDir, sut } = await withResolvedRoot(() => ({
+          syncIo: { ops, budget, maxSyncReadBytes: 1 },
+        }));
+        lstatSync.mockClear();
+        charge.mockClear();
+
+        // Act
+        const result = sut.lstatReachableSync(`${rootDir}/present`);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(lstatSync).toHaveBeenCalledTimes(1);
+        expect(charge).toHaveBeenCalledTimes(1);
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+
+  describe('Given a sync policy whose turn budget has room', () => {
+    describe('When the synchronous presence probe is asked 17 times in a row', () => {
+      it('Then the budget is consulted on the first and the seventeenth probe only', async () => {
+        // Arrange
+        const admit = vi.fn<() => Promise<void> | undefined>(() => undefined);
+        const budget = { ...createTurnBudget(1), admit };
+        const { rootDir, sut } = await withResolvedRoot(() => ({
+          syncIo: { ops: { ...realSyncFsOps }, budget, maxSyncReadBytes: 1 },
+        }));
+        admit.mockClear();
+
+        // Act
+        const answers = Array.from({ length: 17 }, () =>
+          sut.lstatReachableSync(`${rootDir}/present`),
+        );
+
+        // Assert
+        expect(answers.every((answer) => answer === true)).toBe(true);
+        expect(admit).toHaveBeenCalledTimes(2);
         await fsPromises.rm(rootDir, { recursive: true, force: true });
       });
     });

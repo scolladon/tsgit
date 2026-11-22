@@ -40,8 +40,33 @@ describe('presentPathsSync properties', () => {
             });
 
             // Assert
-            expect([...actual]).toEqual([...expected]);
+            expect([...actual.present]).toEqual([...expected]);
             expect(syncAsked).toEqual(asyncAsked);
+          }),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+
+  describe('Given arbitrary paths split at an arbitrary point', () => {
+    describe('When the second pass resumes from the missing directory the first ended on', () => {
+      it('Then together they find what one pass over the whole finds', () => {
+        fc.assert(
+          fc.property(arbPaths, arbAnswers, fc.nat(12), (paths, yesList, cut) => {
+            // Arrange
+            const yes = new Set([...yesList, ...yesList.map((p) => `${p}${SLASH}`)]);
+            const answer = answerFrom(yes);
+            const sut = presentPathsSync;
+
+            // Act
+            const whole = sut(paths, answer);
+            const first = sut(paths.slice(0, cut), answer);
+            const second = sut(paths.slice(cut), answer, first.missing);
+
+            // Assert
+            expect([...first.present, ...second.present]).toEqual([...whole.present]);
+            expect(second.missing).toBe(whole.missing);
           }),
           { numRuns: NUM_RUNS },
         );

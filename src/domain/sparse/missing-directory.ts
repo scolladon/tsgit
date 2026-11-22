@@ -46,23 +46,30 @@ export const presentPaths = async (
   return present;
 };
 
+/** What a synchronous pass found, and the missing directory it ended on, so a later pass can resume from it. */
+export interface SyncPass {
+  readonly present: ReadonlySet<string>;
+  readonly missing: string;
+}
+
 /**
- * The same decisions as {@link presentPaths} for a probe that answers at once. A twin rather than
- * a shared generator: a promise-free loop is the point, and a generator costs more per probe than
- * the `lstat` it wraps.
+ * The same decisions as {@link presentPaths} for a probe that answers at once, resumable from the
+ * `missing` directory a previous pass ended on. A twin rather than a shared generator: a
+ * promise-free loop is the point, and a generator costs more per probe than the `lstat` it wraps.
  */
 export const presentPathsSync = (
   paths: ReadonlyArray<string>,
   probe: (path: string) => boolean,
-): ReadonlySet<string> => {
+  from = '',
+): SyncPass => {
   const present = new Set<string>();
-  let missing = '';
+  let missing = from;
   for (const path of paths) {
     if (missing !== '' && path.startsWith(missing)) continue;
     if (probe(path)) present.add(path);
     else missing = firstMissingDirectorySync(path, missing, probe);
   }
-  return present;
+  return { present, missing };
 };
 
 const firstMissingDirectorySync = (

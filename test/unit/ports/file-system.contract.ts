@@ -41,7 +41,17 @@ export interface FileSystemContractEnv {
    * `utimeNow` row can observe the stamp advancing. Required by the rows that assert it.
    */
   readonly createBackdatedFile?: (path: string) => Promise<void>;
+  /**
+   * Declares an adapter configured to refuse blocking calls (the threadpool opt-out): its
+   * synchronous presence probe answers `undefined` for every path, sending the caller to the
+   * async probe.
+   */
+  readonly syncProbe?: 'declined';
 }
+
+/** What the synchronous presence probe must answer where an answering adapter answers `answered`. */
+const syncProbeAnswer = <T>(env: FileSystemContractEnv, answered: T): T | undefined =>
+  env.syncProbe === 'declined' ? undefined : answered;
 
 const SEGMENT_REFUSALS_UNPINNED =
   'segment refusal codes are not pinned for this adapter on this host';
@@ -2131,7 +2141,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           const result = await lstatReachableSync(env.fs, path);
 
           // Assert
-          expect(result).toBe(false);
+          expect(result).toBe(syncProbeAnswer(env, false));
         });
       });
 
@@ -2144,7 +2154,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           const result = await lstatReachableSync(env.fs, `${env.rootDir}/sync-file.bin/x`);
 
           // Assert
-          expect(result).toBe(false);
+          expect(result).toBe(syncProbeAnswer(env, false));
         });
       });
 
@@ -2164,7 +2174,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           );
 
           // Assert
-          expect(result).toEqual([true, true, true]);
+          expect(result).toEqual(Array(3).fill(syncProbeAnswer(env, true)));
         });
       });
     });

@@ -417,6 +417,107 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
     });
   });
 
+  describe('Given a synchronous probe whose turn budget runs out every 70 probes', () => {
+    describe('When clearing 200 present files across several runs', () => {
+      it('Then each cut run yields through the async probe, the walk resumes synchronously and every bit clears', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        const paths = Array.from({ length: 200 }, (_, i) => `d/f${String(i).padStart(3, '0')}`);
+        await Promise.all(paths.map((path) => place(base, path)));
+        const turn = { syncProbes: 0 };
+        const asked = { sync: 0, async: 0 };
+        const fs = new Proxy(base.fs, {
+          get: (target, key) => {
+            if (key === 'lstatReachableSync') {
+              return () => {
+                if (turn.syncProbes >= 70) return undefined;
+                turn.syncProbes++;
+                asked.sync++;
+                return true;
+              };
+            }
+            if (key === 'lstatIfReachable') {
+              return (path: string) => {
+                if (asked.async++ % 64 === 0) turn.syncProbes = 0;
+                return target.lstatIfReachable?.(path);
+              };
+            }
+            return Reflect.get(target, key);
+          },
+        });
+        const index = indexOf(...paths.map((path) => rowOf(path)));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(flagsOf(result).every((flag) => !flag)).toBe(true);
+        expect(asked.async).toBeGreaterThan(0);
+        expect(asked.sync).toBeGreaterThan(70);
+      });
+    });
+  });
+
+  describe('Given 130 files, spread over several runs, all beneath one missing directory', () => {
+    describe('When clearing', () => {
+      it('Then the missing directory is found once and no run asks again', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        const probed: string[] = [];
+        const fs = new Proxy(base.fs, {
+          get: (target, key) =>
+            key === 'lstatReachableSync'
+              ? (path: string) => {
+                  probed.push(path);
+                  return false;
+                }
+              : Reflect.get(target, key),
+        });
+        const paths = Array.from({ length: 130 }, (_, i) => `gone/f${String(i).padStart(3, '0')}`);
+        const index = indexOf(...paths.map((path) => rowOf(path)));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(probed).toEqual([
+          `${base.layout.workDir}/gone/f000`,
+          `${base.layout.workDir}/gone/`,
+        ]);
+        expect(result).toBe(index);
+      });
+    });
+  });
+
+  describe('Given a synchronous probe that never answers', () => {
+    describe('When clearing several runs of files', () => {
+      it('Then it is asked once and the async probe answers every path', async () => {
+        // Arrange
+        const base = await withConfig(SPARSE_ON);
+        const paths = Array.from({ length: 130 }, (_, i) => `d/f${i}`);
+        await Promise.all(paths.map((path) => place(base, path)));
+        let syncAsked = 0;
+        const fs = new Proxy(base.fs, {
+          get: (target, key) =>
+            key === 'lstatReachableSync'
+              ? () => {
+                  syncAsked++;
+                  return undefined;
+                }
+              : Reflect.get(target, key),
+        });
+        const index = indexOf(...paths.map((path) => rowOf(path)));
+
+        // Act
+        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+
+        // Assert
+        expect(syncAsked).toBe(1);
+        expect(flagsOf(result).every((flag) => !flag)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a synchronous probe that throws', () => {
     describe('When clearing', () => {
       it('Then the entry reads absent and nothing is thrown', async () => {

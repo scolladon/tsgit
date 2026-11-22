@@ -21,7 +21,7 @@ import type {
   WriteOptions,
 } from '../../ports/file-system.js';
 import type { FsOperations, SyncFsOperations } from './fs-operations.js';
-import { realFsOps, realSyncFsOps } from './fs-operations.js';
+import { realFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
 import type { SyncIoPolicy, TurnBudget } from './sync-io-budget.js';
@@ -392,6 +392,9 @@ async function runSync<T>(budget: TurnBudget, op: () => T, path: string): Promis
     throw err;
   }
 }
+
+/** Sync presence probes run between two budget consultations. */
+const BUDGET_CHECK_EVERY = 16;
 
 type PresenceProbeKind = 'stat' | 'lstat';
 
@@ -1395,20 +1398,36 @@ export class NodeFileSystem implements FileSystem {
   /**
    * One synchronous `lstat`: `true` when it succeeds, `false` for every refusal (a miss, a regular
    * file in the path, a permission or containment refusal) — absence is the defined answer, as for
-   * `lstat` in a presence decision. `undefined` until an async read has resolved the root set,
-   * since containment cannot be decided without it.
+   * `lstat` in a presence decision. `undefined` ("ask the async probe") until an async read has
+   * resolved the root set, since containment cannot be decided without it; under the `threadpool`
+   * opt-out, which allows no blocking call; and once the turn's sync budget is spent, so a long
+   * walk yields to the event loop instead of monopolizing it.
    */
   lstatReachableSync = (path: string): boolean | undefined => {
     const roots = this.resolvedRootSet;
-    if (roots === undefined) return undefined;
+    const sync = this.syncIo;
+    if (roots === undefined || sync === undefined) return undefined;
+    if (!this.admitsSyncProbe(sync.budget)) return undefined;
     try {
       const real = this.resolveRead(path, roots.all);
-      return (
-        (this.syncIo?.ops ?? realSyncFsOps).lstatSync(real, { throwIfNoEntry: false }) !== undefined
-      );
+      return sync.ops.lstatSync(real, { throwIfNoEntry: false }) !== undefined;
     } catch {
       return false;
     }
+  };
+
+  /** Probes still allowed before the budget is consulted again: a probe costs less than the clock reads that would time it. */
+  private probesBeforeBudgetCheck = 0;
+
+  private admitsSyncProbe = (budget: TurnBudget): boolean => {
+    if (this.probesBeforeBudgetCheck > 0) {
+      this.probesBeforeBudgetCheck--;
+      return true;
+    }
+    if (budget.admit() !== undefined) return false;
+    budget.charge(budget.now());
+    this.probesBeforeBudgetCheck = BUDGET_CHECK_EVERY - 1;
+    return true;
   };
 
   /** `tryLstat` blind to the miss's cause: one `lstat`, never the parent `stat` that tells `ENOTDIR` apart. */
