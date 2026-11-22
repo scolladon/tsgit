@@ -41,12 +41,11 @@ const oracleRegex = (pattern: string, options: CompileGlobOptions): RegExp => {
     i = consumed.next;
   }
   const prefix = options.anchored ? '^' : '(^|.*/)';
-  const suffix = options.withDirSuffix === true ? '(/.*)?$' : '$';
-  return new RegExp(`${prefix}${body}${suffix}`);
+  return new RegExp(`${prefix}${body}$`);
 };
 
 describe('compileGlob', () => {
-  describe('Given a literal "src" with anchored=true and no dir suffix', () => {
+  describe('Given a literal "src" with anchored=true', () => {
     describe('When compiled', () => {
       it('Then matches only the exact path', () => {
         // Arrange
@@ -71,22 +70,6 @@ describe('compileGlob', () => {
         expect(result.test('vendorsrc')).toBe(false);
         expect(result.test('a/src')).toBe(false);
         expect(result.test('src')).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a literal "src" with anchored=true AND withDirSuffix=true', () => {
-    describe('When compiled', () => {
-      it('Then matches the path AND any descendant', () => {
-        // Arrange
-        const result = compileGlob('src', { anchored: true, withDirSuffix: true });
-
-        // Assert
-        expect(result.test('src')).toBe(true);
-        expect(result.test('src/foo')).toBe(true);
-        expect(result.test('src/a/b/c')).toBe(true);
-        expect(result.test('other')).toBe(false);
-        expect(result.test('src-other')).toBe(false);
       });
     });
   });
@@ -339,10 +322,10 @@ describe('compileGlob', () => {
         ['B/f', true, 'b/F'],
         ['*.TXT', false, 'dir/a.txt'],
         ['?/F', true, 'b/f'],
-        ['src', true, 'SRC/x'],
+        ['src', true, 'SRC'],
       ] as const)('Then %s (anchored %s) matches %s', (pattern, anchored, path) => {
         // Arrange
-        const sut = compileGlob(pattern, { anchored, withDirSuffix: true, caseFold: true });
+        const sut = compileGlob(pattern, { anchored, caseFold: true });
 
         // Act
         const result = sut.test(path);
@@ -385,10 +368,7 @@ describe('compileGlob', () => {
       maxLength: 12,
     });
     const arbPath = fc.string({ unit: fc.constantFrom('a', 'b', '/'), maxLength: 12 });
-    const arbOptions = fc.record({
-      anchored: fc.boolean(),
-      withDirSuffix: fc.boolean(),
-    });
+    const arbOptions = fc.record({ anchored: fc.boolean() });
 
     describe('Given any pattern and any line-terminator-free path', () => {
       describe('When matched', () => {

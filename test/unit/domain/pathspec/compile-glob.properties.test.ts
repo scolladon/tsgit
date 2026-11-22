@@ -18,14 +18,13 @@ describe('compileGlob properties', () => {
           fc.property(
             PRINTABLE_ASCII_NO_NUL,
             fc.boolean(),
-            fc.boolean(),
             PRINTABLE_ASCII_NO_NUL,
-            (pattern, anchored, withDirSuffix, path) => {
+            (pattern, anchored, path) => {
               // Arrange
               const sut = compileGlob;
 
               // Act
-              const result = sut(pattern, { anchored, withDirSuffix }).test(path);
+              const result = sut(pattern, { anchored }).test(path);
 
               // Assert
               expect(typeof result).toBe('boolean');
@@ -66,23 +65,16 @@ describe('compileGlob properties', () => {
     describe('When the path has its ASCII case flipped', () => {
       it('Then the verdict is unchanged', () => {
         fc.assert(
-          fc.property(
-            arbText,
-            arbPath,
-            arbMask,
-            fc.boolean(),
-            fc.boolean(),
-            (pattern, path, mask, anchored, withDirSuffix) => {
-              // Arrange
-              const sut = compileGlob(pattern, { anchored, withDirSuffix, caseFold: true });
+          fc.property(arbText, arbPath, arbMask, fc.boolean(), (pattern, path, mask, anchored) => {
+            // Arrange
+            const sut = compileGlob(pattern, { anchored, caseFold: true });
 
-              // Act
-              const result = sut.test(flipAsciiCase(path, mask));
+            // Act
+            const result = sut.test(flipAsciiCase(path, mask));
 
-              // Assert
-              expect(result).toBe(sut.test(path));
-            },
-          ),
+            // Assert
+            expect(result).toBe(sut.test(path));
+          }),
           { numRuns: NUM_RUNS },
         );
       });
@@ -91,24 +83,18 @@ describe('compileGlob properties', () => {
     describe('When the exact matcher accepts a path', () => {
       it('Then the folding matcher accepts it too', () => {
         fc.assert(
-          fc.property(
-            arbText,
-            arbPath,
-            fc.boolean(),
-            fc.boolean(),
-            (pattern, path, anchored, withDirSuffix) => {
-              // Arrange
-              const options = { anchored, withDirSuffix };
-              const exact = compileGlob(pattern, options);
-              const sut = compileGlob(pattern, { ...options, caseFold: true });
+          fc.property(arbText, arbPath, fc.boolean(), (pattern, path, anchored) => {
+            // Arrange
+            const options = { anchored };
+            const exact = compileGlob(pattern, options);
+            const sut = compileGlob(pattern, { ...options, caseFold: true });
 
-              // Act
-              const result = sut.test(path);
+            // Act
+            const result = sut.test(path);
 
-              // Assert
-              expect(result || !exact.test(path)).toBe(true);
-            },
-          ),
+            // Assert
+            expect(result || !exact.test(path)).toBe(true);
+          }),
           { numRuns: NUM_RUNS },
         );
       });

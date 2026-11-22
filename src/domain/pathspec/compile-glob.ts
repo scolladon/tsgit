@@ -26,11 +26,6 @@ import { asciiLower } from '../pretty/ascii.js';
 export interface CompileGlobOptions {
   /** When true, the match is anchored at the start of the path. */
   readonly anchored: boolean;
-  /**
-   * When true, the matcher also accepts any descendant of the pattern: a
-   * literal `src` matches `src`, `src/foo`, and `src/a/b`.
-   */
-  readonly withDirSuffix?: boolean;
   /** case-insensitive match as git's core.ignorecase does: ASCII letters compare case-insensitively; any other character stays exact. */
   readonly caseFold?: boolean;
 }
@@ -169,18 +164,10 @@ const stepToken = (token: GlobToken, path: string, next: Uint8Array): Uint8Array
   }
 };
 
-// The base layer: with no tokens left, `path[j..]` must be exhausted — or,
-// under `withDirSuffix`, sit exactly on a `/` (the `(/.*)?$` descendant
-// accept: the pattern matched a path AND every deeper path beneath it).
-const baseLayer = (path: string, withDirSuffix: boolean): Uint8Array => {
+// The base layer: with no tokens left, `path[j..]` must be exhausted.
+const baseLayer = (path: string): Uint8Array => {
   const dp = new Uint8Array(path.length + 1);
   dp[path.length] = 1;
-  if (withDirSuffix) {
-    // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length` where `path[j]` is `undefined`; `undefined === '/'` is false, so `dp[path.length]` keeps the 1 set above.
-    for (let j = 0; j < path.length; j++) {
-      if (path[j] === '/') dp[j] = 1;
-    }
-  }
   return dp;
 };
 
@@ -189,7 +176,7 @@ const matchTokens = (
   options: CompileGlobOptions,
   path: string,
 ): boolean => {
-  let dp = baseLayer(path, options.withDirSuffix === true);
+  let dp = baseLayer(path);
   for (let i = tokens.length - 1; i >= 0; i--) {
     dp = stepToken(tokens[i] as GlobToken, path, dp);
   }
