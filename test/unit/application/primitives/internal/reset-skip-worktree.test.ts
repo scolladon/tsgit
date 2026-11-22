@@ -41,6 +41,8 @@ const indexOf = (...entries: IndexEntry[]): GitIndex => ({
 const inPatternOnlyB = (p: FilePath): boolean => p.startsWith('b/');
 
 describe('applyResetSkipWorktree', () => {
+  const sut = applyResetSkipWorktree;
+
   describe('Given a changed entry whose donor carries the read bit', () => {
     describe('When the post-pass runs', () => {
       it('Then the rebuilt entry keeps the bit with a zero stat', () => {
@@ -49,7 +51,7 @@ describe('applyResetSkipWorktree', () => {
         const rebuilt = [entry('b/f', NEW)];
 
         // Act
-        const result = applyResetSkipWorktree(rebuilt, indexOf(donor), inPatternOnlyB);
+        const result = sut(rebuilt, indexOf(donor), inPatternOnlyB);
 
         // Assert
         expect(result).toEqual([entry('b/f', NEW, { skipWorktree: true })]);
@@ -64,7 +66,7 @@ describe('applyResetSkipWorktree', () => {
         const rebuilt = [entry('a/f', NEW)];
 
         // Act
-        const result = applyResetSkipWorktree(rebuilt, indexOf(entry('a/f', OLD)), inPatternOnlyB);
+        const result = sut(rebuilt, indexOf(entry('a/f', OLD)), inPatternOnlyB);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
@@ -79,7 +81,7 @@ describe('applyResetSkipWorktree', () => {
         const kept = entry('a/f', OLD, {}, EXPECTED_MTIME);
 
         // Act
-        const result = applyResetSkipWorktree([kept], indexOf(kept), inPatternOnlyB);
+        const result = sut([kept], indexOf(kept), inPatternOnlyB);
 
         // Assert
         expect(result[0]).toBe(kept);
@@ -94,7 +96,7 @@ describe('applyResetSkipWorktree', () => {
         const rebuilt = [entry('a/new', NEW)];
 
         // Act
-        const result = applyResetSkipWorktree(rebuilt, indexOf(), inPatternOnlyB);
+        const result = sut(rebuilt, indexOf(), inPatternOnlyB);
 
         // Assert
         expect(result).toEqual([entry('a/new', NEW, { skipWorktree: true })]);
@@ -109,7 +111,7 @@ describe('applyResetSkipWorktree', () => {
         const rebuilt = [entry('b/n', NEW)];
 
         // Act
-        const result = applyResetSkipWorktree(rebuilt, indexOf(), inPatternOnlyB);
+        const result = sut(rebuilt, indexOf(), inPatternOnlyB);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
@@ -124,7 +126,7 @@ describe('applyResetSkipWorktree', () => {
         const rebuilt = [entry('a/new', NEW)];
 
         // Act
-        const result = applyResetSkipWorktree(rebuilt, indexOf(), undefined);
+        const result = sut(rebuilt, indexOf(), undefined);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
@@ -140,7 +142,7 @@ describe('applyResetSkipWorktree', () => {
         const rebuilt = [entry('b/f', NEW)];
 
         // Act
-        const result = applyResetSkipWorktree(rebuilt, indexOf(conflicted), inPatternOnlyB);
+        const result = sut(rebuilt, indexOf(conflicted), inPatternOnlyB);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
