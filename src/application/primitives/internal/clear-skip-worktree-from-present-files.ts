@@ -13,15 +13,15 @@ import { boundedMapFor } from './concurrency.js';
 import { joinPath } from './join-working-tree-path.js';
 
 /** Per index object, so a cached parse pays the scan once. */
-const candidatesOf = new WeakMap<GitIndex, ReadonlyArray<IndexEntry>>();
+const candidatePathsOf = new WeakMap<GitIndex, ReadonlyArray<string>>();
 
 const isCandidate = (entry: IndexEntry): boolean => entry.flags.skipWorktree && !isLossy(entry);
 
-const skipWorktreeCandidates = (index: GitIndex): ReadonlyArray<IndexEntry> => {
-  const known = candidatesOf.get(index);
+const skipWorktreeCandidatePaths = (index: GitIndex): ReadonlyArray<string> => {
+  const known = candidatePathsOf.get(index);
   if (known !== undefined) return known;
-  const scanned = index.entries.filter(isCandidate);
-  candidatesOf.set(index, scanned);
+  const scanned = index.entries.filter(isCandidate).map((entry) => entry.path);
+  candidatePathsOf.set(index, scanned);
   return scanned;
 };
 
@@ -106,15 +106,11 @@ export const clearSkipWorktreeFromPresentFiles = async (
 ): Promise<GitIndex> => {
   const { workDir } = ctx.layout;
   if (workDir === undefined) return index;
-  const candidates = skipWorktreeCandidates(index);
+  const candidates = skipWorktreeCandidatePaths(index);
   if (candidates.length === 0) return index;
   const { enabled, expectFilesOutsideOfPatterns } = await readSparseConfig(ctx);
   if (!enabled || expectFilesOutsideOfPatterns) return index;
-  const present = await probedPresent(
-    ctx,
-    workDir,
-    candidates.map((entry) => entry.path),
-  );
+  const present = await probedPresent(ctx, workDir, candidates);
   if (present.size === 0) return index;
   const entries = index.entries.map((entry) =>
     isCandidate(entry) && present.has(entry.path) ? withBitCleared(entry) : entry,
