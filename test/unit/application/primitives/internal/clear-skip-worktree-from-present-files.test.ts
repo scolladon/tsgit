@@ -51,6 +51,8 @@ const withoutSyncProbe = (fs: FileSystem): FileSystem =>
 const flagsOf = (index: GitIndex): boolean[] => index.entries.map((e) => e.flags.skipWorktree);
 
 describe('clearSkipWorktreeFromPresentFiles', () => {
+  const sut = clearSkipWorktreeFromPresentFiles;
+
   beforeEach(() => {
     __resetConfigCacheForTests();
     __resetSectionsCacheForTests();
@@ -65,7 +67,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -82,7 +84,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -99,7 +101,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a', false));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -117,7 +119,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -133,7 +135,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         await place(ctx, 'a');
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, indexOf(rowOf('a')));
+        const result = await sut(ctx, indexOf(rowOf('a')));
 
         // Assert
         expect(flagsOf(result)).toEqual([false]);
@@ -149,7 +151,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         await ctx.fs.mkdir(`${ctx.layout.workDir}/d`);
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, indexOf(rowOf('d')));
+        const result = await sut(ctx, indexOf(rowOf('d')));
 
         // Assert
         expect(flagsOf(result)).toEqual([false]);
@@ -166,7 +168,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('p/child'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -189,7 +191,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(result).toBe(index);
@@ -207,7 +209,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(lossy);
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -224,7 +226,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a'), rowOf('b'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(flagsOf(result)).toEqual([true, false]);
@@ -246,7 +248,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('a'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).not.toBe(index);
@@ -283,7 +285,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(...paths.map((path) => rowOf(path)));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(peak).toBe(3);
@@ -315,7 +317,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(...paths.map((path) => rowOf(path)));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(result).toBe(index);
@@ -342,7 +344,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('gone'), rowOf('here'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(flagsOf(result)).toEqual([true, false]);
@@ -362,7 +364,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('gone'), rowOf('here'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(flagsOf(result)).toEqual([true, false]);
@@ -388,7 +390,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('gone'), rowOf('here'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(flagsOf(result)).toEqual([true, false]);
@@ -409,7 +411,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('gone'), rowOf('here'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(flagsOf(result)).toEqual([true, false]);
@@ -448,7 +450,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(...paths.map((path) => rowOf(path)));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(flagsOf(result).every((flag) => !flag)).toBe(true);
@@ -477,7 +479,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(...paths.map((path) => rowOf(path)));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(probed).toEqual([
@@ -509,7 +511,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(...paths.map((path) => rowOf(path)));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(syncAsked).toBe(1);
@@ -535,7 +537,7 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         const index = indexOf(rowOf('here'));
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles({ ...base, fs }, index);
+        const result = await sut({ ...base, fs }, index);
 
         // Assert
         expect(result).toBe(index);
@@ -549,11 +551,11 @@ describe('clearSkipWorktreeFromPresentFiles', () => {
         // Arrange
         const ctx = await withConfig(SPARSE_ON);
         const index = indexOf(rowOf('a'));
-        const first = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const first = await sut(ctx, index);
         await place(ctx, 'a');
 
         // Act
-        const result = await clearSkipWorktreeFromPresentFiles(ctx, index);
+        const result = await sut(ctx, index);
 
         // Assert
         expect(first).toBe(index);
