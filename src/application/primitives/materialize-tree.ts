@@ -122,6 +122,12 @@ export interface MaterializeTreeOpts {
    */
   readonly headTree?: ObjectId;
   /**
+   * git refreshed the index before this switch (checkout, merge, stash apply). The refresh marks every
+   * skip-worktree entry up to date, and an up-to-date gitlink is judged a directory whatever stands at
+   * its path; without it a gitlink is judged by what stands there.
+   */
+  readonly refreshedIndex?: boolean;
+  /**
    * `protect` refuses an ignored occupant like an untracked one (git's `overwrite_ignore = 0`);
    * default `overwrite`.
    */
@@ -949,7 +955,8 @@ const withGitlinkDirectories = async (
   target: ReadonlyArray<TargetEntry>,
 ): Promise<MaterializeTreeOpts> => {
   if (opts.sparse === undefined) return opts;
-  const assumed = opts.headTree === undefined ? [] : skippedGitlinkPaths(opts.currentIndex.entries);
+  const assumed =
+    opts.refreshedIndex === true ? skippedGitlinkPaths(opts.currentIndex.entries) : [];
   const sparse = await withGitlinkKinds(
     ctx,
     'materializeTree',

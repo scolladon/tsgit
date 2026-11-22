@@ -242,20 +242,22 @@ const moveHead = (ctx: Context, move: HeadMove): Promise<void> => {
 /**
  * git's two-way merge compares against HEAD's tree. A forced switch resets instead, an index that
  * was never written is an initial checkout (its absent paths are not staged deletions), and an
- * unborn HEAD is the empty tree: every staged path is then new relative to the old side.
+ * unborn HEAD is the empty tree: every staged path is then new relative to the old side. A
+ * non-forced switch refreshes the index first, as git does.
  */
 const headTreeOption = async (
   ctx: Context,
   opts: CheckoutSwitchOptions,
   currentIndex: GitIndex,
   headOid: ObjectId | undefined,
-): Promise<{ readonly headTree?: ObjectId }> => {
+): Promise<{ readonly headTree?: ObjectId; readonly refreshedIndex?: boolean }> => {
   if (opts.force === true) return {};
   const indexNeverWritten =
     currentIndex.entries.length === 0 && !(await ctx.fs.exists(indexPath(ctx.layout.gitDir)));
   if (indexNeverWritten) return {};
-  if (headOid === undefined) return { headTree: emptyTreeOid(ctx.hashConfig) };
-  return { headTree: (await readTree(ctx, headOid)).id };
+  if (headOid === undefined)
+    return { headTree: emptyTreeOid(ctx.hashConfig), refreshedIndex: true };
+  return { headTree: (await readTree(ctx, headOid)).id, refreshedIndex: true };
 };
 
 /** git's `reset_tree`: a forced switch rewrites every stale entry and drops a conflict the target lacks. */

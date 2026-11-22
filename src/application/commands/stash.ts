@@ -1460,6 +1460,7 @@ const mergeStash = async (
     theirsTree: trees.wTree,
     currentIndex: trees.currentIndex,
     labels: STASH_LABELS,
+    refreshedIndex: true,
   });
   if (result.kind !== 'clean') return result;
   return { kind: 'clean', newIndexEntries: result.result.newIndexEntries };

@@ -105,6 +105,8 @@ export interface ApplyMergeInput {
   readonly currentIndex: GitIndex;
   /** Per-operation conflict labels for any content markers written. */
   readonly labels?: MergeLabels;
+  /** The operation refreshes the index before it merges, as git's `stash apply` does and a cherry-pick or rebase does not. */
+  readonly refreshedIndex?: boolean;
 }
 
 export type ApplyMergeResult =
@@ -605,6 +607,7 @@ export const applyMergeToWorktree = async (
       ...(sparse !== undefined ? { sparse } : {}),
       // git's two-way rule: a path ours and the result agree on keeps its index entry and work file.
       headTree: input.oursTree,
+      ...(input.refreshedIndex === true ? { refreshedIndex: true } : {}),
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
       force: true,
     });

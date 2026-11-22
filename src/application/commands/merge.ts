@@ -1224,6 +1224,7 @@ const attemptNonConflictTree = async (
       targetTree,
       currentIndex,
       headTree,
+      refreshedIndex: true,
       force: false,
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
