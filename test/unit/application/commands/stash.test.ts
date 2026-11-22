@@ -18,6 +18,7 @@ import {
   stashPop,
   stashPush,
 } from '../../../../src/application/commands/stash.js';
+import * as applyMergeMod from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
@@ -5521,6 +5522,33 @@ describe('stash push core.fileMode', () => {
         // Assert
         expect(three).toBe(one);
       });
+    });
+  });
+});
+
+describe('Given a stash whose work tree differs from its base', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When stash apply merges it onto the current index', () => {
+    it('Then the merge is told the index was refreshed first', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await write(ctx, 'f', 'f1\n');
+      await add(ctx, ['f']);
+      await commit(ctx, { message: 'base', author });
+      await write(ctx, 'f', 'f2\n');
+      await stashPush(ctx, {});
+      const merge = vi.spyOn(applyMergeMod, 'applyMergeToWorktree');
+      const sut = stashApply;
+
+      // Act
+      await sut(ctx, {});
+
+      // Assert
+      expect(merge.mock.calls[0]?.[1]).toMatchObject({ refreshedIndex: true });
     });
   });
 });
