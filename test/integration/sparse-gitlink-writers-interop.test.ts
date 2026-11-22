@@ -19,6 +19,7 @@ import { mergeRun } from '../../src/application/commands/merge.js';
 import { rebaseRun } from '../../src/application/commands/rebase.js';
 import { stashApply } from '../../src/application/commands/stash.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
+import { settle } from './skip-worktree-present-files-fixtures.js';
 
 const PINNED_DATE = '@1700000000 +0000';
 const GITLINK_ID = '1111111111111111111111111111111111111111';
@@ -97,6 +98,8 @@ interface Operation {
   readonly name: string;
   readonly git: ReadonlyArray<string>;
   readonly tsgit: (workDir: string) => Promise<unknown>;
+  /** git persists a cleared skip-worktree bit only when it writes the index for another reason; `add` writes it only if an entry is racy or stale, so the index is settled first. */
+  readonly writesIndexOpportunistically?: boolean;
 }
 
 const ctxOf = (workDir: string) => createNodeContext({ workDir });
@@ -105,6 +108,7 @@ const OPERATIONS: ReadonlyArray<Operation> = [
   {
     name: 'adding everything',
     git: ['add', '-A'],
+    writesIndexOpportunistically: true,
     tsgit: (workDir) => add(ctxOf(workDir), [], { all: true }),
   },
   {
@@ -187,25 +191,11 @@ const GAPS: ReadonlyArray<Gap> = [
     tsgit: { index: `${STAGED};S 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,top' },
   },
   {
-    row: rowOf(BEFORE[1], PATTERNS[0], true),
-    operation: 'adding everything',
-    why: 'git clears the bit of a present gitlink on the write; tsgit leaves it skip-worktree',
-    git: { index: 'H 100644 0 lib/f;H 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
-    tsgit: { index: 'H 100644 0 lib/f;S 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
-  },
-  {
     row: rowOf(BEFORE[1], PATTERNS[0], false),
     operation: 'a merge that stops on a conflict',
     why: 'git creates the directory of the gitlink it re-includes; tsgit does not',
     git: { index: `${STAGED};H 160000 0 sub;S 100644 0 top`, disk: 'lib,lib/f,sub' },
     tsgit: { index: `${STAGED};H 160000 0 sub;S 100644 0 top`, disk: 'lib,lib/f' },
-  },
-  {
-    row: rowOf(BEFORE[1], PATTERNS[1], true),
-    operation: 'adding everything',
-    why: 'git clears the bit of a present gitlink on the write; tsgit leaves it skip-worktree',
-    git: { index: 'H 100644 0 lib/f;H 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
-    tsgit: { index: 'H 100644 0 lib/f;S 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
   },
   {
     row: rowOf(BEFORE[1], PATTERNS[1], true),
@@ -244,6 +234,14 @@ const GAP_CASES = GAPS.map((gap) => ({
   run: ALL_OPERATIONS.find((operation) => operation.name === gap.operation),
 }));
 
+const settleWhenOpportunistic = async (
+  operation: Operation,
+  repos: ReadonlyArray<string>,
+): Promise<void> => {
+  if (!operation.writesIndexOpportunistically) return;
+  await Promise.all(repos.map((repo) => settle(repo)));
+};
+
 const observe = async (repo: string): Promise<Observed> => ({
   index: stateOf(repo).replace(OBJECT_ID, ' ').replace(/\t/g, ' ').trim().split('\n').join(';'),
   disk: (await listDisk(repo)).join(','),
@@ -273,6 +271,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           const tsgitRepo = path.join(root, `tsgit-${counter}`);
           await seed(gitRepo, row);
           await seed(tsgitRepo, row);
+          await settleWhenOpportunistic(row.operation, [gitRepo, tsgitRepo]);
           runGitToItsStop(gitRepo, row.operation.git);
 
           // Act
