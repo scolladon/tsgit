@@ -160,35 +160,94 @@ interface Case extends Row {
   readonly operation: Operation;
 }
 
-/**
- * The rows tsgit does not yet match, each one real git behaviour tsgit also missed before the
- * gitlink judging was added: `add` leaves a present skip-worktree gitlink skip-worktree where git
- * clears it, a conflict-stopping rebase or cherry-pick re-judges a gitlink git leaves alone, and a
- * merge stopping on a conflict does not create the directory of a gitlink it re-includes.
- */
-const KNOWN_GAPS: ReadonlyArray<Row & { readonly operation: string }> = [
-  { ...rowOf(BEFORE[0], PATTERNS[1], true), operation: 'a rebase that stops on a conflict' },
-  { ...rowOf(BEFORE[1], PATTERNS[0], true), operation: 'adding everything' },
-  { ...rowOf(BEFORE[1], PATTERNS[0], false), operation: 'a merge that stops on a conflict' },
-  { ...rowOf(BEFORE[1], PATTERNS[1], true), operation: 'adding everything' },
-  { ...rowOf(BEFORE[1], PATTERNS[1], true), operation: 'a rebase that stops on a conflict' },
-  { ...rowOf(BEFORE[1], PATTERNS[1], false), operation: 'a cherry-pick that stops on a conflict' },
+interface Observed {
+  /** `ls-files -t -s` without object ids, one line per entry joined by `;`. */
+  readonly index: string;
+  readonly disk: string;
+}
+
+interface Gap {
+  readonly row: Row;
+  readonly operation: string;
+  readonly why: string;
+  readonly git: Observed;
+  readonly tsgit: Observed;
+}
+
+const OBJECT_ID = / [0-9a-f]{40} /g;
+const STAGED = 'M 100644 1 lib/f;M 100644 2 lib/f;M 100644 3 lib/f';
+
+/** Every row tsgit does not match git on, pinned with what each tool leaves; none is left out of the suite. */
+const GAPS: ReadonlyArray<Gap> = [
+  {
+    row: rowOf(BEFORE[0], PATTERNS[1], true),
+    operation: 'a rebase that stops on a conflict',
+    why: 'git leaves the present gitlink in the pattern; tsgit skip-worktrees it and removes its directory',
+    git: { index: `${STAGED};H 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,sub,top' },
+    tsgit: { index: `${STAGED};S 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,top' },
+  },
+  {
+    row: rowOf(BEFORE[1], PATTERNS[0], true),
+    operation: 'adding everything',
+    why: 'git clears the bit of a present gitlink on the write; tsgit leaves it skip-worktree',
+    git: { index: 'H 100644 0 lib/f;H 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
+    tsgit: { index: 'H 100644 0 lib/f;S 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
+  },
+  {
+    row: rowOf(BEFORE[1], PATTERNS[0], false),
+    operation: 'a merge that stops on a conflict',
+    why: 'git creates the directory of the gitlink it re-includes; tsgit does not',
+    git: { index: `${STAGED};H 160000 0 sub;S 100644 0 top`, disk: 'lib,lib/f,sub' },
+    tsgit: { index: `${STAGED};H 160000 0 sub;S 100644 0 top`, disk: 'lib,lib/f' },
+  },
+  {
+    row: rowOf(BEFORE[1], PATTERNS[1], true),
+    operation: 'adding everything',
+    why: 'git clears the bit of a present gitlink on the write; tsgit leaves it skip-worktree',
+    git: { index: 'H 100644 0 lib/f;H 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
+    tsgit: { index: 'H 100644 0 lib/f;S 160000 0 sub;S 100644 0 top', disk: 'lib,lib/f,sub' },
+  },
+  {
+    row: rowOf(BEFORE[1], PATTERNS[1], true),
+    operation: 'a rebase that stops on a conflict',
+    why: 'git leaves the present gitlink in the pattern; tsgit skip-worktrees it and removes its directory',
+    git: { index: `${STAGED};H 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,sub,top' },
+    tsgit: { index: `${STAGED};S 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,top' },
+  },
+  {
+    row: rowOf(BEFORE[1], PATTERNS[1], false),
+    operation: 'a cherry-pick that stops on a conflict',
+    why: 'git re-includes the absent gitlink and creates its directory; tsgit leaves it skip-worktree',
+    git: { index: `${STAGED};H 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,sub,top' },
+    tsgit: { index: `${STAGED};S 160000 0 sub;H 100644 0 top`, disk: 'lib,lib/f,top' },
+  },
 ];
 
-const isKnownGap = (row: Row, operation: Operation): boolean =>
-  KNOWN_GAPS.some(
-    (gap) =>
-      gap.before === row.before &&
-      gap.patterns === row.patterns &&
-      gap.directory === row.directory &&
-      gap.operation === operation.name,
-  );
+const ALL_OPERATIONS: ReadonlyArray<Operation> = [...OPERATIONS, ...CLEAN_OPERATIONS];
+
+const sameRow = (a: Row, b: Row): boolean =>
+  a.before === b.before && a.patterns === b.patterns && a.directory === b.directory;
+
+const isPinnedGap = (row: Row, operation: Operation): boolean =>
+  GAPS.some((gap) => sameRow(gap.row, row) && gap.operation === operation.name);
 
 const CASES: ReadonlyArray<Case> = ROWS.flatMap((row) =>
-  [...OPERATIONS, ...CLEAN_OPERATIONS]
-    .filter((operation) => !isKnownGap(row, operation))
-    .map((operation) => ({ ...row, operation })),
+  ALL_OPERATIONS.filter((operation) => !isPinnedGap(row, operation)).map((operation) => ({
+    ...row,
+    operation,
+  })),
 );
+
+const GAP_CASES = GAPS.map((gap) => ({
+  ...gap,
+  ...gap.row,
+  run: ALL_OPERATIONS.find((operation) => operation.name === gap.operation),
+}));
+
+const observe = async (repo: string): Promise<Observed> => ({
+  index: stateOf(repo).replace(OBJECT_ID, ' ').replace(/\t/g, ' ').trim().split('\n').join(';'),
+  disk: (await listDisk(repo)).join(','),
+});
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'a non-cone sparse checkout over a gitlink',
@@ -222,6 +281,29 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           // Assert
           expect(stateOf(tsgitRepo)).toBe(stateOf(gitRepo));
           expect(await listDisk(tsgitRepo)).toEqual(await listDisk(gitRepo));
+        });
+      },
+    );
+
+    describe.each(GAP_CASES)(
+      'Given $patterns after $before and a gitlink sub whose directory is present: $directory, When $operation ($why)',
+      (gap) => {
+        it('Then git and tsgit each leave what is pinned', async () => {
+          // Arrange
+          counter += 1;
+          const gitRepo = path.join(root, `git-${counter}`);
+          const tsgitRepo = path.join(root, `tsgit-${counter}`);
+          await seed(gitRepo, gap.row);
+          await seed(tsgitRepo, gap.row);
+          runGitToItsStop(gitRepo, gap.run?.git ?? []);
+
+          // Act
+          await gap.run?.tsgit(tsgitRepo);
+
+          // Assert
+          expect(gap.run).toBeDefined();
+          expect(await observe(gitRepo)).toEqual(gap.git);
+          expect(await observe(tsgitRepo)).toEqual(gap.tsgit);
         });
       },
     );
