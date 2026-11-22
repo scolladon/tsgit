@@ -14,8 +14,10 @@ import { chmod, mkdir, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../../src/adapters/node/index.js';
+import { status } from '../../../src/application/commands/status.js';
 import { readIndex } from '../../../src/application/primitives/read-index.js';
-import { GIT_AVAILABLE } from '../interop-helpers.js';
+import { TsgitError } from '../../../src/domain/error.js';
+import { GIT_AVAILABLE, tryRunGitWithExit } from '../interop-helpers.js';
 import {
   createTwinFactory,
   gitIn,
@@ -114,6 +116,41 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(tsgitTags).toEqual(gitTags);
             expect(gitTags).toContain('S a/f');
           });
+        });
+      });
+
+      describe('Given an unreadable parent directory holding a skip-worktree file', () => {
+        describe('When git and tsgit report the status', () => {
+          it.skipIf(RUNNING_AS_ROOT)(
+            'Then git warns and exits 0 while tsgit refuses with PERMISSION_DENIED',
+            async () => {
+              // Arrange
+              const { gitRepo, tsgitRepo } = await factory.make({ ignorecase });
+              for (const repo of [gitRepo, tsgitRepo]) {
+                await mkdir(path.join(repo, 'a'), { recursive: true });
+                await writeFile(path.join(repo, 'a/f'), 'hi\n');
+                await chmod(path.join(repo, 'a'), 0o000);
+              }
+              const gitRun = tryRunGitWithExit(['-C', gitRepo, 'status', '--porcelain', '-uall']);
+
+              // Act
+              const failure = await status(createNodeContext({ workDir: tsgitRepo })).then(
+                () => undefined,
+                (error: unknown) => error,
+              );
+
+              // Assert
+              for (const repo of [gitRepo, tsgitRepo]) await chmod(path.join(repo, 'a'), 0o755);
+              expect(gitRun.exitCode).toBe(0);
+              expect(gitRun.stderr).toContain("could not open directory 'a/': Permission denied");
+              expect(failure).toBeInstanceOf(TsgitError);
+              expect((failure as TsgitError).data.code).toBe('PERMISSION_DENIED');
+              expect((failure as TsgitError).data).toEqual({
+                code: 'PERMISSION_DENIED',
+                path: path.join(tsgitRepo, 'a'),
+              });
+            },
+          );
         });
       });
     });
