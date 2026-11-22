@@ -89,6 +89,38 @@ describe('applyResetSkipWorktree', () => {
     });
   });
 
+  describe('Given an unchanged entry whose donor carries the read bit', () => {
+    describe('When the post-pass runs', () => {
+      it('Then the rebuilt entry is returned without the bit', () => {
+        // Arrange
+        const donor = entry('b/f', OLD, { skipWorktree: true });
+        const rebuilt = entry('b/f', OLD);
+
+        // Act
+        const result = sut([rebuilt], indexOf(donor), inPatternOnlyB);
+
+        // Assert
+        expect(result[0]).toBe(rebuilt);
+      });
+    });
+  });
+
+  describe('Given an entry whose mode alone changed and whose donor carries the read bit', () => {
+    describe('When the post-pass runs', () => {
+      it('Then it is judged changed and keeps the bit', () => {
+        // Arrange
+        const donor = entry('b/f', OLD, { skipWorktree: true });
+        const rebuilt = { ...entry('b/f', OLD), mode: FILE_MODE.EXECUTABLE };
+
+        // Act
+        const result = sut([rebuilt], indexOf(donor), inPatternOnlyB);
+
+        // Assert
+        expect(result[0]?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
   describe('Given a new out-of-pattern path', () => {
     describe('When the post-pass runs', () => {
       it('Then it gets the bit with a zero stat', () => {
