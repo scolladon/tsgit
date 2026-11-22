@@ -243,3 +243,49 @@ describe('nonConeMatcher', () => {
     });
   });
 });
+
+describe('nonConeMatcher directory inheritance', () => {
+  describe('Given "/*" then "!/d*/s*"', () => {
+    describe.each([
+      { filePath: 'top.txt', expected: true, label: 'a top-level file is included' },
+      { filePath: 'd0/keep', expected: true, label: 'a file no rule names inherits its directory' },
+      { filePath: 'd0/s0', expected: false, label: 'a negated file is excluded' },
+      {
+        filePath: 'd0/x/y',
+        expected: true,
+        label: 'a deeper file inherits the nearest decided directory',
+      },
+      {
+        filePath: 'd0/sub/deep',
+        expected: false,
+        label: 'a file under a directory the negation names is excluded',
+      },
+    ])('When tested against $filePath', ({ filePath, expected, label }) => {
+      it(`Then ${label}`, () => {
+        // Arrange
+        const sut = nonConeMatcher([rule('/*'), rule('!/d*/s*')]);
+
+        // Act
+        const result = sut(path(filePath));
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given "/src/*" then "!/src/f"', () => {
+    describe('When tested against a file two levels under src', () => {
+      it('Then it is included through its decided directory', () => {
+        // Arrange
+        const sut = nonConeMatcher([rule('/src/*'), rule('!/src/f')]);
+
+        // Act
+        const result = sut(path('src/a/b/c'));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+});

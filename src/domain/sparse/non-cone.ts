@@ -39,17 +39,36 @@ export const compileSparseRule = (
   };
 };
 
+const verdictOf = (rules: ReadonlyArray<SparseRule>, path: string): boolean | undefined => {
+  let verdict: boolean | undefined;
+  for (const rule of rules) {
+    // `compileGlob` returns a stateless matcher — safe to reuse per call.
+    if (rule.matcher.test(path)) verdict = !rule.negated;
+  }
+  return verdict;
+};
+
+/** The enclosing directories of `path`, nearest first. */
+function* ancestorsOf(path: string): Generator<string> {
+  for (let slash = path.lastIndexOf('/'); slash > 0; slash = path.lastIndexOf('/', slash - 1)) {
+    yield path.slice(0, slash);
+  }
+}
+
 /**
  * Build a matcher for a list of non-cone rules. Last-match-wins over the
- * rules in file order; a path matched by no rule is not in the sparse set.
+ * rules in file order. A path no rule decides takes the verdict of its nearest
+ * decided directory, as git's directory walk hands its default down; a path
+ * nothing decides is not in the sparse set.
  */
 export const nonConeMatcher = (rules: ReadonlyArray<SparseRule>): SparseMatcher => {
   return (path: FilePath): boolean => {
-    let included = false;
-    for (const rule of rules) {
-      // `compileGlob` returns a stateless matcher — safe to reuse per call.
-      if (rule.matcher.test(path)) included = !rule.negated;
+    const own = verdictOf(rules, path);
+    if (own !== undefined) return own;
+    for (const directory of ancestorsOf(path)) {
+      const inherited = verdictOf(rules, directory);
+      if (inherited !== undefined) return inherited;
     }
-    return included;
+    return false;
   };
 };

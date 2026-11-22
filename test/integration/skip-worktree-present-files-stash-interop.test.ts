@@ -10,7 +10,15 @@
  *   interopSurface: stash
  */
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm as removeTree, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm as removeTree,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -167,6 +175,79 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
                 gitIn(gitRepo, ['rev-parse', 'refs/stash^{tree}']),
               );
           });
+        });
+      });
+    });
+  },
+);
+
+const NON_CONE_FILES: Readonly<Record<string, string>> = {
+  'top.txt': 't\n',
+  'd0/keep': 'k\n',
+  'd0/s0': 's\n',
+  'd0/s1': 's\n',
+  'd1/keep': 'k\n',
+  'd1/s0': 's\n',
+  'd1/s1': 's\n',
+};
+
+const nonConeRepo = async (repo: string): Promise<void> => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  gitIn(repo, ['config', 'user.name', 'A']);
+  gitIn(repo, ['config', 'user.email', 'a@a']);
+  await writeFiles(repo, NON_CONE_FILES);
+  gitIn(repo, ['add', '-A']);
+  gitIn(repo, ['commit', '-qm', 'c']);
+  gitIn(repo, ['config', 'core.sparseCheckout', 'true']);
+  gitIn(repo, ['config', 'core.sparseCheckoutCone', 'false']);
+  await writeFile(path.join(repo, '.git/info/sparse-checkout'), '/*\n!/d*/s*\n');
+  gitIn(repo, ['read-tree', '-mu', 'HEAD']);
+  await writeFiles(repo, { 'top.txt': 'changed\n' });
+};
+
+const listDisk = async (repo: string): Promise<ReadonlyArray<string>> =>
+  (await readdir(repo, { recursive: true })).filter((n) => !n.startsWith('.git')).sort();
+
+const nonConeSnapshot = async (repo: string) => ({
+  tags: gitIn(repo, ['-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t']),
+  disk: await listDisk(repo),
+});
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'stash over a non-cone sparse checkout',
+  () => {
+    let root = '';
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-stash-non-cone-')));
+    });
+
+    afterAll(async () => {
+      await removeTree(root, { recursive: true, force: true });
+    });
+
+    describe('Given in-pattern files beside out-of-pattern siblings in one directory', () => {
+      describe.each(['push', 'pop'] as const)('When git and tsgit stash %s', (verb) => {
+        it('Then both leave the same index tags and the same files on disk', async () => {
+          // Arrange
+          const gitRepo = path.join(root, `git-${verb}`);
+          const tsgitRepo = path.join(root, `tsgit-${verb}`);
+          await nonConeRepo(gitRepo);
+          await nonConeRepo(tsgitRepo);
+          gitIn(gitRepo, ['stash', 'push', '-q']);
+          const ctx = createNodeContext({ workDir: tsgitRepo });
+          await stashPush(ctx, {});
+          if (verb === 'pop') {
+            gitIn(gitRepo, ['stash', 'pop', '-q']);
+            await stashApply(ctx, {});
+          }
+
+          // Act
+          const sut = await nonConeSnapshot(tsgitRepo);
+
+          // Assert
+          expect(sut).toEqual(await nonConeSnapshot(gitRepo));
+          expect(sut.disk).toContain('d0/keep');
         });
       });
     });
