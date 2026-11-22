@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { requireWorkTree } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
-  mergeGitlinkKinds,
+  mergeEntryKinds,
   upToDateKinds,
-  withGitlinkKinds,
-} from '../../../../../src/application/primitives/internal/sparse-gitlink-kinds.js';
+  withEntryKinds,
+} from '../../../../../src/application/primitives/internal/sparse-entry-kinds.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import type { MergeOutcome } from '../../../../../src/domain/merge/index.js';
@@ -25,14 +25,14 @@ const gitlink = (p: string, extra: { pathBytes?: Uint8Array } = {}) => ({
 const directoriesOnly = () =>
   vi.fn((_path: FilePath, kind?: SparseEntryKind) => kind === 'directory');
 
-describe('withGitlinkKinds', () => {
+describe('withEntryKinds', () => {
   describe('Given no sparse matcher', () => {
     describe('When asked to judge gitlinks', () => {
       it('Then it answers undefined without reading the work tree', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const lstat = vi.spyOn(ctx.fs, 'lstat');
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const result = await sut(ctx, 'test', undefined, [[gitlink('sub')]]);
@@ -51,7 +51,7 @@ describe('withGitlinkKinds', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/sub`);
         const matcher = directoriesOnly();
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[gitlink('sub')]]);
@@ -69,7 +69,7 @@ describe('withGitlinkKinds', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/sub`);
         const matcher = directoriesOnly();
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[gitlink('sub')]]);
@@ -87,7 +87,7 @@ describe('withGitlinkKinds', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/sub`);
         const matcher = directoriesOnly();
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[gitlink('sub')]]);
@@ -106,7 +106,7 @@ describe('withGitlinkKinds', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const matcher = directoriesOnly();
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[gitlink('sub')]]);
@@ -124,7 +124,7 @@ describe('withGitlinkKinds', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.write(`${requireWorkTree(ctx, 'test')}/sub`, new Uint8Array());
         const matcher = directoriesOnly();
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[gitlink('sub')]]);
@@ -143,7 +143,7 @@ describe('withGitlinkKinds', () => {
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/f`);
         const matcher = directoriesOnly();
         const regular = { path: path('f'), mode: FILE_MODE.REGULAR };
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[regular]]);
@@ -161,7 +161,7 @@ describe('withGitlinkKinds', () => {
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/f`);
         const matcher = directoriesOnly();
         const regular = { path: path('f'), mode: FILE_MODE.REGULAR };
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[regular]], { files: [path('f')] });
@@ -179,7 +179,7 @@ describe('withGitlinkKinds', () => {
         const matcher = vi.fn(() => true);
         const regular = { path: path('f'), mode: FILE_MODE.REGULAR };
         const probe = vi.spyOn(ctx.fs, 'lstatIfReachable');
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[regular]]);
@@ -199,7 +199,7 @@ describe('withGitlinkKinds', () => {
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/sub`);
         const matcher = directoriesOnly();
         const lossy = gitlink('sub', { pathBytes: new Uint8Array([0x73, 0x75, 0x62]) });
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [[lossy]]);
@@ -216,7 +216,7 @@ describe('withGitlinkKinds', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const matcher = directoriesOnly();
-        const sut = withGitlinkKinds;
+        const sut = withEntryKinds;
 
         // Act
         const wrapped = await sut(ctx, 'test', matcher, [], { directories: [path('sub')] });
@@ -258,7 +258,7 @@ describe('upToDateKinds', () => {
   });
 });
 
-describe('mergeGitlinkKinds', () => {
+describe('mergeEntryKinds', () => {
   const GITLINK_ID = '1'.repeat(40) as ObjectId;
   const skipped = (p: string): IndexEntry =>
     ({
@@ -281,7 +281,7 @@ describe('mergeGitlinkKinds', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const matcher = directoriesOnly();
-        const sut = mergeGitlinkKinds;
+        const sut = mergeEntryKinds;
 
         // Act
         const { judging, assumed } = await sut(
@@ -305,7 +305,7 @@ describe('mergeGitlinkKinds', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const matcher = directoriesOnly();
-        const sut = mergeGitlinkKinds;
+        const sut = mergeEntryKinds;
 
         // Act
         const { judging, assumed } = await sut(ctx, matcher, [skipped('sub')], [], false);
@@ -324,7 +324,7 @@ describe('mergeGitlinkKinds', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(`${requireWorkTree(ctx, 'test')}/sub`);
         const matcher = directoriesOnly();
-        const sut = mergeGitlinkKinds;
+        const sut = mergeEntryKinds;
 
         // Act
         const { judging } = await sut(
@@ -347,7 +347,7 @@ describe('mergeGitlinkKinds', () => {
       it('Then there is nothing to judge with', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = mergeGitlinkKinds;
+        const sut = mergeEntryKinds;
 
         // Act
         const { judging } = await sut(ctx, undefined, [skipped('sub')], [], true);

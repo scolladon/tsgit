@@ -8,7 +8,7 @@ import { lstatIfReachable } from './fs-probes.js';
 import { joinPath } from './join-working-tree-path.js';
 import { requireWorkTree } from './repo-state.js';
 
-/** The part of an index entry or tree leaf that tells a gitlink and where it lies. */
+/** The part of an index entry or tree leaf that tells its kind and where it lies. */
 export interface KindCandidate {
   readonly path: FilePath;
   readonly mode: string;
@@ -67,24 +67,24 @@ const presentDirectories = async (
 /**
  * `sparse` judging each of `candidates` by what stands at its path, and each assumed directory as
  * a directory whatever stands there. The matcher is
- * returned as given when sparse checkout is off or no gitlink has a directory, so the common case
+ * returned as given when sparse checkout is off or no entry has a directory, so the common case
  * costs no wrapper.
  */
-export async function withGitlinkKinds(
+export async function withEntryKinds(
   ctx: Context,
   operation: string,
   sparse: SparseMatcher,
   candidates: ReadonlyArray<Iterable<KindCandidate>>,
   assumed?: AssumedKinds,
 ): Promise<SparseMatcher>;
-export async function withGitlinkKinds(
+export async function withEntryKinds(
   ctx: Context,
   operation: string,
   sparse: SparseMatcher | undefined,
   candidates: ReadonlyArray<Iterable<KindCandidate>>,
   assumed?: AssumedKinds,
 ): Promise<SparseMatcher | undefined>;
-export async function withGitlinkKinds(
+export async function withEntryKinds(
   ctx: Context,
   operation: string,
   sparse: SparseMatcher | undefined,
@@ -106,7 +106,7 @@ export async function withGitlinkKinds(
 }
 
 /** How a merge judges its entries: `judging` the matcher to write by, `assumed` what a retirement must judge the same way. */
-export interface MergeGitlinkKinds {
+export interface MergeEntryKinds {
   readonly judging: SparseMatcher | undefined;
   readonly assumed: AssumedKinds;
 }
@@ -118,15 +118,15 @@ const moddedOutcomes = (outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<Ki
  * The kinds of the entries a merge meets, in the index and in its result. An operation that
  * refreshes the index first (git's `merge`) also takes each skip-worktree entry as up to date.
  */
-export const mergeGitlinkKinds = async (
+export const mergeEntryKinds = async (
   ctx: Context,
   sparse: SparseMatcher | undefined,
   entries: ReadonlyArray<IndexEntry>,
   outcomes: ReadonlyArray<MergeOutcome>,
   refreshedIndex: boolean,
-): Promise<MergeGitlinkKinds> => {
+): Promise<MergeEntryKinds> => {
   const assumed = refreshedIndex ? upToDateKinds(entries) : {};
-  const judging = await withGitlinkKinds(
+  const judging = await withEntryKinds(
     ctx,
     'merge',
     sparse,

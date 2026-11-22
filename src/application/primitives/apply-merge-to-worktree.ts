@@ -66,7 +66,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
-import { mergeGitlinkKinds } from './internal/sparse-gitlink-kinds.js';
+import { mergeEntryKinds } from './internal/sparse-entry-kinds.js';
 import { retireSparseMovers, withRetiredSkipped } from './internal/sparse-movers.js';
 import { withConflictStopStats } from './internal/stat-conflict-index.js';
 import {
@@ -508,7 +508,7 @@ const materialiseConflict = async (
     refreshedIndex,
   }: { sparse: SparseMatcher | undefined; refreshedIndex: boolean },
 ): Promise<ApplyMergeResult> => {
-  const { judging: sparse, assumed } = await mergeGitlinkKinds(
+  const { judging: sparse, assumed } = await mergeEntryKinds(
     ctx,
     rawSparse,
     currentIndex.entries,

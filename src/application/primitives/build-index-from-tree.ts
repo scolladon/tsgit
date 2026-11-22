@@ -39,7 +39,7 @@ import {
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
-import { withGitlinkKinds } from './internal/sparse-gitlink-kinds.js';
+import { withEntryKinds } from './internal/sparse-entry-kinds.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
 export interface BuildIndexFromTreeOpts {
@@ -135,7 +135,7 @@ export const buildIndexFromTree = async (
   const donors = donorByPath(opts.currentIndex);
   const leaves = await collectLeaves(ctx, opts.targetTree);
   const pathRules = indexPathRulesOf(ctx);
-  const sparse = await withGitlinkKinds(ctx, 'buildIndexFromTree', opts.sparse, [leaves]);
+  const sparse = await withEntryKinds(ctx, 'buildIndexFromTree', opts.sparse, [leaves]);
   const entries = leaves.map((leaf) => projectLeaf(pathRules, leaf, donors, sparse));
   entries.sort(pathComparatorFor(entries));
   return entries;

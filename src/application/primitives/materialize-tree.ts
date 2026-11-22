@@ -78,7 +78,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clean.js';
-import { upToDateKinds, withGitlinkKinds } from './internal/sparse-gitlink-kinds.js';
+import { upToDateKinds, withEntryKinds } from './internal/sparse-entry-kinds.js';
 import { judgeMovers, warnLeftDespiteSparse } from './internal/sparse-left-dirty.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
@@ -956,7 +956,7 @@ const withGitlinkDirectories = async (
 ): Promise<MaterializeTreeOpts> => {
   if (opts.sparse === undefined) return opts;
   const assumed = opts.refreshedIndex === true ? upToDateKinds(opts.currentIndex.entries) : {};
-  const sparse = await withGitlinkKinds(
+  const sparse = await withEntryKinds(
     ctx,
     'materializeTree',
     opts.sparse,

@@ -114,10 +114,7 @@ import {
 } from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
-import {
-  type AssumedKinds,
-  mergeGitlinkKinds,
-} from '../primitives/internal/sparse-gitlink-kinds.js';
+import { type AssumedKinds, mergeEntryKinds } from '../primitives/internal/sparse-entry-kinds.js';
 import {
   NOTHING_RETIRED,
   retireSparseMovers,
@@ -1607,7 +1604,7 @@ const loadConflictStopKinds = async (
   const rawMatcher = await loadSparseMatcher(ctx);
   if (rawMatcher === undefined) return { matcher: undefined, rawMatcher, assumed: {} };
   const { entries } = await readIndex(ctx);
-  const { judging, assumed } = await mergeGitlinkKinds(ctx, rawMatcher, entries, outcomes, true);
+  const { judging, assumed } = await mergeEntryKinds(ctx, rawMatcher, entries, outcomes, true);
   return { matcher: judging, rawMatcher, assumed };
 };
 

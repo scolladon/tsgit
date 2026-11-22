@@ -18,7 +18,7 @@ import { removeGitlinkDirectory } from '../apply-changeset.js';
 import { joinPath } from './join-working-tree-path.js';
 import { pruneEmptiedDirectories, type SurvivingDirectories } from './prune-emptied-directories.js';
 import { requireWorkTree } from './repo-state.js';
-import { type AssumedKinds, withGitlinkKinds } from './sparse-gitlink-kinds.js';
+import { type AssumedKinds, withEntryKinds } from './sparse-entry-kinds.js';
 import { notUpToDate, warnLeftDespiteSparse } from './sparse-left-dirty.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
 import { removeWorkingTreeFile } from './write-working-tree-file.js';
@@ -99,7 +99,7 @@ export const retireSparseMovers = async (
 ): Promise<SparseRetirement> => {
   if (sparse === undefined) return NOTHING_RETIRED;
   const workdir = requireWorkTree(ctx, 'merge');
-  const judging = await withGitlinkKinds(
+  const judging = await withEntryKinds(
     ctx,
     'merge',
     sparse,

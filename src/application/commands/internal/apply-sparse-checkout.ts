@@ -29,7 +29,7 @@ import { lstatIfReachable } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { attributeBlobLookup } from '../../primitives/internal/read-gitattributes.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
-import { withGitlinkKinds } from '../../primitives/internal/sparse-gitlink-kinds.js';
+import { withEntryKinds } from '../../primitives/internal/sparse-entry-kinds.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -268,7 +268,7 @@ export const applySparseCheckout = async (
   try {
     const index = await readIndex(ctx);
     const stage0 = index.entries.filter((entry) => entry.flags.stage === 0);
-    const judging = await withGitlinkKinds(ctx, 'sparse-checkout', opts.matcher, [stage0]);
+    const judging = await withEntryKinds(ctx, 'sparse-checkout', opts.matcher, [stage0]);
     const part = await partition(ctx, workdir, stage0, { ...opts, matcher: judging });
     const changeset = await buildChangeset(ctx, workdir, part);
     const applied = await applyChangesetWithAttributes(
