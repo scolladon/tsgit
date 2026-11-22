@@ -827,7 +827,7 @@ describe('reset — sparse checkout', () => {
         await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert
-        const index = await readIndex(ctx);
+        const index = await readRawIndex(ctx);
         expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(false);
       });
     });
