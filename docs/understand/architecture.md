@@ -25,6 +25,14 @@ Dependencies flow one way, inward. The domain core has zero `import` statements 
 
 `write(path, data, options?)` and `writeStream(path, source, options?)` take `WriteOptions { mode?: number }` and **resolve the written file's `FileStat`**. This is a breaking change for third-party `FileSystem` adapters: a write that resolves `void` no longer satisfies the port, and the stat must describe the file as written, since index entries are built from it.
 
+### `FileSystem` optional probes
+
+Beyond the required members, the port offers optional probes that let a caller skip work an adapter can answer more cheaply. A caller always has a fallback that answers identically, so an adapter that omits one stays correct:
+
+- `tryLstat`, `tryReadUtf8`: non-throwing twins of `lstat` and `readUtf8`.
+- `lstatIfReachable(path)`: `lstat` that resolves `undefined` for any miss, `ENOENT` and `ENOTDIR` alike.
+- `lstatReachableSync(path)`: whether an entry is reachable at `path`, answered synchronously. `true` where `lstat` succeeds, `false` wherever it refuses for any reason, `undefined` when this call cannot be answered synchronously (the Node adapter before its root set is resolved, or once the turn's 1 ms sync budget is spent). It builds no refusal for a miss, so a walk over many mostly-absent paths pays the syscall alone. The Node adapter offers it only with a sync-I/O policy: under `io: 'threadpool'` it is absent, so a caller can tell an adapter that never answers from one whose turn is spent. The memory adapter offers it; the browser adapters omit it. The present-file clear behind [`readIndex`](../use/primitives/read-index.md) is its caller and falls back to `lstatIfReachable`, then `lstat`.
+
 ## Tiered API
 
 | Tier | Purpose | Entry point |

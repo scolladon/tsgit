@@ -103,6 +103,18 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-1188 — Sparse checkout writes its keys to the worktree config](../adr/1188-sparse-checkout-writes-its-keys-to-the-worktree-config.md) — supersedes the minimal `[core]` config writer's target file for the sparse keys
 - [ADR-075 — Reset sparse integration](../adr/075-reset-sparse-integration.md)
 - [ADR-1211 — An excluded line-merged path is staged skip-worktree, not written](../adr/1211-an-excluded-line-merged-path-is-staged-skip-worktree-not-written.md) — the sparse rule for both conflict paths: a clean outcome is written only inside the patterns, a conflict always is
+- [ADR-1236 — The skip-worktree bit of a present file is cleared at every index read](../adr/1236-the-skip-worktree-bit-of-a-present-file-is-cleared-at-every-index-read.md)
+- [ADR-1237 — Add decides "outside the sparse definition" with git's predicates per route](../adr/1237-add-decides-outside-the-sparse-definition-with-git-predicates-per-route.md)
+- [ADR-1238 — The eager gate refuses a bad sparse.expectFilesOutsideOfPatterns](../adr/1238-the-eager-gate-refuses-a-bad-sparse-expect-files-outside-of-patterns.md)
+- [ADR-1239 — Checkout -b on the current commit writes no index](../adr/1239-checkout-b-on-the-current-commit-writes-no-index.md)
+- [ADR-1240 — Stash retires a clean out-of-pattern file as git does](../adr/1240-stash-retires-a-clean-out-of-pattern-file-as-git-does.md)
+- [ADR-1241 — Reset --mixed keeps the read bit of an unchanged entry](../adr/1241-reset-mixed-keeps-the-read-bit-of-an-unchanged-entry.md)
+- [ADR-1242 — Any lstat failure reads absent when clearing the bit](../adr/1242-any-lstat-failure-reads-absent-when-clearing-the-bit.md)
+- [ADR-1243 — The bit clear walks paths sequentially under a bench gate](../adr/1243-the-bit-clear-walks-paths-sequentially-under-a-bench-gate.md) — superseded by ADR-1247
+- [ADR-1244 — Public readIndex and snapshot rows carry the cleared bit](../adr/1244-public-read-index-and-snapshot-rows-carry-the-cleared-bit.md)
+- [ADR-1245 — Reset --mixed carries the read bit of every rebuilt stage-0 entry](../adr/1245-reset-mixed-carries-the-read-bit-of-every-rebuilt-stage-zero-entry.md)
+- [ADR-1246 — Checkout -b on the current commit passes an unmerged index](../adr/1246-checkout-b-on-the-current-commit-passes-an-unmerged-index.md)
+- [ADR-1247 — The bit clear probes presence synchronously under a floor-relative gate](../adr/1247-the-bit-clear-probes-presence-synchronously-under-a-floor-relative-gate.md)
 
 ## Partial clone (Phase 17.4)
 
