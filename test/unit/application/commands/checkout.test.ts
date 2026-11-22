@@ -2732,3 +2732,25 @@ describe('Given a switch from an unborn HEAD over an index that was written', ()
     });
   });
 });
+
+describe('Given a switch from a born HEAD', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When checkout switches to a branch', () => {
+    it('Then the index counts as refreshed against the HEAD tree', async () => {
+      // Arrange
+      const { ctx, newer } = await seedWithOlderBranch();
+      const headTree = (await readTree(ctx, newer)).id;
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTreeJudging');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { rev: 'other' });
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1]).toMatchObject({ headTree, refreshedIndex: true });
+    });
+  });
+});
