@@ -43,7 +43,7 @@ moved 21 entries and 10 sub-rows there.
 |---|---|---|---|
 | 1 | ~~**6.0.0**~~ shipped 2026-10-21 (v6.0.0, #315) | ~~#322~~ · ~~#321~~ · ~~#306~~ · ~~32.31~~ | breaking `FileSystem.write` released; ~~#321~~ was a reported user failure |
 | 2 | **fsck + git 2.56** (floats) | ~~#311~~ + ~~31.8~~ paired · ~~32.18~~ · ~~32.19~~ · ~~32.26~~ · ~~32.48~~ · ~~32.49~~ · ~~32.13~~ · ~~32.12~~ · ~~32.1 row D10~~ · ~~32.56~~ | git 2.56 landed with ~~#311~~; the corrupt-input rows of this cut moved to the ledger (ADR-1170), leaving two wrong-result rows on well-formed repositories |
-| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · ~~32.60~~ · ~~32.67~~ · ~~32.74~~ · ~~32.82~~ · 32.87 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
+| 3 | **writers** | ~~32.11~~ non-breaking parts shipped (dialect, unmatched glob, `describe`, `name-rev`; the breaking tail is 32.11b in row 8) · ~~32.38~~ · ~~32.29~~ · ~~32.27~~ · ~~32.22~~ · ~~32.30~~ · ~~32.32~~ · ~~32.40~~ · ~~32.41~~ · ~~32.44~~ · ~~32.60~~ · ~~32.67~~ · ~~32.74~~ · ~~32.82~~ · 32.91 · 32.87 · 32.1 rows A6, A23, D5, D16 | data-integrity and wrong-result in `add` / `checkout` / `stash` / `status`; ~~32.38~~ led the cut: every repository with a submodule read dirty |
 | 4 | **sequencer** | 32.16 · 32.17 · 32.10 · 32.8 · 32.20 · ~~32.39~~ · 32.43 · 32.1 rows A2, A13, A20, B17, C6 | refusal mismatches in `merge` / `rebase` / `push` |
 | 5 | **local perf** | #310 → 31.5 · 31.12 · 31.13 | investigate #310 before measuring 31.5; 31.12 builds on the cache-tree (#322) |
 | 6 | **transport perf** | 31.6 · 32.5 · #307 · #308 | same receive path (index-pack, inflate) |
@@ -828,4 +828,23 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
   run3 git:   [1617946883 -rw-rw-r--] -> [1617946883 -rw-rw-r--]
        tsgit: [1617946953 -rw-rw-r--] -> [1617946962 -rw-r--r--]
   # git: checkout -- f ; tsgit: repo.checkout({ paths: ['f'] })
+  ```
+
+### Open (scoped 2026-11-22 — follow-ups surfaced by the skip-worktree-present-files run, triaged)
+
+- [ ] **32.91** The gitignore-family glob compiler matches a bracket expression as literal text where git's wildmatch reads a character class — pre-existing, pinned against git 2.56.0 on a well-formed repository, both `core.ignorecase` values. `compileGlob` (`src/domain/pathspec/compile-glob.ts:19`) tokenises `[…]` and `\` as literals, so its three consumers diverge: `parseGitignore` (`src/domain/ignore/parse-gitignore.ts`), `parseGitattributes` (`src/domain/attributes/parse-gitattributes.ts`) and the non-cone sparse rule (`src/domain/sparse/non-cone.ts`). With `.gitignore` `*.py[cod]`, git ignores `m.pyc` and `add .` leaves it out; tsgit `status` lists it untracked and `add(['.'])` stages it. With non-cone sparse patterns `/t` and `br[a]/`, git keeps `bra/i` on disk and marks `br[a]/h` skip-worktree; tsgit does the reverse. With `.gitattributes` `br[a]/* foo=1`, git applies `foo` to `bra/i` and leaves `br[a]/h` unspecified. Fix: add a `class` token to the linear matcher with wildmatch's bracket grammar (`!`/`^` negation, ranges, `]` first, `[:alpha:]`-style named classes, `\` escapes, never matching `/` under WM_PATHNAME, ASCII case folding under `core.ignorecase`), keeping the `O(tokens × path)` bound (ADR-077). Supersede the "character classes are literal in v1" scope note in `docs/design/compile-glob-redos.md`. Pin one interop row per consumer and add a `compile-glob` properties sibling for the class grammar.
+  Not folded: out of scope.
+  ```
+  .gitignore '*.py[cod]'; untracked m.py m.pyc
+  git status --porcelain -uall -> "?? .gitignore ?? m.py"
+  tsgit status()               -> untracked [".gitignore","m.py","m.pyc"]        (base: same)
+  git add .                    -> index .gitignore m.py t
+  tsgit add(['.'])             -> index .gitignore m.py m.pyc t
+
+  tracked br[a]/h bra/i t; sparse-checkout set --no-cone /t 'br[a]/'   (ignorecase=false and =true identical)
+  git   -> index [S br[a]/h H bra/i H t]  disk [bra]
+  tsgit -> index [H br[a]/h S bra/i H t]  disk [br[a]]                   (base: same)
+
+  .gitattributes 'br[a]/* foo=1'
+  git check-attr foo -- 'br[a]/h' bra/i -> "br[a]/h: foo: unspecified" / "bra/i: foo: 1"
   ```

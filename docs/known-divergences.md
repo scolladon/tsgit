@@ -88,6 +88,13 @@ A damaged object, ref, index or state file, or a file the process cannot read.
   tsgit  exit=0    at=file     rev-parse refs/heads/x: ok   reflog: branch: Created from main
   ```
 
+- **(status)** `status` throws `PERMISSION_DENIED` on a directory the process cannot read, where git warns and exits 0 — pre-existing, pinned against git 2.56.0 (POSIX, not root). Tracked skip-worktree `a/f` under `a` at mode 000: git `status --porcelain -uall` exits 0 with `warning: could not open directory 'a/': Permission denied`; tsgit's working-tree walk throws `{"code":"PERMISSION_DENIED","path":"<repo>/a"}`. Reproduces without sparse checkout; independent of the skip-worktree clear. Pinned in `test/integration/posix-only/skip-worktree-present-files-interop.test.ts`. Not folded: out of scope (the walk's refusal on an unreadable directory, shared with `add`; see 32.68 for the same warn-and-walk-on shape).
+  ```
+  chmod 000 a
+  git status --porcelain -uall -> exit 0, warning: could not open directory 'a/': Permission denied
+  tsgit status()               -> threw {"code":"PERMISSION_DENIED","path":"<repo>/a"}
+  ```
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.
@@ -264,11 +271,11 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit status()         -> changes [a/f modified], untracked ["A/f"]
   ```
 
-- **(status)** `status` throws `PERMISSION_DENIED` on a directory the process cannot read, where git warns and exits 0 — pinned against git 2.56.0 (POSIX, not root). Tracked skip-worktree `a/f` under `a` at mode 000: git `status --porcelain -uall` exits 0 with `warning: could not open directory 'a/': Permission denied`; tsgit's working-tree walk throws `{"code":"PERMISSION_DENIED","path":"<repo>/a"}`. Pinned in `test/integration/posix-only/skip-worktree-present-files-interop.test.ts`. Not folded: out of scope (the walk's refusal on an unreadable directory, shared with `add`; see 32.68 for the same warn-and-walk-on shape).
+- **(rm)** Under sparse checkout, `rm` removes an absent skip-worktree entry where git refuses it as outside the sparse-checkout definition — pre-existing, pinned against git 2.56.0. Non-cone patterns `/*`, `!/*/`, `/b/` applied with `read-tree -mu HEAD`, so `a/f` is skip-worktree and absent. git `rm a/f` exits 1 with `The following paths and/or pathspecs matched paths that exist outside of your sparse-checkout definition, so will not be updated in the index: a/f` and keeps `S a/f`. tsgit `rm(['a/f'])` returns `{ removed: ['a/f'] }` and drops the entry (`src/application/commands/rm.ts`). Above the filing bar (data integrity), recorded here over the net-zero cap (ADR-1170). Not folded: out of scope.
   ```
-  chmod 000 a
-  git status --porcelain -uall -> exit 0, warning: could not open directory 'a/': Permission denied
-  tsgit status()               -> threw {"code":"PERMISSION_DENIED","path":"<repo>/a"}
+  printf '/*\n!/*/\n/b/\n' > .git/info/sparse-checkout; git read-tree -mu HEAD
+  git rm a/f        -> exit 1, "…outside of your sparse-checkout definition…", index S a/f H b/g
+  tsgit rm(['a/f']) -> {"removed":["a/f"]}, index H b/g
   ```
 
 - **(rebase)** A `rebase` that stops on a conflict marks a present gitlink skip-worktree and removes its directory where git leaves it in the pattern — pre-existing, pinned against git 2.56.0. `main` and `other` both change `lib/f`, `other` also `top`; patterns `*\n!sub/` with an empty directory `sub`, applied after `*` or `/lib/`; `git rebase other` vs `rebaseRun({ upstream: 'other' })` (`src/application/commands/rebase.ts`). `cherry-pick` and `merge` of the same history agree with git, so the difference is in the rebase stop. The rows fail on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
