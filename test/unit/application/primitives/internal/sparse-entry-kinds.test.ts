@@ -275,6 +275,32 @@ describe('mergeEntryKinds', () => {
   });
   const deleted = (p: string): MergeOutcome => ({ status: 'resolved-deleted', path: path(p) });
 
+  describe('Given a layout without a work tree and a sparse matcher', () => {
+    describe('When the kinds are taken', () => {
+      it('Then it refuses with WORK_TREE_REQUIRED naming merge', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const { workDir: _workDir, ...layout } = base.layout;
+        const ctx = { ...base, layout };
+        const sut = mergeEntryKinds;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, directoriesOnly(), [], [], false);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'WORK_TREE_REQUIRED',
+          operation: 'merge',
+        });
+      });
+    });
+  });
+
   describe('Given a refreshing operation and a skip-worktree gitlink with no directory', () => {
     describe('When the kinds are taken', () => {
       it('Then the gitlink is assumed and judged a directory', async () => {
