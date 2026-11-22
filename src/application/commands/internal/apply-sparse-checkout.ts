@@ -163,7 +163,8 @@ const REAPPLY_HINT =
   '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
 
 /**
- * An included entry is `noop` when anything stands at its path (a dangling link counts) or a file or link
+ * An included entry is `noop` when it was not skip-worktree (git writes only an entry it re-includes, so an
+ * absent one stays absent), when anything stands at its path (a dangling link counts) or when a file or link
  * stands on its leading path, else `add`; a lossy one is never probed, its decoded name being another file.
  */
 const includedChange = async (
@@ -172,6 +173,7 @@ const includedChange = async (
   scanner: LeadingPathScanner,
   entry: IndexEntry,
 ): Promise<IncludedChange> => {
+  if (!entry.flags.skipWorktree) return { change: noopEntry(entry) };
   if (isLossy(entry)) return { change: addEntry(entry) };
   if ((await lstatIfReachable(ctx.fs, joinPath(workdir, entry.path))) !== undefined) {
     return { change: noopEntry(entry) };

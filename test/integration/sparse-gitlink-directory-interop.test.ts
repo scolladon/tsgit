@@ -168,34 +168,28 @@ const ENTERING_ROWS = PATTERNS.flatMap((patterns) => [
 interface Operation {
   readonly name: string;
   readonly git: ReadonlyArray<string>;
-  /** `reapply` also writes an included file the work tree lacks, which `read-tree -mu` leaves absent. */
-  readonly comparesFiles: boolean;
   readonly tsgit: (workDir: string) => Promise<unknown>;
 }
 
 const OPERATIONS: ReadonlyArray<Operation> = [
   {
     name: 'reapplying the patterns',
-    git: ['read-tree', '-mu', 'HEAD'],
-    comparesFiles: false,
+    git: ['sparse-checkout', 'reapply'],
     tsgit: (workDir) => sparseCheckoutReapply(createNodeContext({ workDir })),
   },
   {
     name: 'resetting hard to an older commit',
     git: ['reset', '-q', '--hard', 'older'],
-    comparesFiles: true,
     tsgit: (workDir) => reset(createNodeContext({ workDir }), { mode: 'hard', rev: 'older' }),
   },
   {
     name: 'resetting mixed to an older commit',
     git: ['reset', '-q', 'older'],
-    comparesFiles: true,
     tsgit: (workDir) => reset(createNodeContext({ workDir }), { mode: 'mixed', rev: 'older' }),
   },
   {
     name: 'switching to an older commit',
     git: ['checkout', '-q', 'older'],
-    comparesFiles: true,
     tsgit: (workDir) => checkout(createNodeContext({ workDir }), { rev: 'older' }),
   },
 ];
@@ -232,9 +226,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
             // Assert
             expect(tagsOf(tsgitRepo)).toBe(tagsOf(gitRepo));
-            if (operation.comparesFiles) {
-              expect(await listDisk(tsgitRepo)).toEqual(await listDisk(gitRepo));
-            }
+            expect(await listDisk(tsgitRepo)).toEqual(await listDisk(gitRepo));
           });
         });
       },
@@ -282,9 +274,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
             // Assert
             expect(tagsOf(tsgitRepo)).toBe(tagsOf(gitRepo));
-            if (operation.comparesFiles) {
-              expect(await listDisk(tsgitRepo)).toEqual(await listDisk(gitRepo));
-            }
+            expect(await listDisk(tsgitRepo)).toEqual(await listDisk(gitRepo));
           });
         });
       },

@@ -44,6 +44,12 @@ const makeEntry = (path: string, id: ObjectId): IndexEntry => ({
   path: path as FilePath,
 });
 
+/** `entry` as an earlier narrowing left it: outside the work tree, skip-worktree. */
+const skipWorktreeOf = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, skipWorktree: true },
+});
+
 /** Seed `.git/index` with a SHA-1-trailer so `readIndex` accepts it. */
 const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Promise<void> => {
   const index: GitIndex = {
@@ -308,7 +314,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
           // Arrange
           const ctx = createMemoryContext();
           const lossyId = await writeBlob(ctx, 'lossy');
-          const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: lossyBytes };
+          const lossy = skipWorktreeOf({ ...makeEntry(view, lossyId), pathBytes: lossyBytes });
           await seedIndex(ctx, [lossy]);
           if (present) await seedWorkFile(ctx, view, 'untracked');
           const exists = vi.spyOn(ctx.fs, 'lstatIfReachable');
@@ -474,7 +480,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedIndex(ctx, [
           makeEntry('src/a', aId),
           makeEntry('docs/b', bId),
-          makeEntry('src/c', cId),
+          skipWorktreeOf(makeEntry('src/c', cId)),
         ]);
         await seedWorkFile(ctx, 'src/a', 'aaa');
         await seedWorkFile(ctx, 'docs/b', 'bbb');
@@ -485,6 +491,26 @@ describe('commands/internal/apply-sparse-checkout', () => {
         // Assert — exactly one add, one delete, no retain.
         expect(result).toEqual({ materialized: 1, removed: 1, retained: [] });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/c`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an included entry that is not skip-worktree and whose file is absent', () => {
+    describe('When applySparseCheckout', () => {
+      it('Then the file stays absent and the entry stays as it was', async () => {
+        // Arrange — git writes only an entry it re-includes; one already in the work tree's set is left alone.
+        const ctx = createMemoryContext();
+        const srcId = await writeBlob(ctx, 'aaa');
+        await seedIndex(ctx, [makeEntry('src/a', srcId)]);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a`)).toBe(false);
+        expect((await readBackIndex(ctx)).get('src/a' as FilePath)?.flags.skipWorktree).toBe(false);
       });
     });
   });
@@ -681,7 +707,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedIndex(ctx, [
           makeEntry('src/a', aId),
           makeEntry('docs/b', bId),
-          makeEntry('src/c', cId),
+          skipWorktreeOf(makeEntry('src/c', cId)),
         ]);
         await seedWorkFile(ctx, 'src/a', 'aaa');
         await seedWorkFile(ctx, 'docs/b', 'bbb');
