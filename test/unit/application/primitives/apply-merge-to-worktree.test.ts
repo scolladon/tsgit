@@ -3685,3 +3685,86 @@ describe('Given sparse checkout selects b only', () => {
     });
   });
 });
+
+describe('Given a skip-worktree gitlink whose directory is absent and a rule excluding the directory sub', () => {
+  const NON_CONE_CONFIG = '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n';
+  const GITLINK_OURS = '2'.repeat(40) as ObjectId;
+  const GITLINK_THEIRS = '3'.repeat(40) as ObjectId;
+
+  const arrange = async () => {
+    const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, NON_CONE_CONFIG);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '*\n!sub/\n');
+    invalidateConfigCache(ctx);
+    const gitlinkTree = async (id: ObjectId, content: string) =>
+      treeWith(ctx, [
+        treeEntry(FILE_MODE.GITLINK, 'sub' as FilePath, id),
+        treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, await writeBlob(ctx, content)),
+      ]);
+    const skippedGitlink: IndexEntry = {
+      ...indexEntry('sub', GITLINK_OURS, FILE_MODE.GITLINK),
+      flags: { ...STAGE0_FLAGS, skipWorktree: true },
+    };
+    return {
+      ctx,
+      base: await gitlinkTree(GITLINK_OURS, 'base\n'),
+      ours: await gitlinkTree(GITLINK_OURS, 'ours\n'),
+      theirs: await gitlinkTree(GITLINK_THEIRS, 'theirs\n'),
+      cleanBase: await gitlinkTree(GITLINK_OURS, 'ours\n'),
+      currentIndex: index([skippedGitlink, indexEntry('f', await writeBlob(ctx, 'ours\n'))]),
+    };
+  };
+
+  const skipWorktreeAfter = async (refreshedIndex: boolean, conflicting: boolean) => {
+    const { ctx, base, cleanBase, ours, theirs, currentIndex } = await arrange();
+    const sut = applyMergeToWorktree;
+    const result = await sut(ctx, {
+      baseTree: conflicting ? base : cleanBase,
+      oursTree: ours,
+      theirsTree: theirs,
+      currentIndex,
+      ...(refreshedIndex ? { refreshedIndex } : {}),
+    });
+    if (result.kind === 'would-overwrite') throw new Error('the merge was refused');
+    const entries = result.kind === 'clean' ? result.result.newIndexEntries : result.indexEntries;
+    return {
+      kind: result.kind,
+      bits: entries
+        .filter((entry) => entry.path === 'sub')
+        .map((entry) => entry.flags.skipWorktree),
+    };
+  };
+
+  describe.each([false, true])(
+    'When a merge changing the gitlink is clean, refreshed %s',
+    (refreshed) => {
+      it('Then the refresh decides whether it is judged a directory the rule excludes', async () => {
+        // Arrange
+        const expected = refreshed;
+
+        // Act
+        const outcome = await skipWorktreeAfter(refreshed, false);
+
+        // Assert
+        expect(outcome).toEqual({ kind: 'clean', bits: [expected] });
+      });
+    },
+  );
+
+  describe.each([false, true])(
+    'When a merge changing the gitlink conflicts, refreshed %s',
+    (refreshed) => {
+      it('Then the refresh decides whether it is judged a directory the rule excludes', async () => {
+        // Arrange
+        const expected = refreshed;
+
+        // Act
+        const outcome = await skipWorktreeAfter(refreshed, true);
+
+        // Assert
+        expect(outcome.kind).toBe('conflict');
+        expect(outcome.bits).toContain(expected);
+      });
+    },
+  );
+});
