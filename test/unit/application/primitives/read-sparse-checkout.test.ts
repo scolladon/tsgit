@@ -5,6 +5,7 @@ import { __resetSectionsCacheForTests } from '../../../../src/application/primit
 import {
   loadSparseMatcher,
   MAX_SPARSE_PATTERN_FILE_BYTES,
+  readSparseMatchOptions,
   readSparsePatternText,
 } from '../../../../src/application/primitives/read-sparse-checkout.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -423,6 +424,27 @@ describe('primitives/read-sparse-checkout', () => {
           expect(result?.('B/f' as FilePath)).toBe(accepts);
           expect(result?.('b/f' as FilePath)).toBe(true);
         });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'core.ignorecase = true', config: '[core]\n\tignorecase = true\n', expected: true },
+    { label: 'core.ignorecase = false', config: '[core]\n\tignorecase = false\n', expected: false },
+    { label: 'core.ignorecase absent', config: '', expected: false },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When readSparseMatchOptions', () => {
+      it('Then ignoreCase follows the setting', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, config);
+        const sut = readSparseMatchOptions;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ ignoreCase: expected });
       });
     });
   });

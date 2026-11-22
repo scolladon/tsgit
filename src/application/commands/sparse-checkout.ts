@@ -22,7 +22,11 @@ import {
 import type { Context } from '../../ports/context.js';
 import { enableWorktreeConfig } from '../primitives/internal/enable-worktree-config.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
-import { loadSparseMatcher, readSparsePatternText } from '../primitives/read-sparse-checkout.js';
+import {
+  loadSparseMatcher,
+  readSparseMatchOptions,
+  readSparsePatternText,
+} from '../primitives/read-sparse-checkout.js';
 import { readSparseConfig } from '../primitives/read-sparse-config.js';
 import { updateScopedConfigEntries } from '../primitives/update-config.js';
 import { writeSparsePatternText } from '../primitives/write-sparse-checkout.js';
@@ -159,7 +163,7 @@ const applyAndPersist = async (
   }
   const applied = await applySparseCheckout(
     ctx,
-    applyOpts(buildSparseMatcher(spec), options.force),
+    applyOpts(buildSparseMatcher(spec, await readSparseMatchOptions(ctx)), options.force),
   );
   await writeSparsePatternText(ctx, text);
   return toApplied(spec.mode === 'cone', applied);
