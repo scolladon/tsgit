@@ -4,7 +4,7 @@
  * on or off, from the local file or an active `config.worktree`.
  *
  * @proves
- *   surface:        config gate
+ *   surface:        config
  *   bucket:         cross-tool-interop
  *   unique:         a bogus sparse.expectFilesOutsideOfPatterns refuses the operational surface as canonical git does
  *   interopSurface: config

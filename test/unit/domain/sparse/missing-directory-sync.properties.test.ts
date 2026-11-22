@@ -27,8 +27,10 @@ describe('presentPathsSync properties', () => {
             const syncAsked: string[] = [];
             const asyncAsked: string[] = [];
 
+            const sut = presentPathsSync;
+
             // Act
-            const sut = presentPathsSync(paths, (p) => {
+            const actual = sut(paths, (p) => {
               syncAsked.push(p);
               return answer(p);
             });
@@ -38,7 +40,7 @@ describe('presentPathsSync properties', () => {
             });
 
             // Assert
-            expect([...sut]).toEqual([...expected]);
+            expect([...actual]).toEqual([...expected]);
             expect(syncAsked).toEqual(asyncAsked);
           }),
           { numRuns: NUM_RUNS },

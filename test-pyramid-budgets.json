@@ -97,6 +97,7 @@
         "openGitSession",
         "fileSystemLayoutProbe",
         "createCachingIndexResolver",
+        "createClearingIndexResolver",
         "createFsWorkdirEnumerator",
         "createCachingTreeResolver",
         "createRawIndexResolver",

@@ -31,13 +31,12 @@ const seedSkipWorktreeIndex = async (ctx: Context, path: string): Promise<void> 
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, bytes);
 };
 
-const composedStack = (ctx: Context): IndexResolver => {
+/** The cached stack the repository wraps, below the resolver under test. */
+const cachedStack = (ctx: Context): IndexResolver => {
   const view = createCounterGenerationView();
   const bus = createInMemoryWriteEventBus(view);
-  return createClearingIndexResolver(
-    createSingleFlightIndexResolver(
-      createCachingIndexResolver(createRawIndexResolver(), ctx.fs, bus.stream, view),
-    ),
+  return createSingleFlightIndexResolver(
+    createCachingIndexResolver(createRawIndexResolver(), ctx.fs, bus.stream, view),
   );
 };
 
@@ -51,7 +50,7 @@ describe('createClearingIndexResolver', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await seedSkipWorktreeIndex(ctx, 'a/f');
-        const sut = composedStack(ctx);
+        const sut = createClearingIndexResolver(cachedStack(ctx));
         const first = await sut.resolve(ctx);
         await ctx.fs.writeUtf8('/repo/a/f', 'x');
 
@@ -70,7 +69,7 @@ describe('createClearingIndexResolver', () => {
         const ctx = await buildSeededContext();
         await seedSkipWorktreeIndex(ctx, 'a/f');
         await ctx.fs.writeUtf8('/repo/a/f', 'x');
-        const sut = composedStack(ctx);
+        const sut = createClearingIndexResolver(cachedStack(ctx));
         const first = await sut.resolve(ctx);
         await ctx.fs.rm('/repo/a/f');
 
