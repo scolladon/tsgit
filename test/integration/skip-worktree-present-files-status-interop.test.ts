@@ -108,9 +108,29 @@ const ROWS: ReadonlyArray<Row> = [
     expected: '',
   },
   {
-    label: 'core.sparseCheckout only in config.worktree',
+    label: 'core.sparseCheckout only in the local config',
+    tune: (repo) => {
+      gitIn(repo, ['config', '--worktree', '--unset', 'core.sparseCheckout']);
+      gitIn(repo, ['config', 'core.sparseCheckout', 'true']);
+    },
     arrange: present({ 'a/f': 'hi\n' }),
     expected: ' M a/f',
+  },
+  {
+    label: 'core.sparseCheckout only in config.worktree while extensions.worktreeConfig is false',
+    tune: (repo) => {
+      gitIn(repo, ['config', 'extensions.worktreeConfig', 'false']);
+    },
+    arrange: present({ 'a/f': 'hi\n' }),
+    expected: '',
+  },
+  {
+    label: 'expectFilesOutsideOfPatterns true only in config.worktree',
+    tune: (repo) => {
+      gitIn(repo, ['config', '--worktree', 'sparse.expectFilesOutsideOfPatterns', 'true']);
+    },
+    arrange: present({ 'a/f': 'hi\n' }),
+    expected: '',
   },
   {
     label: 'expectFilesOutsideOfPatterns true',
@@ -149,6 +169,17 @@ const ROWS: ReadonlyArray<Row> = [
     expected: '',
   },
 ];
+
+const GIT_CASE_VARIANT: Readonly<Record<string, string>> = {
+  false: ' M a/f\n?? A/f',
+  true: ' M a/f',
+};
+
+// tsgit's untracked walk does not fold case against the index, so under ignorecase it also lists the variant.
+const TSGIT_CASE_VARIANT: Readonly<Record<string, string>> = {
+  false: GIT_CASE_VARIANT.false as string,
+  true: ' M a/f\n?? A/f',
+};
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   'status and the opportunistic writers over present skip-worktree files',
@@ -192,13 +223,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             const result = await porcelainOf(tsgitRepo);
 
             // Assert
-            const tracked = (text: string): string =>
-              text
-                .split('\n')
-                .filter((line) => !line.startsWith('??'))
-                .join('\n');
-            const comparable = ignorecase === 'true' ? tracked : (text: string): string => text;
-            expect(comparable(result)).toBe(comparable(gitPorcelain(gitRepo)));
+            expect(gitPorcelain(gitRepo)).toBe(GIT_CASE_VARIANT[ignorecase]);
+            expect(result).toBe(TSGIT_CASE_VARIANT[ignorecase]);
           });
         });
       });
