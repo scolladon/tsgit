@@ -271,6 +271,30 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit status()               -> threw {"code":"PERMISSION_DENIED","path":"<repo>/a"}
   ```
 
+- **(add)** `add -A` leaves a skip-worktree gitlink skip-worktree where git clears the bit of a present one — pre-existing, pinned against git 2.56.0 with sparse patterns that exclude the gitlink's directory, whichever rule (`sub/\n/lib/` or `*\n!sub/`). Tracked `lib/f`, `top`, gitlink `sub`; `/lib/` applied (so `sub` and `top` are `S`), the patterns rewritten, an empty directory `sub` made. git's index read clears the bit of every skip-worktree path present on disk (`clear_skip_worktree_from_present_files`); the question is whether git's write persists the cleared bit where tsgit's `add` (`src/application/commands/add.ts`) keeps it. The same rows fail on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   add -A                 -> idx H lib/f, H sub, S top; disk lib lib/f sub
+  tsgit add([], { all: true }) -> idx H lib/f, S sub, S top; disk lib lib/f sub
+  ```
+
+- **(rebase)** A `rebase` that stops on a conflict marks a present gitlink skip-worktree and removes its directory where git leaves it in the pattern — pre-existing, pinned against git 2.56.0. `main` and `other` both change `lib/f`, `other` also `top`; patterns `*\n!sub/` with an empty directory `sub`, applied after `*` or `/lib/`; `git rebase other` vs `rebaseRun({ upstream: 'other' })` (`src/application/commands/rebase.ts`). `cherry-pick` and `merge` of the same history agree with git, so the difference is in the rebase stop. The rows fail on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   rebase other -> idx M lib/f x3, H sub, H top; disk lib lib/f sub top
+  tsgit rebaseRun    -> idx M lib/f x3, S sub, H top; disk lib lib/f top
+  ```
+
+- **(cherry-pick)** A `cherry-pick` that stops on a conflict leaves an absent, re-included gitlink skip-worktree where git re-includes it and creates its directory — pre-existing, pinned against git 2.56.0. Same history as (rebase); `/lib/` applied (`sub` is `S`, no directory), patterns `*\n!sub/`; `git cherry-pick other` vs `cherryPickRun({ commits: ['other'] })` (`src/application/commands/cherry-pick.ts`). The row fails on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   cherry-pick other -> idx M lib/f x3, H sub, H top; disk lib lib/f sub top
+  tsgit cherryPickRun     -> idx M lib/f x3, S sub, H top; disk lib lib/f top
+  ```
+
+- **(merge)** A `merge` that stops on a conflict does not create the directory of a gitlink it re-includes — pre-existing, pinned against git 2.56.0. Same history as (rebase); `/lib/` applied (`sub` is `S`, no directory), patterns `sub/\n/lib/`; `git merge other` vs `mergeRun({ rev: 'other' })` (`src/application/commands/merge.ts`). The index agrees (`H sub`); only the disk differs. The row fails on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   merge other -> idx M lib/f x3, H sub, S top; disk lib lib/f sub
+  tsgit mergeRun    -> idx M lib/f x3, H sub, S top; disk lib lib/f
+  ```
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
