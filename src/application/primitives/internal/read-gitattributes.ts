@@ -15,7 +15,7 @@ import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import { readBlob } from '../read-blob.js';
-import { readIndex } from '../read-index.js';
+import { readRawIndex } from '../read-index.js';
 import { readDeclaredObjectHeader } from '../read-object.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { undefinedWhenBlobAbsent } from './absent-blob.js';
@@ -311,7 +311,7 @@ const attributeBlobMap = (
 
 const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string, ObjectId>> => {
   try {
-    const { entries } = await readIndex(ctx);
+    const { entries } = await readRawIndex(ctx);
     // Stryker disable next-line MethodExpression: equivalent — attributeBlobMap re-applies isAttributesPath and indexRuleEntries picks per path, so the pre-filter only keeps the rule-entry map off non-attribute entries.
     return attributeBlobMap(indexRuleEntries(entries.filter((e) => isAttributesPath(e.path))));
   } catch (err) {

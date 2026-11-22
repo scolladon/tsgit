@@ -40,7 +40,7 @@ import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-ga
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { mergeBasesOf, parseFailureOf } from '../primitives/merge-base.js';
-import { readIndex } from '../primitives/read-index.js';
+import { readRawIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
@@ -794,7 +794,7 @@ const resolveIndexStage = async (
   ctx: Context,
   expr: { readonly stage: 0 | 1 | 2 | 3; readonly path: string },
 ): Promise<ObjectId> => {
-  const index = await readIndex(ctx);
+  const index = await readRawIndex(ctx);
   for (const entry of index.entries) {
     if (entry.path === expr.path && entry.flags.stage === expr.stage) return entry.id;
   }
