@@ -53,9 +53,9 @@ const tagView = async (repo: Repository): Promise<string> =>
   (await readIndex(repo.ctx)).entries
     .map((e) => `${e.flags.skipWorktree ? 'S' : 'H'} ${e.path}\n`)
     .join('');
-// Reader parity: tsgit's read view against git's own read view, which clears present files.
+// Reader parity only: both views clear the bit of a present file, so they cannot show a wrong stored bit.
 const gitTagView = (dir: string): string => runGit(['-C', dir, 'ls-files', '-t']);
-// Twin comparison: the stored bits, which git's own read would clear on a present file.
+// Twin comparison after a write: the stored bits, read with the clear turned off.
 const storedTagView = (dir: string): string =>
   runGit(['-C', dir, '-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t']);
 
@@ -174,6 +174,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
 
         // Assert
         expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+        expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
         expect(listing(pair.ours)).toEqual(listing(pair.peer));
       });
     });
@@ -202,8 +203,8 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
   describe('Given a sparse work tree set through git', () => {
     const sparseSet = (): void =>
       bothSides((dir) => runGit(['-C', dir, 'sparse-checkout', 'set', '--cone', 'b']));
-    const expectSameState = async (repo: Repository): Promise<void> => {
-      expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+    const expectSameState = (): void => {
+      expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
       expect(listing(pair.ours)).toEqual(listing(pair.peer));
     };
 
@@ -218,7 +219,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         await repo.reset({ mode: 'hard', rev: 'other' });
 
         // Assert
-        await expectSameState(repo);
+        expectSameState();
       });
     });
 
@@ -233,7 +234,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         await repo.reset({ mode: 'mixed', rev: 'other' });
 
         // Assert
-        await expectSameState(repo);
+        expectSameState();
       });
     });
 
@@ -248,7 +249,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         await repo.merge.run({ rev: 'other', fastForward: 'only' });
 
         // Assert
-        await expectSameState(repo);
+        expectSameState();
       });
     });
   });
@@ -275,7 +276,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         await repo.merge.run({ rev: 'other', message: 'm', author: AUTHOR });
 
         // Assert
-        expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+        expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
         expect(listing(pair.ours)).toEqual(listing(pair.peer));
       });
     });
@@ -307,7 +308,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         await repo.checkout({ rev: 'other', detach: true });
 
         // Assert
-        expect(await tagView(repo)).toBe(gitTagView(peer.main));
+        expect(storedTagView(ours.main)).toBe(storedTagView(peer.main));
         expect(listing(ours.main).filter((e) => !e.startsWith('.'))).toEqual(
           listing(peer.main).filter((e) => !e.startsWith('.')),
         );
@@ -326,7 +327,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         await repo.checkout({ rev: 'other', detach: true });
 
         // Assert
-        expect(await tagView(repo)).toBe(gitTagView(peer.linked));
+        expect(storedTagView(ours.linked)).toBe(storedTagView(peer.linked));
         expect(listing(ours.linked)).toEqual(listing(peer.linked));
         expect(existsSync(join(ours.main, '.git', 'worktrees', 'wt', 'config.worktree'))).toBe(
           existsSync(join(peer.main, '.git', 'worktrees', 'wt', 'config.worktree')),
@@ -606,7 +607,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
           // Assert
           expectSameConfigFiles();
           expectSamePatternFile();
-          expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+          expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
         });
       });
 
@@ -624,7 +625,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
           // Assert
           expect(result.cone).toBe(true);
           expectSameConfigFiles();
-          expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+          expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
         });
       });
     });
@@ -712,12 +713,12 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
         );
       }
     };
-    const expectSameState = async (repo: Repository): Promise<void> => {
+    const expectSameState = (): void => {
       expectSameConfigFiles();
       expect(readOptional(pair.ours, 'info/sparse-checkout')).toBe(
         readOptional(pair.peer, 'info/sparse-checkout'),
       );
-      expect(await tagView(repo)).toBe(gitTagView(pair.peer));
+      expect(storedTagView(pair.ours)).toBe(storedTagView(pair.peer));
       expect(listing(pair.ours)).toEqual(listing(pair.peer));
     };
 
@@ -812,7 +813,7 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout worktree-config interop', () =>
           for (const verb of row.verbs) await verb.run(repo);
 
           // Assert
-          await expectSameState(repo);
+          expectSameState();
         });
       });
     });
