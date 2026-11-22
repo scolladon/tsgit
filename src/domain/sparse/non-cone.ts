@@ -1,7 +1,7 @@
 import type { TokenizedIgnoreLine } from '../ignore/index.js';
 import type { FilePath } from '../objects/object-id.js';
 import { compileGlob } from '../pathspec/index.js';
-import type { SparseMatcher, SparseRule } from './sparse-pattern.js';
+import type { SparseEntryKind, SparseMatcher, SparseRule } from './sparse-pattern.js';
 
 /**
  * Compile a tokenised `.gitignore`-syntax line into a `SparseRule`. The glob
@@ -69,8 +69,8 @@ export const nonConeMatcher = (rules: ReadonlyArray<SparseRule>): SparseMatcher 
     return resolved;
   };
 
-  return (path: FilePath): boolean => {
-    const own = verdictOf(rules, path, false);
+  return (path: FilePath, kind: SparseEntryKind = 'file'): boolean => {
+    const own = verdictOf(rules, path, kind === 'directory');
     if (own !== undefined) return own;
     const parent = parentOf(path);
     return parent === undefined ? false : directoryVerdict(parent);

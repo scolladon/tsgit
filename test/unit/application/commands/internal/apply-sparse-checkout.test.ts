@@ -102,6 +102,50 @@ describe('commands/internal/apply-sparse-checkout', () => {
     });
   });
 
+  describe('Given a gitlink whose directory is present', () => {
+    const gitlinkEntry = (): IndexEntry => ({
+      ...makeEntry('sub', '1111111111111111111111111111111111111111' as ObjectId),
+      mode: FILE_MODE.GITLINK,
+    });
+
+    describe('When a directory-only pattern includes it', () => {
+      it('Then it is judged as a directory and stays without skip-worktree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [gitlinkEntry()]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        const matcher = buildSparseMatcher(parseSparseCheckout('sub/\n', false).spec);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect((await readBackIndex(ctx)).get('sub' as FilePath)?.flags.skipWorktree).toBe(false);
+      });
+    });
+
+    describe('When a negated directory-only pattern excludes it', () => {
+      it('Then the directory is removed without being read as a file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [gitlinkEntry()]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        const matcher = buildSparseMatcher(parseSparseCheckout('/*\n!sub/\n', false).spec);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/sub`)).toBe(false);
+        expect((await readBackIndex(ctx)).get('sub' as FilePath)?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
   describe.each([
     ['dangling', 'nowhere'],
     ['live', 'src/a'],

@@ -21,6 +21,7 @@ import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { applyResetSkipWorktree } from '../primitives/internal/reset-skip-worktree.js';
+import { withGitlinkKinds } from '../primitives/internal/sparse-gitlink-kinds.js';
 import { materializeTreeJudging } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -120,7 +121,8 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
       targetTree: commit.data.tree,
       currentIndex,
     });
-    const newEntries = applyResetSkipWorktree(rebuilt, currentIndex, matcher);
+    const judging = await withGitlinkKinds(ctx, 'reset', matcher, [rebuilt]);
+    const newEntries = applyResetSkipWorktree(rebuilt, currentIndex, judging);
     // --mixed always replaces the whole index with the rebuilt projection, so
     // the commit is unconditional — unlike --hard, which can skip it when the
     // materialise wrote and deleted nothing.

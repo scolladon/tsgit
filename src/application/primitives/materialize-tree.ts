@@ -78,6 +78,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { type IsVerified, NOTHING_VERIFIED } from './internal/smudge-racily-clean.js';
+import { skippedGitlinkPaths, withGitlinkKinds } from './internal/sparse-gitlink-kinds.js';
 import { judgeMovers, warnLeftDespiteSparse } from './internal/sparse-left-dirty.js';
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
@@ -941,6 +942,24 @@ export const materializeTree = async (
   return { newIndexEntries, written, deleted };
 };
 
+/** The options with `sparse` judging each gitlink, of the target or the index, by what stands at its path. */
+const withGitlinkDirectories = async (
+  ctx: Context,
+  opts: MaterializeTreeOpts,
+  target: ReadonlyArray<TargetEntry>,
+): Promise<MaterializeTreeOpts> => {
+  if (opts.sparse === undefined) return opts;
+  const assumed = opts.headTree === undefined ? [] : skippedGitlinkPaths(opts.currentIndex.entries);
+  const sparse = await withGitlinkKinds(
+    ctx,
+    'materializeTree',
+    opts.sparse,
+    [target, opts.currentIndex.entries],
+    assumed,
+  );
+  return { ...opts, sparse };
+};
+
 /** What the stale pass found up to date, for the index commit; not part of the public surface. */
 export interface JudgedMaterialization extends MaterializeTreeResult {
   readonly verified: IsVerified;
@@ -1018,11 +1037,12 @@ const assembleIndexEntries = (
 /** `materializeTree` with the routine that judges a stale entry named; not part of the public surface. */
 export const materializeTreeJudging = async (
   ctx: Context,
-  options: MaterializeTreeOpts,
+  requested: MaterializeTreeOpts,
   staleRule: StaleRule,
 ): Promise<JudgedMaterialization> => {
   const workdir = requireWorkTree(ctx, 'materializeTree');
-  const fullTarget = await collectTargetEntries(ctx, options.targetTree);
+  const fullTarget = await collectTargetEntries(ctx, requested.targetTree);
+  const options = await withGitlinkDirectories(ctx, requested, fullTarget);
   const carry = await carryHeadAgreement(ctx, workdir, options, fullTarget);
   const { opts, allTarget, carried, removals, leftDirty, verifiedClean } = carry;
   const plan = planMaterialize(allTarget, opts);

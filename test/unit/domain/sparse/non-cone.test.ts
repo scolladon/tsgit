@@ -425,5 +425,83 @@ describe('nonConeMatcher cost', () => {
         expect(evaluations() - before).toBe(rules.length * 2);
       });
     });
+
+    describe('When a sibling branch forking one level above the judged leaf directory is judged', () => {
+      it('Then the shared ancestors are not evaluated again', () => {
+        // Arrange
+        const { rules, evaluations } = countingRules();
+        const sut = nonConeMatcher(rules);
+        sut(path(`${deep}first`));
+        const before = evaluations();
+
+        // Act
+        sut(path(`${'d/'.repeat(149)}x/second`));
+
+        // Assert
+        expect(evaluations() - before).toBe(rules.length * 2);
+      });
+    });
+  });
+});
+
+describe('nonConeMatcher with an entry kind', () => {
+  describe('Given "sub/" and a gitlink path "sub"', () => {
+    const rules = [rule('sub/')];
+
+    describe('When it is judged as a directory', () => {
+      it('Then the directory-only rule includes it', () => {
+        // Arrange
+        const sut = nonConeMatcher(rules);
+
+        // Act
+        const result = sut(path('sub'), 'directory');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When it is judged without a kind', () => {
+      it('Then it is a file and the directory-only rule leaves it out', () => {
+        // Arrange
+        const sut = nonConeMatcher(rules);
+
+        // Act
+        const result = sut(path('sub'));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given "*" then "!sub/" and a gitlink path "sub"', () => {
+    const rules = [rule('*'), rule('!sub/')];
+
+    describe('When it is judged as a directory', () => {
+      it('Then the negated directory-only rule excludes it', () => {
+        // Arrange
+        const sut = nonConeMatcher(rules);
+
+        // Act
+        const result = sut(path('sub'), 'directory');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When it is judged as a file', () => {
+      it('Then the negated directory-only rule does not apply', () => {
+        // Arrange
+        const sut = nonConeMatcher(rules);
+
+        // Act
+        const result = sut(path('sub'), 'file');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
   });
 });

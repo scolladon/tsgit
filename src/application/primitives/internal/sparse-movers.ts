@@ -18,6 +18,7 @@ import { removeGitlinkDirectory } from '../apply-changeset.js';
 import { joinPath } from './join-working-tree-path.js';
 import { pruneEmptiedDirectories, type SurvivingDirectories } from './prune-emptied-directories.js';
 import { requireWorkTree } from './repo-state.js';
+import { withGitlinkKinds } from './sparse-gitlink-kinds.js';
 import { notUpToDate, warnLeftDespiteSparse } from './sparse-left-dirty.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
 import { removeWorkingTreeFile } from './write-working-tree-file.js';
@@ -96,7 +97,8 @@ export const retireSparseMovers = async (
 ): Promise<SparseRetirement> => {
   if (sparse === undefined) return NOTHING_RETIRED;
   const workdir = requireWorkTree(ctx, 'merge');
-  const candidates = await reachableCandidates(ctx, moverCandidates(scope, sparse));
+  const judging = await withGitlinkKinds(ctx, 'merge', sparse, [scope.currentIndex.entries]);
+  const candidates = await reachableCandidates(ctx, moverCandidates(scope, judging));
   const leftDirty = await notUpToDate(ctx, workdir, candidates, scope.currentIndex.indexMtime);
   const isClean = (entry: IndexEntry): boolean => !leftDirty.has(indexPathKey(entry));
   const clean = candidates.filter(isClean);

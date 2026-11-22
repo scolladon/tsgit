@@ -36,5 +36,12 @@ export interface SparseMatchOptions {
   readonly ignoreCase?: boolean;
 }
 
+/**
+ * What stands at a judged path. A directory-only rule judges only a directory;
+ * an index entry is a file unless the caller knows better — a gitlink whose
+ * work-tree directory exists is a directory, as git reads it from the work tree.
+ */
+export type SparseEntryKind = 'file' | 'directory';
+
 /** `true` ⇒ the path is in the sparse set (materialise it). */
-export type SparseMatcher = (path: FilePath) => boolean;
+export type SparseMatcher = (path: FilePath, kind?: SparseEntryKind) => boolean;

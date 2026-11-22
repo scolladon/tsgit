@@ -16,6 +16,7 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
+import { FILE_MODE } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -28,6 +29,7 @@ import { lstatIfReachable } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { attributeBlobLookup } from '../../primitives/internal/read-gitattributes.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
+import { withGitlinkKinds } from '../../primitives/internal/sparse-gitlink-kinds.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -71,6 +73,13 @@ interface Partitioned {
 const isIncluded = (matcher: SparseMatcher | undefined, entry: IndexEntry): boolean =>
   matcher === undefined ? true : matcher(escapedPathOf(entry));
 
+/** A gitlink is never compared with its directory's content: git removes it by `rmdir`, so a populated one stays. */
+const isDirtyEntry = async (
+  isDirty: ReturnType<typeof createWorkingTreeDirtyCheck>,
+  absPath: string,
+  entry: IndexEntry,
+): Promise<boolean> => entry.mode !== FILE_MODE.GITLINK && isDirty(absPath, entry.id);
+
 /** `path`, plus `pathBytes` only for a lossy entry — a lossy entry never aliases its UTF-8 twin. */
 const changesetPathOf = (entry: IndexEntry): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({
   path: entry.path,
@@ -104,7 +113,7 @@ const partition = async (
     }
     const absPath = joinPath(workdir, entry.path);
     const present = (await lstatIfReachable(ctx.fs, absPath)) !== undefined;
-    const dirty = present ? await isDirty(absPath, entry.id) : false;
+    const dirty = present ? await isDirtyEntry(isDirty, absPath, entry) : false;
     if (dirty && opts.force !== true) retained.push(entry);
     else removable.push({ entry, present });
   }
@@ -249,7 +258,8 @@ export const applySparseCheckout = async (
   try {
     const index = await readIndex(ctx);
     const stage0 = index.entries.filter((entry) => entry.flags.stage === 0);
-    const part = await partition(ctx, workdir, stage0, opts);
+    const judging = await withGitlinkKinds(ctx, 'sparse-checkout', opts.matcher, [stage0]);
+    const part = await partition(ctx, workdir, stage0, { ...opts, matcher: judging });
     const changeset = await buildChangeset(ctx, workdir, part);
     const applied = await applyChangesetWithAttributes(
       ctx,
