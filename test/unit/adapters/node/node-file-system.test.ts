@@ -2434,7 +2434,13 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
         const ops = { ...realSyncFsOps };
         const lstatSync = vi.spyOn(ops, 'lstatSync');
         const charge = vi.fn();
-        const budget = { ...createTurnBudget(1), admit: () => undefined, charge };
+        const FAKE_NOW = 4242;
+        const budget = {
+          ...createTurnBudget(1),
+          admit: () => undefined,
+          charge,
+          now: () => FAKE_NOW,
+        };
         const { rootDir, sut } = await withResolvedRoot(() => ({
           syncIo: { ops, budget, maxSyncReadBytes: 1 },
         }));
@@ -2448,6 +2454,7 @@ describe('NodeFileSystem lstatReachableSync — the sync I/O policy', () => {
         expect(result).toBe(true);
         expect(lstatSync).toHaveBeenCalledTimes(1);
         expect(charge).toHaveBeenCalledTimes(1);
+        expect(charge).toHaveBeenCalledWith(FAKE_NOW);
         await fsPromises.rm(rootDir, { recursive: true, force: true });
       });
     });

@@ -43,7 +43,7 @@ const lstatSucceeds = async (fs: FileSystem, path: string): Promise<boolean> => 
   }
 };
 
-/** Index-ordered runs probed independently: each keeps its own missing-directory cache, so runs share no state. */
+/** Index-ordered runs: async runs are probed independently, each with its own missing-directory cache; sync runs carry the last missing directory forward. */
 const RUN_LENGTH = 64;
 
 const runsOf = (paths: ReadonlyArray<string>): ReadonlyArray<ReadonlyArray<string>> => {

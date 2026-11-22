@@ -4,6 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { revParse } from '../../../../src/application/commands/rev-parse.js';
 import { sparseCheckoutSet } from '../../../../src/application/commands/sparse-checkout.js';
 import { stashApply, stashPush } from '../../../../src/application/commands/stash.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
@@ -111,6 +112,20 @@ describe('Given a sparse checkout whose excluded file is absent from disk', () =
 
       // Assert
       expect(probes()).toBe(2);
+    });
+  });
+
+  describe('When rev-parse reads a stage-0 index blob', () => {
+    it('Then the excluded file is not probed', async () => {
+      // Arrange
+      const { ctx, probes } = countingProbes(await sparseRepo());
+      const sut = revParse;
+
+      // Act
+      await sut(ctx, ':0:b/f');
+
+      // Assert
+      expect(probes()).toBe(0);
     });
   });
 });

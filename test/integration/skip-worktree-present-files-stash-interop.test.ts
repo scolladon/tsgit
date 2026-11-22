@@ -242,19 +242,17 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           await nonConeRepo(gitRepo);
           await nonConeRepo(tsgitRepo);
           gitIn(gitRepo, ['stash', 'push', '-q']);
+          if (verb === 'pop') gitIn(gitRepo, ['stash', 'pop', '-q']);
           const ctx = createNodeContext({ workDir: tsgitRepo });
-          await stashPush(ctx, {});
-          if (verb === 'pop') {
-            gitIn(gitRepo, ['stash', 'pop', '-q']);
-            await stashApply(ctx, {});
-          }
+          if (verb === 'pop') await stashPush(ctx, {});
 
           // Act
-          const sut = nonConeSnapshot;
-          const actual = await sut(tsgitRepo);
+          const sut = verb === 'pop' ? stashApply : stashPush;
+          await sut(ctx, {});
 
           // Assert
-          expect(actual).toEqual(await sut(gitRepo));
+          const actual = await nonConeSnapshot(tsgitRepo);
+          expect(actual).toEqual(await nonConeSnapshot(gitRepo));
           expect(actual.disk).toContain('d0/keep');
         });
       });
