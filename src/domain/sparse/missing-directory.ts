@@ -9,9 +9,8 @@ const SLASH = '/';
 
 /** Length of the prefix of `a` and `b` up to and including the last `/` at which they still agree. */
 export const commonDirectoryPrefix = (a: string, b: string): number => {
-  const bound = Math.min(a.length, b.length);
   let prefix = 0;
-  for (let i = 0; i < bound && a[i] === b[i]; i++) {
+  for (let i = 0; a[i] !== undefined && a[i] === b[i]; i++) {
     if (a[i] === SLASH) prefix = i + 1;
   }
   return prefix;

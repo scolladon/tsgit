@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   commonDirectoryPrefix,
   presentPaths,
+  presentPathsSync,
 } from '../../../../src/domain/sparse/missing-directory.js';
 
 const probeOver = (existing: ReadonlyArray<string>) => {
@@ -141,6 +142,45 @@ describe('presentPaths', () => {
         // Assert
         expect(result.size).toBe(0);
         expect(calls).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('presentPaths with a path spelled like a placeholder', () => {
+  const sut = presentPaths;
+
+  describe('Given nothing is known missing and the path exists', () => {
+    describe('When probing', () => {
+      it('Then it is found', async () => {
+        // Arrange
+        const { probe } = probeOver(['Stryker was here!x']);
+
+        // Act
+        const result = await sut(['Stryker was here!x'], probe);
+
+        // Assert
+        expect([...result]).toEqual(['Stryker was here!x']);
+      });
+    });
+  });
+});
+
+describe('presentPathsSync', () => {
+  const sut = presentPathsSync;
+
+  describe('Given no missing directory to resume from and the path exists', () => {
+    describe('When probing a path spelled like a placeholder', () => {
+      it('Then it is found and the missing directory stays empty', () => {
+        // Arrange
+        const probe = (path: string): boolean => path === 'Stryker was here!x';
+
+        // Act
+        const result = sut(['Stryker was here!x'], probe);
+
+        // Assert
+        expect([...result.present]).toEqual(['Stryker was here!x']);
+        expect(result.missing).toBe('');
       });
     });
   });
