@@ -243,11 +243,12 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           }
 
           // Act
-          const sut = await nonConeSnapshot(tsgitRepo);
+          const sut = nonConeSnapshot;
+          const actual = await sut(tsgitRepo);
 
           // Assert
-          expect(sut).toEqual(await nonConeSnapshot(gitRepo));
-          expect(sut.disk).toContain('d0/keep');
+          expect(actual).toEqual(await sut(gitRepo));
+          expect(actual.disk).toContain('d0/keep');
         });
       });
     });
