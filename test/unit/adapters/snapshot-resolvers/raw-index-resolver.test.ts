@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { createRawIndexResolver } from '../../../../src/adapters/snapshot-resolvers/raw-index-resolver.js';
+import { skipWorktreeEntry } from '../../../../src/domain/git-index/index.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { FILE_MODE, FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from '../../application/primitives/fixtures.js';
+import {
+  buildSeededContext,
+  serializeIndexFixtureAsync,
+} from '../../application/primitives/fixtures.js';
 
 const ZERO_OID = '0000000000000000000000000000000000000001' as ObjectId;
 
@@ -101,6 +105,34 @@ describe('createRawIndexResolver', () => {
         // Assert
         expect(second.entries.map((e) => e.path)).toEqual(first.entries.map((e) => e.path));
         expect(second.trailerSha).toEqual(first.trailerSha);
+      });
+    });
+  });
+
+  describe('Given sparse on and a present file at an S path', () => {
+    describe('When the raw resolver resolves', () => {
+      it('Then the bit is kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tsparseCheckout = true\n');
+        const entry = skipWorktreeEntry({
+          path: FilePath.from('a/f'),
+          id: ZERO_OID,
+          mode: FILE_MODE.REGULAR,
+        });
+        const bytes = await serializeIndexFixtureAsync(
+          { version: 3, entries: [entry], extensions: [], trailerSha: new Uint8Array(0) },
+          ctx,
+        );
+        await ctx.fs.write(`${ctx.layout.gitDir}/index`, bytes);
+        await ctx.fs.writeUtf8('/repo/a/f', 'x');
+        const sut = createRawIndexResolver();
+
+        // Act
+        const result = await sut.resolve(ctx);
+
+        // Assert
+        expect(result.entries.map((e) => e.flags.skipWorktree)).toEqual([true]);
       });
     });
   });
