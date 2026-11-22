@@ -847,6 +847,33 @@ describe('reset — sparse checkout', () => {
     });
   });
 
+  describe('Given sparse on and a layout without a work tree', () => {
+    describe('When reset --mixed runs', () => {
+      it('Then it refuses with WORK_TREE_REQUIRED naming reset', async () => {
+        // Arrange
+        const { ctx: base, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(base);
+        const { workDir: _workDir, ...layout } = base.layout;
+        const ctx = { ...base, layout };
+        const sut = reset;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { mode: 'mixed', rev: c1 });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'WORK_TREE_REQUIRED',
+          operation: 'reset',
+        });
+      });
+    });
+  });
+
   describe('Given sparse on and an out-of-pattern entry without the bit', () => {
     describe('When reset --mixed to HEAD runs', () => {
       it('Then the entry stays without the bit', async () => {
