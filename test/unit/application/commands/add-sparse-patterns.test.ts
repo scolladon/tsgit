@@ -214,3 +214,61 @@ describe('add over an out-of-pattern entry without the bit', () => {
     });
   });
 });
+
+const CONE_EMPTY = '/*\n!/*/\n';
+
+/** Cone with no directory: tracked "d/x" is out of pattern; a symlink "d" -> "t" now stands where the directory was, so "d/x" is present again. */
+const symlinkOverOutOfPatternDirectory = async (): Promise<Ctx> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: { 't/x': 'x\n', top: 'top\n' } });
+  await seedIndex(ctx, [
+    { path: 'd/x', text: 'x\n', skipWorktree: true },
+    { path: 'top', text: 'top\n' },
+  ]);
+  await ctx.fs.symlink('t', `${ctx.layout.workDir}/d`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, SPARSE_ON);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, CONE_EMPTY);
+  invalidateConfigCache(ctx);
+  return ctx;
+};
+
+describe('add over a symlink that replaces an out-of-pattern directory', () => {
+  describe('Given the entry beneath the symlink is present again through it', () => {
+    describe.each([
+      { label: 'a literal', spec: ['d'], options: {} },
+      { label: 'a glob', spec: ['*'], options: {} },
+      { label: 'the whole tree', spec: [], options: { all: true } },
+    ])('When add names $label', ({ spec, options }) => {
+      it('Then the entry git leaves alone is not reported as removed', async () => {
+        // Arrange
+        const ctx = await symlinkOverOutOfPatternDirectory();
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, spec, options);
+
+        // Assert
+        expect(result.removed).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('add over an untracked, ignored, out-of-pattern literal', () => {
+  describe('Given "a/new" that "a/.gitignore" lists', () => {
+    describe('When add names it', () => {
+      it('Then it is reported as ignored, not as outside the sparse patterns', async () => {
+        // Arrange
+        const ctx = await sparseRepo({ 'a/new': 'n\n', 'a/.gitignore': 'new\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['a/new']);
+
+        // Assert
+        expect(result.ignored).toEqual(['a/new']);
+        expect(result.sparse).toEqual([]);
+      });
+    });
+  });
+});
