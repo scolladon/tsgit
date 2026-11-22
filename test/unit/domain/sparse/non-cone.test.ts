@@ -35,6 +35,21 @@ describe('compileSparseRule with caseFold', () => {
     });
   });
 
+  describe('Given "/b/" and no case folding asked', () => {
+    describe('When tested against "B"', () => {
+      it('Then it does not match', () => {
+        // Arrange
+        const sut = compileSparseRule;
+
+        // Act
+        const result = sut(tokenized('/b/'), '/b/').matcher.test('B');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given a negated "!/B/x"', () => {
     describe('When tested against "b/x"', () => {
       it('Then its matcher matches and the rule stays negated', () => {

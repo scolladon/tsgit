@@ -54,18 +54,13 @@ export const nonConeMatcher = (rules: ReadonlyArray<SparseRule>): SparseMatcher 
   const directoryVerdicts = new Map<string, boolean>();
 
   const directoryVerdict = (directory: string): boolean => {
-    const chain: string[] = [];
-    let verdict: boolean | undefined;
-    for (
-      let level: string | undefined = directory;
-      level !== undefined && verdict === undefined;
-      level = parentOf(level)
-    ) {
-      chain.push(level);
-      verdict = directoryVerdicts.get(level) ?? verdictOf(rules, level, true);
-    }
-    const resolved = verdict ?? false;
-    for (const level of chain) directoryVerdicts.set(level, resolved);
+    const memoised = directoryVerdicts.get(directory);
+    if (memoised !== undefined) return memoised;
+    const parent = parentOf(directory);
+    const resolved =
+      verdictOf(rules, directory, true) ??
+      (parent === undefined ? false : directoryVerdict(parent));
+    directoryVerdicts.set(directory, resolved);
     return resolved;
   };
 
