@@ -218,8 +218,6 @@ const sparseExclusionOf = (matcher: SparseMatcher | undefined): SparseExclusion 
   outside: (path) => matcher !== undefined && !matcher(path),
 });
 
-const isSkipWorktree = (entry: IndexEntry): boolean => entry.flags.skipWorktree;
-
 /**
  * The scope once the index is read: the stage-2 entry of every unmerged path,
  * which is where git reads the index-CRLF rule when no stage 0 exists. Built
@@ -493,7 +491,7 @@ const stageLiteralsOver = async (
     literalMustMatch,
     stats,
   );
-  const view = { sorted, inserted };
+  const view = { sorted, inserted, isExcluded: staging.scope.exclusion.excludes };
   const dropped = await dropBeneathInserted(staging.ctx, view, matcher, newEntries);
   return {
     ...staged,
@@ -599,6 +597,8 @@ const foldLiteralOutcomes = (
 interface IndexView {
   readonly sorted: ReadonlyArray<IndexEntry>;
   readonly inserted: ReadonlyArray<InsertedPath>;
+  /** What the add leaves alone, which a replaced directory's removal report must leave out too. */
+  readonly isExcluded: (entry: IndexEntry) => boolean;
 }
 
 /** A path staged where the index had no stage-0 entry: `previous` is absent or unmerged. */
@@ -614,7 +614,7 @@ interface InsertedPath {
  */
 const dropBeneathInserted = async (
   ctx: Context,
-  { sorted, inserted }: IndexView,
+  { sorted, inserted, isExcluded }: IndexView,
   matcher: ResolvedPathspec['matcher'],
   newEntries: Map<IndexPathKey, IndexEntry>,
 ): Promise<{
@@ -630,7 +630,12 @@ const dropBeneathInserted = async (
       remaining.delete(indexPathKey(leading));
     }
     const reportMatcher = previous === undefined ? matcher : withoutExactly(matcher, path);
-    const replaced = await replacedBeneath(ctx, stagesBeneath(sorted, path), reportMatcher);
+    const replaced = await replacedBeneath(
+      ctx,
+      stagesBeneath(sorted, path),
+      reportMatcher,
+      isExcluded,
+    );
     for (const key of replaced.dropped) {
       remaining.delete(key);
       dropped.add(key);
@@ -731,6 +736,7 @@ const replacedBeneath = async (
   ctx: Context,
   beneath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
   matcher: ResolvedPathspec['matcher'],
+  isExcluded: (entry: IndexEntry) => boolean,
 ): Promise<{ dropped: IndexPathKey[]; reported: FilePath[] }> => {
   const stageZero = new Map<IndexPathKey, IndexEntry>();
   const dropped: IndexPathKey[] = [];
@@ -748,7 +754,7 @@ const replacedBeneath = async (
     stageZero,
     [],
     indexVerdicts(matcher, stageZero),
-    isSkipWorktree,
+    isExcluded,
   );
   return {
     dropped: [...stageZero.keys(), ...dropped],
@@ -990,6 +996,7 @@ const addByPathspec = async (
       matcher,
       tally.newEntries,
       removedEntries,
+      scope.exclusion.excludes,
     );
     await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
     return sortedResult(tally, settled.removed, staged);
@@ -1739,10 +1746,11 @@ const settleWalkRemovals = (
   matcher: ResolvedPathspec['matcher'],
   newEntries: Map<IndexPathKey, IndexEntry>,
   removedEntries: ReadonlyArray<IndexEntry>,
+  isExcluded: (entry: IndexEntry) => boolean,
 ) =>
   settleRemovals(
     ctx,
-    { sorted, inserted: insertedBy(outcomes, existing) },
+    { sorted, inserted: insertedBy(outcomes, existing), isExcluded },
     matcher,
     newEntries,
     removedEntries,
@@ -1832,6 +1840,7 @@ export const addAll = async (
       WHOLE_TREE_MATCHER,
       tally.newEntries,
       removedEntries,
+      scope.exclusion.excludes,
     );
     await commitStaged(lock, state, settled.remaining, tally.restagedPaths);
     return sortedResult(tally, settled.removed, { sparse: outside, ignored: [] });
