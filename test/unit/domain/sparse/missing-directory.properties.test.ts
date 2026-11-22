@@ -31,6 +31,8 @@ const exists = (
 const directoryComponents = (path: string): number => path.split(SLASH).length - 1;
 
 describe('presentPaths properties', () => {
+  const sut = presentPaths;
+
   describe('Given an arbitrary tree closed under parents', () => {
     describe('When probing paths in index order', () => {
       it('Then the result equals the naive exists filter', async () => {
@@ -43,7 +45,7 @@ describe('presentPaths properties', () => {
               exists(path, files, directories);
 
             // Act
-            const result = await presentPaths(paths, probe);
+            const result = await sut(paths, probe);
 
             // Assert
             expect([...result]).toEqual(paths.filter((path) => exists(path, files, directories)));
@@ -65,7 +67,7 @@ describe('presentPaths properties', () => {
             };
 
             // Act
-            await presentPaths(paths, probe);
+            await sut(paths, probe);
 
             // Assert
             const budget = paths.reduce((sum, p) => sum + 1 + directoryComponents(p), 0);
