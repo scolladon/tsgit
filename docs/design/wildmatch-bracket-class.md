@@ -11,7 +11,7 @@
 > - `?` matches a UTF-16 unit where git matches a byte;
 > - `.gitattributes` applies a `!`-led pattern that git skips.
 >
-> Status: draft → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → decided (ADRs 1248–1258)
 
 ## Context
 
@@ -539,6 +539,24 @@ says breaking.
 | DC-G | Breaking mark | A: `fix(ignore): …` · B: `fix(ignore)!: …` | A | No signature change, and no returning→throwing change (D-3's trigger). Precedent: #326 changed the pathspec glob dialect as `fix(pathspec)`. B's case: existing repos see different ignore/attribute verdicts, and `IsIgnoredMatchSource.pattern` values change |
 | DC-H | Property oracle for the class grammar | A: a test-side reference port of git's recursive `dowild` (an independent algorithm, run on short patterns over a small alphabet), plus invariants · B: invariants only · C: agreement with `compilePathnameGlob` | A | The DP and git's backtracking recursion are different algorithms, so agreement is a real oracle, not a tautology. C is circular under DC-A A. B alone misses cross-branch grammar bugs (`[]-a]`, `[[:]]`) |
 | DC-I | Where ignore/attributes learn `core.ignoreCase` | A: read once per `buildIgnoreEvaluator`/`buildAttributeProviderFrom`, passed down · B: each loader calls `readConfig` · C: parse case-exact, re-parse folded on demand (`buildSparseMatcher`'s way) | A | One cached read per walk or query. B adds a config stat per directory loaded during the walk. C parses twice and needs `source` lines on every rule |
+
+### Settled (2026-11-23)
+
+Every candidate was settled as recommended, so the design stands as written.
+
+| Candidate / gap | Outcome | Record |
+|---|---|---|
+| DC-A | user-ratified, option A | ADR-1248 |
+| G-a | folded (D-2, D-5) | ADR-1249 |
+| G-b | folded (D-5) | ADR-1250 |
+| G-c, DC-I | folded (D-2); option A adopted | ADR-1251 |
+| G-d, DC-B | folded (D-5); option A adopted | ADR-1252 |
+| DC-C | option A adopted | ADR-1253 |
+| DC-D | option A adopted | ADR-1254 |
+| DC-E | user-ratified, option A | ADR-1255 |
+| G-e, DC-F | folded (D-5); option A adopted (ADR-249) | ADR-1256 |
+| DC-G | user-ratified, option A | ADR-1257, DOCTRINE D-6 |
+| DC-H | option A adopted | ADR-1258 |
 
 ## Test strategy
 
