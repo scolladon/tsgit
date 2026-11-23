@@ -852,3 +852,25 @@ eager and worktree-file gates crossed six caps, measured once on a clean build
 
 The npm tarball cap moved 1538 → 1542 KiB (1 578 748 B measured); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — git's present-file clear of the skip-worktree bit
+
+Clearing the skip-worktree bit of present files at every index read (the missing-directory
+presence probe, its budgeted synchronous file-system member, the clearing index resolver above the
+snapshot cache), the `sparse.expectFilesOutsideOfPatterns` reader and gate, git's per-route
+out-of-pattern predicates through `add`, `checkout -b`, `stash` and `reset --mixed`, the
+level-by-level non-cone matcher with its directory memo and git's entry-kind rule, and the glob
+literal-prefix reject crossed six caps, measured once on a clean build (`rm -rf dist .wireit`)
+after review converged: measurement plus 0.1 kB, rounded up to the next 0.1 kB.
+
+| Row | cap | measured | raised to | headroom |
+|---|--:|--:|--:|--:|
+| Browser bundle (no-build) | 371.8 kB | 373 811 | 374 kB | 189 B |
+| Command (add) | 6.7 kB | 6 922 | 7.1 kB | 178 B |
+| Full library | 431.1 kB | 433 416 | 433.6 kB | 184 B |
+| Chunks: domain | 130.1 kB | 130 276 | 130.4 kB | 124 B |
+| Chunks: primitives | 119.2 kB | 120 227 | 120.4 kB | 173 B |
+| Chunks: commands-internal | 94.5 kB | 94 729 | 94.9 kB | 171 B |
+
+The npm tarball cap moved 1542 → 1551 KiB (1 587 793 B measured); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.

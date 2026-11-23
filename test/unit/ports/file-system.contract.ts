@@ -41,7 +41,16 @@ export interface FileSystemContractEnv {
    * `utimeNow` row can observe the stamp advancing. Required by the rows that assert it.
    */
   readonly createBackdatedFile?: (path: string) => Promise<void>;
+  /**
+   * Declares an adapter configured to refuse blocking calls (the threadpool opt-out): its
+   * synchronous presence probe is not offered, so the caller takes the async probe.
+   */
+  readonly syncProbe?: 'declined';
 }
+
+/** What the synchronous presence probe must answer where an answering adapter answers `answered`. */
+const syncProbeAnswer = <T>(env: FileSystemContractEnv, answered: T): T | undefined =>
+  env.syncProbe === 'declined' ? undefined : answered;
 
 const SEGMENT_REFUSALS_UNPINNED =
   'segment refusal codes are not pinned for this adapter on this host';
@@ -238,6 +247,15 @@ async function lstatIfReachable(fs: FileSystem, path: string): Promise<FileStat 
     throw new Error('the adapter under contract provides no lstatIfReachable');
   }
   return fs.lstatIfReachable(path);
+}
+
+/**
+ * The optional synchronous presence probe, `undefined` for an adapter that declines to offer it. A
+ * root set the adapter has not resolved yet answers `undefined`, so one async read settles it first.
+ */
+async function lstatReachableSync(fs: FileSystem, path: string): Promise<boolean | undefined> {
+  await fs.exists(path).catch(() => false);
+  return fs.lstatReachableSync?.(path);
 }
 
 /** Every adapter this suite runs against provides the optional non-throwing UTF-8 read probe. */
@@ -2105,6 +2123,54 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           } finally {
             await env.fs.chmod(dir, 0o755);
           }
+        });
+      });
+    });
+
+    describe('lstatReachableSync — the synchronous presence probe', () => {
+      describe('Given a path with no entry', () => {
+        it('Then lstatReachableSync answers false', async () => {
+          // Arrange
+          const path = `${env.rootDir}/sync-missing.bin`;
+
+          // Act
+          const result = await lstatReachableSync(env.fs, path);
+
+          // Assert
+          expect(result).toBe(syncProbeAnswer(env, false));
+        });
+      });
+
+      describe('Given a regular file occupying an intermediate path segment', () => {
+        it('Then lstatReachableSync answers false', async () => {
+          // Arrange
+          await env.fs.write(`${env.rootDir}/sync-file.bin`, new Uint8Array([1]));
+
+          // Act
+          const result = await lstatReachableSync(env.fs, `${env.rootDir}/sync-file.bin/x`);
+
+          // Assert
+          expect(result).toBe(syncProbeAnswer(env, false));
+        });
+      });
+
+      describe('Given a present regular file, a dangling symlink and a directory', () => {
+        it('Then lstatReachableSync answers true for each', async () => {
+          // Arrange
+          const file = `${env.rootDir}/sync-present.bin`;
+          const link = `${env.rootDir}/sync-dangling`;
+          const dir = `${env.rootDir}/sync-dir`;
+          await env.fs.write(file, new Uint8Array([1, 2, 3]));
+          await env.fs.symlink('sync-dangling-target', link);
+          await env.fs.mkdir(dir);
+
+          // Act
+          const result = await Promise.all(
+            [file, link, dir].map((p) => lstatReachableSync(env.fs, p)),
+          );
+
+          // Assert
+          expect(result).toEqual(Array(3).fill(syncProbeAnswer(env, true)));
         });
       });
     });

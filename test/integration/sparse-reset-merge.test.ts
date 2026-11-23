@@ -178,6 +178,7 @@ describe.skipIf(GIT === undefined)('integration — sparse reset interop with ca
 
         // Assert — canonical git still sees the skip-worktree (`S`) bit and
         // reports a clean tree (no phantom deletion of `out/gone.ts`).
+        // Single repo whose subject is git's own read view: stock config on purpose.
         const lsFiles = runGit(['-C', tmpdir, 'ls-files', '-t']);
         expect(lsFiles).toContain('S out/gone.ts');
         const gitStatus = runGit(['-C', tmpdir, 'status', '--porcelain']);

@@ -534,7 +534,18 @@ done
 # removed and overwrite verdicts, and the assume-unchanged trust with its
 # whole-second stat-drift refusal — runtime code in every distribution form, none
 # removable without dropping the behaviour.
-SIZE_CAP=$((1542 * 1024))
+# Raised 1542 -> 1551 KiB by git's present-file clear of the skip-worktree bit:
+# the measured pack landed at 1 587 793 B, 8 785 B over the old cap, attributable
+# to the missing-directory presence probe, its budgeted synchronous file-system
+# member and walk, the clearing index resolver above the snapshot cache, the
+# sparse.expectFilesOutsideOfPatterns reader and gate, git's per-route
+# out-of-pattern predicates through add, checkout -b, stash and reset --mixed, the
+# level-by-level non-cone matcher with its directory memo and git's entry-kind
+# rule for gitlinks and directories over tracked files, and the glob
+# literal-prefix reject —
+# runtime code in every distribution form, none removable without dropping the
+# behaviour.
+SIZE_CAP=$((1551 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

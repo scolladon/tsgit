@@ -6,7 +6,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { readIndex, readRawIndex } from '../../../../src/application/primitives/read-index.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -795,19 +795,147 @@ describe('reset — sparse checkout', () => {
 
   describe('Given a sparse repo', () => {
     describe('When reset --mixed runs', () => {
-      it('Then the rebuilt index marks excluded paths skip-worktree', async () => {
-        // Arrange — sparse enabled after the commit; both entries are still normal.
+      it('Then a path the index did not hold follows the patterns', async () => {
+        // Arrange — `docs/b.txt` is in HEAD but absent from the index, so reset adds it back.
         const { ctx, c1 } = await seedSrcAndDocs();
         await enableSparseSrcOnly(ctx);
+        const held = (await readIndex(ctx)).entries.filter((e) => e.path !== 'docs/b.txt');
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(held, 'update');
+        await lock.release();
 
         // Act
         const result = await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert — `docs/b.txt` is excluded, `src/a.txt` stays in-pattern.
         expect(result.mode).toBe('mixed');
-        const index = await readIndex(ctx);
+        const index = await readRawIndex(ctx);
         expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
         expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a path the index did not hold, now a directory on disk, under a rule excluding that directory', () => {
+    describe('When reset --mixed runs', () => {
+      it('Then the path is judged a directory and rebuilt skip-worktree', async () => {
+        // Arrange
+        const { updateCoreConfig } = await import(
+          '../../../../src/application/primitives/update-config.js'
+        );
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top`, 't');
+        await add(ctx, ['top']);
+        const first = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '*\n!top/\n');
+        await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([], 'update');
+        await lock.release();
+        await ctx.fs.rm(`${ctx.layout.workDir}/top`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/top/y`, 'y');
+        const sut = reset;
+
+        // Act
+        await sut(ctx, { mode: 'mixed', rev: first.id });
+
+        // Assert
+        const entries = (await readRawIndex(ctx)).entries;
+        expect(entries.map((e) => [e.path, e.flags.skipWorktree])).toEqual([['top', true]]);
+      });
+    });
+  });
+
+  describe('Given sparse on and a layout without a work tree', () => {
+    describe('When reset --mixed runs', () => {
+      it('Then it refuses with WORK_TREE_REQUIRED naming reset', async () => {
+        // Arrange
+        const { ctx: base, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(base);
+        const { workDir: _workDir, ...layout } = base.layout;
+        const ctx = { ...base, layout };
+        const sut = reset;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { mode: 'mixed', rev: c1 });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'WORK_TREE_REQUIRED',
+          operation: 'reset',
+        });
+      });
+    });
+  });
+
+  describe('Given sparse on and an out-of-pattern entry without the bit', () => {
+    describe('When reset --mixed to HEAD runs', () => {
+      it('Then the entry stays without the bit', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(ctx);
+
+        // Act
+        await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Assert
+        const index = await readRawIndex(ctx);
+        expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given sparse on and an in-pattern entry carrying the bit', () => {
+    describe('When reset --mixed to HEAD runs and its file is absent', () => {
+      it('Then the entry keeps the bit', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(ctx);
+        const index = await readIndex(ctx);
+        const marked = index.entries.map((e) =>
+          e.path === 'src/a.txt' ? { ...e, flags: { ...e.flags, skipWorktree: true } } : e,
+        );
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(marked, 'update');
+        await lock.release();
+        await ctx.fs.rm(`${ctx.layout.workDir}/src/a.txt`);
+
+        // Act
+        await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Assert
+        const after = await readIndex(ctx);
+        expect(after.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given sparse on and an in-pattern entry carrying the bit', () => {
+    describe('When reset --mixed to HEAD runs and its file is present', () => {
+      it('Then the entry loses the bit as git reads it cleared', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedSrcAndDocs();
+        await enableSparseSrcOnly(ctx);
+        const index = await readIndex(ctx);
+        const marked = index.entries.map((e) =>
+          e.path === 'src/a.txt' ? { ...e, flags: { ...e.flags, skipWorktree: true } } : e,
+        );
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(marked, 'update');
+        await lock.release();
+
+        // Act
+        await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Assert
+        const after = await readRawIndex(ctx);
+        expect(after.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
       });
     });
   });

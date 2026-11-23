@@ -450,6 +450,121 @@ describe('assertOperationalRepository', () => {
   });
 });
 
+describe('assertOperationalRepository sparse.expectFilesOutsideOfPatterns', () => {
+  const sparseBogus = '[sparse]\n\texpectFilesOutsideOfPatterns = bogus\n';
+
+  describe('Given a bogus local sparse.expectFilesOutsideOfPatterns', () => {
+    describe('When the gate runs', () => {
+      it('Then it refuses naming the key, the value and the local file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, sparseBogus);
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'sparse.expectfilesoutsideofpatterns',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+        });
+      });
+    });
+  });
+
+  describe('Given the sparse key on line 2 before a bad core.fileMode on line 4', () => {
+    describe('When the gate runs', () => {
+      it('Then the sparse key is named', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, `${sparseBogus}[core]\n\tfileMode = bogus\n`);
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject({ key: 'sparse.expectfilesoutsideofpatterns' });
+      });
+    });
+  });
+
+  describe('Given a bad core.fileMode before the sparse key', () => {
+    describe('When the gate runs', () => {
+      it('Then core.filemode is named', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, `[core]\n\tfileMode = bogus\n${sparseBogus}`);
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject({ key: 'core.filemode' });
+      });
+    });
+  });
+
+  describe('Given core.sparseCheckout absent and a bogus sparse key', () => {
+    describe('When the gate runs', () => {
+      it('Then it still refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, `[core]\n\tbare = false\n${sparseBogus}`);
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE' });
+      });
+    });
+  });
+
+  describe('Given the extension on and the bogus value only in config.worktree', () => {
+    describe('When the gate runs', () => {
+      it('Then it refuses with the worktree source', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedWorktreeConfig(ctx, sparseBogus);
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject(
+          badBoolean(ctx, 'sparse.expectfilesoutsideofpatterns', 'bogus'),
+        );
+      });
+    });
+  });
+
+  describe('Given the extension off and the bogus value only in config.worktree', () => {
+    describe('When the gate runs', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, '[core]\n\tbare = false\n');
+        await seedWorktreeConfig(ctx, sparseBogus);
+        const sut = assertOperationalRepository;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(typeof result).toBe('string');
+      });
+    });
+  });
+});
+
 describe('assertOperationalRepositorySettingsFirst', () => {
   describe('Given a bad sparse value in config.worktree', () => {
     describe('When the gate runs', () => {

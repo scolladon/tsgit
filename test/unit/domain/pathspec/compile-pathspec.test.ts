@@ -98,10 +98,9 @@ describe('compilePathspec', () => {
 
   describe('Given a bare literal "lib"', () => {
     describe('When compiled', () => {
-      it('Then the regex matches the directory AND every descendant (withDirSuffix is enabled)', () => {
-        // Arrange — a literal pathspec compiles with `withDirSuffix: true`, so the
-        // regex must cover descendants. If the flag were `false` the regex would be
-        // `^lib$` and reject everything below `lib`.
+      it('Then it matches the directory AND every descendant', () => {
+        // Arrange — a literal pathspec covers descendants, as `git add lib` does; an exact-path
+        // match would reject everything below `lib`.
         const result = compilePathspec(['lib']);
 
         // Act / Assert
@@ -115,11 +114,9 @@ describe('compilePathspec', () => {
 
   describe('Given a literal pathspec "lib"', () => {
     describe('When compiled', () => {
-      it('Then the regex matches a descendant path "lib/foo.ts" (withDirSuffix directory semantics)', () => {
-        // Arrange — a literal pathspec compiles with `withDirSuffix: true`, so a
-        // bare `lib` covers `lib` itself and everything beneath it (Git's
-        // `git add lib` directory-prefix semantics). A mutant flipping the flag
-        // to `false` yields `^lib$`, which rejects `lib/foo.ts`.
+      it('Then it matches a descendant path "lib/foo.ts" (directory-prefix semantics)', () => {
+        // Arrange — a bare `lib` covers `lib` itself and everything beneath it (Git's
+        // `git add lib` directory-prefix semantics); an exact-path match rejects `lib/foo.ts`.
         const result = compilePathspec(['lib']);
 
         // Act / Assert

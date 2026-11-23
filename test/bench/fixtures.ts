@@ -8,7 +8,7 @@
  * performance rather than write-path differences.
  */
 import { execFile } from 'node:child_process';
-import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -690,4 +690,83 @@ export const setupFsckArtefactFixture = async (
   }
 
   return { cwd };
+};
+
+export type SparseStatusLayout = 'present-directories' | 'absent-directories';
+
+const SPARSE_DIRECTORIES = 200;
+const SPARSE_FILES_PER_DIRECTORY = 100;
+
+const padded = (n: number, width: number): string => n.toString().padStart(width, '0');
+
+const writeSparseTree = async (cwd: string): Promise<void> => {
+  await writeFile(path.join(cwd, 'top.txt'), 'top\n');
+  for (let d = 0; d < SPARSE_DIRECTORIES; d += 1) {
+    const dir = path.join(cwd, `d${padded(d, 3)}`);
+    await mkdir(dir);
+    await writeFile(path.join(dir, 'keep'), 'keep\n');
+    for (let f = 0; f < SPARSE_FILES_PER_DIRECTORY; f += 1) {
+      await writeFile(path.join(dir, `s${padded(f, 4)}`), `payload ${d} ${f}\n`);
+    }
+  }
+};
+
+const SPARSE_PATTERNS: Readonly<Record<SparseStatusLayout, string>> = {
+  'present-directories': '/*\n!/d*/s*\n',
+  'absent-directories': '/*\n!/*/\n',
+};
+
+type GitRunner = (...args: string[]) => Promise<string>;
+
+const commitSparseTree = async (git: GitRunner): Promise<void> => {
+  await git('add', '-A');
+  await git(
+    '-c',
+    `user.name=${AUTHOR.name}`,
+    '-c',
+    `user.email=${AUTHOR.email}`,
+    'commit',
+    '--quiet',
+    '-m',
+    'sparse fixture',
+  );
+};
+
+const applySparsePatterns = async (
+  git: GitRunner,
+  cwd: string,
+  layout: SparseStatusLayout,
+): Promise<void> => {
+  await git('config', 'core.sparseCheckout', 'true');
+  await git('config', 'core.sparseCheckoutCone', String(layout === 'absent-directories'));
+  await mkdir(path.join(cwd, '.git', 'info'), { recursive: true });
+  await writeFile(path.join(cwd, '.git', 'info', 'sparse-checkout'), SPARSE_PATTERNS[layout]);
+  await git('read-tree', '-mu', 'HEAD');
+};
+
+/**
+ * A git-CLI-built sparse checkout whose out-of-pattern entries all carry the
+ * skip-worktree bit: `present-directories` keeps each directory on disk (one
+ * `lstat` per entry), `absent-directories` removes them (a missing-directory
+ * answer covers every entry).
+ */
+export const setupSparseStatusFixture = async (layout: SparseStatusLayout): Promise<BenchRepo> => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-sparse-status-'));
+  const env = scrubbedGitEnv();
+  const git: GitRunner = async (...args) =>
+    (await execFileAsync('git', args, { cwd, env })).stdout.trim();
+
+  await git('init', '--quiet', '-b', 'main');
+  // A detached auto-maintenance would write into .git while teardown removes it.
+  await git('config', 'maintenance.auto', 'false');
+  await git('config', 'gc.auto', '0');
+  await writeSparseTree(cwd);
+  await commitSparseTree(git);
+  await applySparsePatterns(git, cwd, layout);
+
+  return {
+    cwd,
+    headCommitId: await git('rev-parse', 'HEAD'),
+    firstBlobId: await git('rev-parse', 'HEAD:top.txt'),
+  };
 };

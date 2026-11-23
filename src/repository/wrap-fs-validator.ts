@@ -41,6 +41,7 @@ type OptionalPathProbe =
   | 'lexists'
   | 'tryLstat'
   | 'lstatIfReachable'
+  | 'lstatReachableSync'
   | 'tryReadUtf8'
   | 'readdirInOsOrder';
 
@@ -54,9 +55,9 @@ const guardedPathProbe = <K extends OptionalPathProbe>(
   readGuard: (path: string) => void,
   key: K,
 ): Partial<Pick<FileSystem, K>> => {
-  const probe: ((path: string) => Promise<unknown>) | undefined = fs[key];
+  const probe: ((path: string) => unknown) | undefined = fs[key];
   if (probe === undefined) return {};
-  const guarded = (p: string): Promise<unknown> => {
+  const guarded = (p: string): unknown => {
     readGuard(p);
     return probe.call(fs, p);
   };
@@ -226,6 +227,7 @@ export const wrapFsValidator = (
     ...guardedPathProbe(fs, readGuard, 'lexists'),
     ...guardedPathProbe(fs, readGuard, 'tryLstat'),
     ...guardedPathProbe(fs, readGuard, 'lstatIfReachable'),
+    ...guardedPathProbe(fs, readGuard, 'lstatReachableSync'),
     ...guardedPathProbe(fs, readGuard, 'tryReadUtf8'),
     ...guardedPathProbe(fs, readGuard, 'readdirInOsOrder'),
     readdir: (p) => {

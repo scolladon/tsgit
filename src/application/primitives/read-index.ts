@@ -3,6 +3,7 @@ import { type GitIndex, parseIndex } from '../../domain/git-index/index.js';
 import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { clearSkipWorktreeFromPresentFiles } from './internal/clear-skip-worktree-from-present-files.js';
 import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
 import { indexPath } from './path-layout.js';
 import {
@@ -150,6 +151,19 @@ const loadIndex = async (ctx: Context, path: string, stat: FileStat): Promise<Gi
 };
 
 /**
+ * The parsed `.git/index` exactly as stored, skip-worktree bits included: memoised per session and
+ * keyed on the file's own stat, as described on {@link readIndex}.
+ */
+export async function readRawIndex(ctx: Context): Promise<GitIndex> {
+  await assertRepoSettingsValid(ctx);
+  const path = indexPath(ctx.layout.gitDir);
+  if (!(await ctx.fs.exists(path))) {
+    return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };
+  }
+  return readIndexAt(ctx, await ctx.fs.stat(path));
+}
+
+/**
  * Read `.git/index`, memoised per session and keyed on the file's own
  * `(size, mtimeMs, mtimeNs, ino)` — following `config-read.ts`'s precedent. A
  * second call whose stat matches the cached key joins the cached parse
@@ -168,12 +182,9 @@ const loadIndex = async (ctx: Context, path: string, stat: FileStat): Promise<Gi
  * commits.
  */
 export async function readIndex(ctx: Context): Promise<GitIndex> {
-  await assertRepoSettingsValid(ctx);
-  const path = indexPath(ctx.layout.gitDir);
-  if (!(await ctx.fs.exists(path))) {
-    return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };
-  }
-  return readIndexAt(ctx, await ctx.fs.stat(path));
+  // The clear is recomputed per call over the cached raw parse, so a file appearing or vanishing
+  // between two calls is seen with no index change: git's `ls-files -t` view.
+  return clearSkipWorktreeFromPresentFiles(ctx, await readRawIndex(ctx));
 }
 
 /**

@@ -88,6 +88,13 @@ A damaged object, ref, index or state file, or a file the process cannot read.
   tsgit  exit=0    at=file     rev-parse refs/heads/x: ok   reflog: branch: Created from main
   ```
 
+- **(status)** `status` throws `PERMISSION_DENIED` on a directory the process cannot read, where git warns and exits 0 — pre-existing, pinned against git 2.56.0 (POSIX, not root). Tracked skip-worktree `a/f` under `a` at mode 000: git `status --porcelain -uall` exits 0 with `warning: could not open directory 'a/': Permission denied`; tsgit's working-tree walk throws `{"code":"PERMISSION_DENIED","path":"<repo>/a"}`. Reproduces without sparse checkout; independent of the skip-worktree clear. Pinned in `test/integration/posix-only/skip-worktree-present-files-interop.test.ts`. Not folded: out of scope (the walk's refusal on an unreadable directory, shared with `add`; see 32.68 for the same warn-and-walk-on shape).
+  ```
+  chmod 000 a
+  git status --porcelain -uall -> exit 0, warning: could not open directory 'a/': Permission denied
+  tsgit status()               -> threw {"code":"PERMISSION_DENIED","path":"<repo>/a"}
+  ```
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.
@@ -177,13 +184,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
   git status: fatal: bad boolean config value 'bogus' for 'core.ignorecase'     tsgit status() succeeds
   ```
 
-- **32.64** Non-cone `/*` and `!/*/` mis-match, so checkout drops and deletes top-level files — pre-existing, pinned against git 2.56.0. Local `core.sparseCheckout = true`, no cone key. With `/*\n!/*/\n/b/\n`, git keeps `H top` with `top` on disk, tsgit marks `S top` and deletes it; with `/*` alone git keeps everything `H`, tsgit marks every path inside a directory `S` (`src/domain/sparse/parse-sparse-checkout.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.32; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
-  ```
-  pattern=/*\n!/*/\n/b/\n git: S a/f S a/g H b/f H top | tsgit: S a/f S a/g H b/f S top
-  pattern=/*\n            git: H a/f H a/g H b/f H top | tsgit: S a/f S a/g S b/f H top
-  pattern=/*\n (unborn HEAD, target dir/x g, checkout side) git: H dir/x H g | tsgit: S dir/x H g
-  ```
-
 - **32.65** Checkout clears a skip-worktree bit git keeps once sparse is off — pre-existing, pinned against git 2.56.0. Local cone sparse on `b`, `read-tree -mu HEAD`, then `core.sparseCheckout = false` (no `sparse-checkout disable`), then checkout `other` (changes `a/f`): git writes `a/f` and keeps its bit (`S a/f S a/g H b/f H top`); tsgit gives `H a/f S a/g H b/f H top` (`src/application/commands/checkout.ts`). The disk matches; only the index bit differs. Not folded: out of scope.
   ```
   ls-files -t  git:   S a/f S a/g H b/f H top    disk: ./a/f ./b/f ./top
@@ -222,13 +222,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
   ic=false both refuse (git: untracked working tree files would be overwritten: dir)
   ```
 
-- **32.77** A non-cone directory-only pattern matches a file of that name, so checkout writes a file git skips — pinned against git 2.56.0, both `core.ignorecase` values. Local `core.sparseCheckout = true`, pattern file `/g\n/dir/\n`, target tree holds a file `dir`. git marks `S dir` and does not write it. tsgit marks `H dir` and writes it, because `buildSparseMatcher(...)('dir')` is true (`src/domain/sparse/index.ts` → `nonConeMatcher`). Above the bar (data-integrity) but over the net-zero cap of the run that closed 32.41; non-cone mode is deprecated in git. Not folded: out of scope (non-cone matcher).
-  ```
-  matcher('/g\n/dir/\n', non-cone): dir true | dir/a true | g true | other false
-  git checkout side   -> ls-files -t: S dir H g   disk: g
-  tsgit checkout      -> ls-files -t: H dir H g   disk: dir g
-  ```
-
 - **32.78** `checkout` `createBranch` does not expand `@{-N}` — pinned against git 2.56.0. git expands `@{-1}` in a new branch name: `checkout -b '@{-1}'` recreates a deleted previous branch, and `-B '@{-1}'` resets it. tsgit passes the name to `newBranchRef` unexpanded (`src/application/commands/checkout.ts`, `assertBranchCreatable`) and refuses `INVALID_REF`. Not folded: out of scope.
   ```
   # previous branch feat, then deleted; on main
@@ -253,8 +246,6 @@ A well-formed repository, but a configuration, layout or argument shape few call
 
 - **32.83** An octopus content conflict labels its markers `HEAD` / `<branch>` where git writes random `.merge_file_XXXXXX` temp names — pinned against git 2.56.0. `main` edits `f`, `last` edits `f`, `first` edits `top`; `git merge --no-edit first last` vs `repo.merge.run({ rev: ['first', 'last'] })` (`src/application/commands/merge.ts`). Both stop on the conflict with the same marker body; only the label lines differ, and git's labels are random per run (octopus merges through temp files), so byte parity is impossible. Not folded: out of scope.
 
-- **32.84** A non-cone sparse matcher costs ~2.6 s per 20k index paths with 62 literal rules — measured at a0cd84e1. `compileGlob`'s per-character step (`stepLiteral`, `src/domain/pathspec/compile-glob.ts`) allocates a `Uint8Array(path.length + 1)` per literal token, so a literal `withDirSuffix` pattern costs 1.5–2.4 µs per path against 0.2 µs for `*`; only `src/domain/sparse/non-cone.ts` passes `withDirSuffix`, and cone mode costs 5 ms. Fix shape: a literal-pattern fast path (prefix compare plus a `/` or end-of-path boundary). Non-cone mode is deprecated in git. Not folded: out of scope.
-
 - **32.85** Spike — `stash apply --index` of a stash holding a staged change to an excluded path leaves git's entry `H` with the file absent; tsgit leaves it `S` — pinned against git 2.56.0. Cone sparse on `b`, `a/f` staged `f2` through `update-index --no-skip-worktree` with work file `f1`, `git stash`, then `git stash apply --index` vs `repo.stash.apply({ restoreIndex: true })` (`src/application/commands/stash.ts`): both stage blob `9de77c1` and leave `a/` absent; git's `status` reports `MD a/f`, tsgit's `M  a/f`. Question: which step of git's `do_apply_stash` index restore clears the bit without writing the file, and does every `--index` restore of a skip-worktree path do it? Not folded: needs a probe.
 
 - **32.86** A forced `mv` onto an existing file through an untracked symbolic link to a directory outside the work tree refuses `PERMISSION_DENIED` where git writes outside — pinned against git 2.56.0. Tracked `file`, an outside directory holding `full/o`, and an untracked link `link -> ../out/full`: git `mv -f file link/o` exits 0, overwrites the outside `o` and stages `link/o`; tsgit `mv(['file'], 'link/o', { force: true })` throws `PERMISSION_DENIED { path: 'link/o' }` from the working-tree rename (`src/application/commands/internal/working-tree.ts`), index and work tree unchanged. The refusal is ADR-625's write-side leading-path containment, kept on purpose; the in-tree case (ADR-1227) renames through the link as git does. Lifting the guard would need an ADR and a security review. Not folded: needs its own decision.
@@ -271,6 +262,38 @@ A well-formed repository, but a configuration, layout or argument shape few call
   # echo aaaa>f; touch -t 202001010000 f; add; commit; [config]; echo bbbb>g; touch -r f g; mv g f
   default:                git " M f" | tsgit unstaged:"modified"
   core.checkstat=minimal: git ""     | tsgit unstaged:"modified"
+  ```
+
+- **(status)** Under `core.ignorecase = true`, `status` lists an untracked file that is the case variant of a tracked one, where git folds it onto the tracked entry — pinned against git 2.56.0 on a case-insensitive file system (macOS), no sparse checkout needed. Tracked `a/f`, the directory `a` replaced on disk by `A` holding `A/f`: git `status --porcelain` prints ` M a/f` only; tsgit reports `a/f` modified and `A/f` untracked, because the working-tree walk does not fold case against the index (`src/application/primitives/walk-working-tree.ts`). Same row under sparse checkout with the entry skip-worktree: git ` M a/f`, tsgit ` M a/f` plus `?? A/f`. Pinned in `test/integration/skip-worktree-present-files-status-interop.test.ts` (`TSGIT_CASE_VARIANT`). Not folded: out of scope (untracked walk, not the skip-worktree clear).
+  ```
+  core.ignorecase=true; tracked a/f; rm -r a; mkdir A; echo hi > A/f
+  git status --porcelain -> " M a/f"
+  tsgit status()         -> changes [a/f modified], untracked ["A/f"]
+  ```
+
+- **(rm)** Under sparse checkout, `rm` removes an absent skip-worktree entry where git refuses it as outside the sparse-checkout definition — pre-existing, pinned against git 2.56.0. Non-cone patterns `/*`, `!/*/`, `/b/` applied with `read-tree -mu HEAD`, so `a/f` is skip-worktree and absent. git `rm a/f` exits 1 with `The following paths and/or pathspecs matched paths that exist outside of your sparse-checkout definition, so will not be updated in the index: a/f` and keeps `S a/f`. tsgit `rm(['a/f'])` returns `{ removed: ['a/f'] }` and drops the entry (`src/application/commands/rm.ts`). Above the filing bar (data integrity), recorded here over the net-zero cap (ADR-1170). Not folded: out of scope.
+  ```
+  printf '/*\n!/*/\n/b/\n' > .git/info/sparse-checkout; git read-tree -mu HEAD
+  git rm a/f        -> exit 1, "…outside of your sparse-checkout definition…", index S a/f H b/g
+  tsgit rm(['a/f']) -> {"removed":["a/f"]}, index H b/g
+  ```
+
+- **(rebase)** A `rebase` that stops on a conflict marks a present gitlink skip-worktree and removes its directory where git leaves it in the pattern — pre-existing, pinned against git 2.56.0. `main` and `other` both change `lib/f`, `other` also `top`; patterns `*\n!sub/` with an empty directory `sub`, applied after `*` or `/lib/`; `git rebase other` vs `rebaseRun({ upstream: 'other' })` (`src/application/commands/rebase.ts`). `cherry-pick` and `merge` of the same history agree with git, so the difference is in the rebase stop. The rows fail on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   rebase other -> idx M lib/f x3, H sub, H top; disk lib lib/f sub top
+  tsgit rebaseRun    -> idx M lib/f x3, S sub, H top; disk lib lib/f top
+  ```
+
+- **(cherry-pick)** A `cherry-pick` that stops on a conflict leaves an absent, re-included gitlink skip-worktree where git re-includes it and creates its directory — pre-existing, pinned against git 2.56.0. Same history as (rebase); `/lib/` applied (`sub` is `S`, no directory), patterns `*\n!sub/`; `git cherry-pick other` vs `cherryPickRun({ commits: ['other'] })` (`src/application/commands/cherry-pick.ts`). The row fails on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   cherry-pick other -> idx M lib/f x3, H sub, H top; disk lib lib/f sub top
+  tsgit cherryPickRun     -> idx M lib/f x3, S sub, H top; disk lib lib/f top
+  ```
+
+- **(merge)** A `merge` that stops on a conflict does not create the directory of a gitlink it re-includes — pre-existing, pinned against git 2.56.0. Same history as (rebase); `/lib/` applied (`sub` is `S`, no directory), patterns `sub/\n/lib/`; `git merge other` vs `mergeRun({ rev: 'other' })` (`src/application/commands/merge.ts`). The index agrees (`H sub`); only the disk differs. The row fails on main ac037122. Pinned in `test/integration/sparse-gitlink-writers-interop.test.ts` (`GAPS`). Not folded: out of scope.
+  ```
+  git   merge other -> idx M lib/f x3, H sub, S top; disk lib lib/f sub
+  tsgit mergeRun    -> idx M lib/f x3, H sub, S top; disk lib lib/f
   ```
 
 ## Performance off the hot path

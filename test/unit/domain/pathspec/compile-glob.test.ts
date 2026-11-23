@@ -41,12 +41,11 @@ const oracleRegex = (pattern: string, options: CompileGlobOptions): RegExp => {
     i = consumed.next;
   }
   const prefix = options.anchored ? '^' : '(^|.*/)';
-  const suffix = options.withDirSuffix === true ? '(/.*)?$' : '$';
-  return new RegExp(`${prefix}${body}${suffix}`);
+  return new RegExp(`${prefix}${body}$`);
 };
 
 describe('compileGlob', () => {
-  describe('Given a literal "src" with anchored=true and no dir suffix', () => {
+  describe('Given a literal "src" with anchored=true', () => {
     describe('When compiled', () => {
       it('Then matches only the exact path', () => {
         // Arrange
@@ -71,22 +70,6 @@ describe('compileGlob', () => {
         expect(result.test('vendorsrc')).toBe(false);
         expect(result.test('a/src')).toBe(false);
         expect(result.test('src')).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a literal "src" with anchored=true AND withDirSuffix=true', () => {
-    describe('When compiled', () => {
-      it('Then matches the path AND any descendant', () => {
-        // Arrange
-        const result = compileGlob('src', { anchored: true, withDirSuffix: true });
-
-        // Assert
-        expect(result.test('src')).toBe(true);
-        expect(result.test('src/foo')).toBe(true);
-        expect(result.test('src/a/b/c')).toBe(true);
-        expect(result.test('other')).toBe(false);
-        expect(result.test('src-other')).toBe(false);
       });
     });
   });
@@ -339,10 +322,10 @@ describe('compileGlob', () => {
         ['B/f', true, 'b/F'],
         ['*.TXT', false, 'dir/a.txt'],
         ['?/F', true, 'b/f'],
-        ['src', true, 'SRC/x'],
+        ['src', true, 'SRC'],
       ] as const)('Then %s (anchored %s) matches %s', (pattern, anchored, path) => {
         // Arrange
-        const sut = compileGlob(pattern, { anchored, withDirSuffix: true, caseFold: true });
+        const sut = compileGlob(pattern, { anchored, caseFold: true });
 
         // Act
         const result = sut.test(path);
@@ -379,16 +362,67 @@ describe('compileGlob', () => {
     });
   });
 
+  describe('Given a pattern led by a literal run', () => {
+    describe.each([
+      ['src', true, 'src', true],
+      ['src', true, 'a/src', false],
+      ['src', true, 'src-x', false],
+      ['src', true, 'sr', false],
+      ['src', false, 'a/src', true],
+      ['src', false, 'a-src', false],
+      ['src', false, 'src/a', false],
+      ['zz1/*.c', true, 'zz1/a.c', true],
+      ['zz1/*.c', true, 'zz2/a.c', false],
+      ['zz1/*.c', true, 'x/zz1/a.c', false],
+      ['zz1/*.c', true, 'zz1', false],
+      ['zz/*.c', false, 'x/zz/a.c', true],
+      ['zz/*.c', false, 'xzz/a.c', false],
+      ['zz/*.c', false, 'zz/a.c', true],
+      ['', true, '', true],
+      ['', true, 'a', false],
+      ['', false, 'a/', true],
+      ['a\\*', true, 'a\\x', true],
+    ] as const)(
+      'When "%s" (anchored %s) is tested against "%s"',
+      (pattern, anchored, path, expected) => {
+        it(`Then it answers ${expected}`, () => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored });
+
+          // Act
+          const result = sut.test(path);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      },
+    );
+
+    describe('When caseFold is set', () => {
+      it.each([
+        ['Src', true, 'sRC'],
+        ['Src', false, 'a/SRC'],
+        ['ZZ1/*.c', true, 'zz1/A.c'],
+      ] as const)('Then "%s" (anchored %s) matches "%s"', (pattern, anchored, path) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored, caseFold: true });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
   describe('equivalence with the original regex compiler', () => {
     const arbPattern = fc.string({
       unit: fc.constantFrom('a', 'b', '/', '*', '?', '.'),
       maxLength: 12,
     });
     const arbPath = fc.string({ unit: fc.constantFrom('a', 'b', '/'), maxLength: 12 });
-    const arbOptions = fc.record({
-      anchored: fc.boolean(),
-      withDirSuffix: fc.boolean(),
-    });
+    const arbOptions = fc.record({ anchored: fc.boolean() });
 
     describe('Given any pattern and any line-terminator-free path', () => {
       describe('When matched', () => {
@@ -404,6 +438,43 @@ describe('compileGlob', () => {
               expect(linear).toBe(oracle);
             }),
             { numRuns: 1000 },
+          );
+        });
+      });
+    });
+
+    describe('Given a literal-led pattern and a path over the same small alphabet', () => {
+      const arbLead = fc.string({ unit: fc.constantFrom('a', 'b', 'A', '/', '\\'), maxLength: 6 });
+      const arbTail = fc.string({ unit: fc.constantFrom('a', '*', '?', '/', 'B'), maxLength: 6 });
+      const arbText = fc.string({
+        unit: fc.constantFrom('a', 'b', 'A', 'B', '/', '\\'),
+        maxLength: 12,
+      });
+
+      describe('When matched with and without caseFold', () => {
+        it('Then the prefix fast path agrees with the regex oracle', () => {
+          // Arrange
+          fc.assert(
+            fc.property(
+              arbLead,
+              arbTail,
+              arbText,
+              fc.boolean(),
+              fc.boolean(),
+              (lead, tail, path, anchored, caseFold) => {
+                const pattern = `${lead}${tail}`;
+                const oracle = oracleRegex(caseFold ? pattern.toLowerCase() : pattern, {
+                  anchored,
+                });
+
+                // Act
+                const linear = compileGlob(pattern, { anchored, caseFold }).test(path);
+
+                // Assert
+                expect(linear).toBe(oracle.test(caseFold ? path.toLowerCase() : path));
+              },
+            ),
+            { numRuns: 2000 },
           );
         });
       });

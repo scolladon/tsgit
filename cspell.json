@@ -328,6 +328,7 @@
     "EXPSIG",
     "fmid",
     "EQLIMIT",
+    "expectfilesoutsideofpatterns",
     "generationversion",
     "gitx",
     "GOODSIG",

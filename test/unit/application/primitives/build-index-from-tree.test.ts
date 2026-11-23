@@ -430,6 +430,34 @@ describe('buildIndexFromTree', () => {
     });
   });
 
+  describe('Given a layout without a work tree and a sparse matcher', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then it refuses with WORK_TREE_REQUIRED naming buildIndexFromTree', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const { workDir: _workDir, ...layout } = base.layout;
+        const ctx = { ...base, layout };
+        const treeId = await writeTree(ctx, []);
+        const sut = buildIndexFromTree;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX, sparse: excludesDrop });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'WORK_TREE_REQUIRED',
+          operation: 'buildIndexFromTree',
+        });
+      });
+    });
+  });
+
   describe('Given a sparse matcher excluding a path with a matching donor', () => {
     describe('When buildIndexFromTree runs', () => {
       it('Then the entry is skip-worktree with zeroed stats', async () => {
@@ -980,6 +1008,34 @@ describe('Given a UTF-8 leaf with no donor in the current index', () => {
 
       // Assert
       expect(result.map((entry) => Object.hasOwn(entry, 'pathBytes'))).toEqual([false]);
+    });
+  });
+});
+
+describe('buildIndexFromTree over a directory standing at a leaf path', () => {
+  describe('Given a leaf with no donor whose path holds a directory and a rule excluding that directory', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the leaf is judged a directory and rebuilt skip-worktree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'top' as FilePath, await writeBlob(ctx, 'A')),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/top/y`, new TextEncoder().encode('y'));
+        const excludesDirectoryTop = (path: FilePath, kind: 'file' | 'directory' = 'file') =>
+          !(path === 'top' && kind === 'directory');
+        const sut = buildIndexFromTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+          sparse: excludesDirectoryTop,
+        });
+
+        // Assert
+        expect(result.map((e) => [e.path, e.flags.skipWorktree])).toEqual([['top', true]]);
+      });
     });
   });
 });

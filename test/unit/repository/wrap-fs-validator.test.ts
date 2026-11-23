@@ -1184,6 +1184,74 @@ describe('wrapFsValidator — the optional lstatIfReachable probe', () => {
   });
 });
 
+describe('wrapFsValidator — the optional lstatReachableSync probe', () => {
+  const fsWithSyncProbe = (): FileSystem & { readonly probed: string[] } => {
+    const probed: string[] = [];
+    return {
+      ...stubFs(),
+      probed,
+      lstatReachableSync(this: { readonly probed: string[] }, path: string): boolean {
+        this.probed.push(path);
+        return true;
+      },
+    };
+  };
+
+  describe('Given an adapter providing lstatReachableSync and an in-cwd path', () => {
+    describe('When it is called through the wrapper', () => {
+      it('Then it delegates on the adapter and returns its answer', () => {
+        // Arrange
+        const fs = fsWithSyncProbe();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        const result = sut.lstatReachableSync?.('/repo/x');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(fs.probed).toEqual(['/repo/x']);
+      });
+    });
+  });
+
+  describe('Given an adapter providing lstatReachableSync and a path outside every root', () => {
+    describe('When it is called through the wrapper', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO without probing', () => {
+        // Arrange
+        const fs = fsWithSyncProbe();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        let caught: unknown;
+        try {
+          sut.lstatReachableSync?.('/etc/x');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('PATHSPEC_OUTSIDE_REPO');
+        expect(fs.probed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an adapter without lstatReachableSync', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes none either', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('lstatReachableSync' in sut).toBe(false);
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — the optional tryReadUtf8 probe', () => {
   // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
   // call it on the adapter, not detached from it.

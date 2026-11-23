@@ -44,6 +44,12 @@ const makeEntry = (path: string, id: ObjectId): IndexEntry => ({
   path: path as FilePath,
 });
 
+/** `entry` as an earlier narrowing left it: outside the work tree, skip-worktree. */
+const skipWorktreeOf = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  flags: { ...entry.flags, skipWorktree: true },
+});
+
 /** Seed `.git/index` with a SHA-1-trailer so `readIndex` accepts it. */
 const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Promise<void> => {
   const index: GitIndex = {
@@ -98,6 +104,50 @@ describe('commands/internal/apply-sparse-checkout', () => {
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(true);
         expect(byPath.get('src/a' as FilePath)?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a gitlink whose directory is present', () => {
+    const gitlinkEntry = (): IndexEntry => ({
+      ...makeEntry('sub', '1111111111111111111111111111111111111111' as ObjectId),
+      mode: FILE_MODE.GITLINK,
+    });
+
+    describe('When a directory-only pattern includes it', () => {
+      it('Then it is judged as a directory and stays without skip-worktree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [gitlinkEntry()]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        const matcher = buildSparseMatcher(parseSparseCheckout('sub/\n', false).spec);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect((await readBackIndex(ctx)).get('sub' as FilePath)?.flags.skipWorktree).toBe(false);
+      });
+    });
+
+    describe('When a negated directory-only pattern excludes it', () => {
+      it('Then the directory is removed without being read as a file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [gitlinkEntry()]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/sub`);
+        const matcher = buildSparseMatcher(parseSparseCheckout('/*\n!sub/\n', false).spec);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/sub`)).toBe(false);
+        expect((await readBackIndex(ctx)).get('sub' as FilePath)?.flags.skipWorktree).toBe(true);
       });
     });
   });
@@ -264,7 +314,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
           // Arrange
           const ctx = createMemoryContext();
           const lossyId = await writeBlob(ctx, 'lossy');
-          const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: lossyBytes };
+          const lossy = skipWorktreeOf({ ...makeEntry(view, lossyId), pathBytes: lossyBytes });
           await seedIndex(ctx, [lossy]);
           if (present) await seedWorkFile(ctx, view, 'untracked');
           const exists = vi.spyOn(ctx.fs, 'lstatIfReachable');
@@ -430,7 +480,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedIndex(ctx, [
           makeEntry('src/a', aId),
           makeEntry('docs/b', bId),
-          makeEntry('src/c', cId),
+          skipWorktreeOf(makeEntry('src/c', cId)),
         ]);
         await seedWorkFile(ctx, 'src/a', 'aaa');
         await seedWorkFile(ctx, 'docs/b', 'bbb');
@@ -441,6 +491,46 @@ describe('commands/internal/apply-sparse-checkout', () => {
         // Assert — exactly one add, one delete, no retain.
         expect(result).toEqual({ materialized: 1, removed: 1, retained: [] });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/c`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an included entry that is not skip-worktree and whose file is absent', () => {
+    describe('When applySparseCheckout', () => {
+      it('Then the file stays absent and the entry stays as it was', async () => {
+        // Arrange — git writes only an entry it re-includes; one already in the work tree's set is left alone.
+        const ctx = createMemoryContext();
+        const srcId = await writeBlob(ctx, 'aaa');
+        await seedIndex(ctx, [makeEntry('src/a', srcId)]);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a`)).toBe(false);
+        expect((await readBackIndex(ctx)).get('src/a' as FilePath)?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an excluded entry whose path now holds a directory', () => {
+    describe('When applySparseCheckout narrows', () => {
+      it('Then the entry is retained and the directory is left', async () => {
+        // Arrange — git finds a directory where a file is tracked never up to date and keeps it.
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [makeEntry('docs/b', await writeBlob(ctx, 'bbb'))]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/docs/b`);
+        await seedWorkFile(ctx, 'docs/b/inner', 'x');
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: ['docs/b'] });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b/inner`)).toBe(true);
       });
     });
   });
@@ -637,7 +727,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedIndex(ctx, [
           makeEntry('src/a', aId),
           makeEntry('docs/b', bId),
-          makeEntry('src/c', cId),
+          skipWorktreeOf(makeEntry('src/c', cId)),
         ]);
         await seedWorkFile(ctx, 'src/a', 'aaa');
         await seedWorkFile(ctx, 'docs/b', 'bbb');

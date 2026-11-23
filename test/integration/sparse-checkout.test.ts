@@ -169,23 +169,28 @@ describe('integration — sparse checkout (memory adapter)', () => {
         'src/app.ts': 'export const app = 1;\n',
         'src/app.js': 'module.exports = 1;\n',
         'src/vendor/lib.ts': 'export const lib = 2;\n',
+        'src/vendor/notes.md': 'notes\n',
         'keep/data.ts': 'export const data = 3;\n',
       };
       const allPaths = Object.keys(tree);
       const sut = await seedRepo(tree);
 
-      // Act — `*.ts` everywhere, but exclude `src/vendor/`; also keep `keep/`.
+      // Act — `*.ts` everywhere, `src/vendor/` excluded as a directory; also keep `keep/`.
       const patterns = ['*.ts', '!/src/vendor/', '/keep/'];
       const setResult = await sparseCheckoutSet(sut, { patterns, cone: false });
 
-      // Assert — non-cone last-match-wins: `.ts` minus the vendor subtree, plus keep/.
+      // Assert — as git judges level by level: `src/vendor/lib.ts` matches `*.ts` itself,
+      // so it stays; `src/vendor/notes.md` matches no rule and inherits the negated directory.
       expect(setResult.cone).toBe(false);
-      expect(await filesOnDisk(sut, allPaths)).toEqual(['keep/data.ts', 'src/app.ts']);
-      // `README.md` and `src/app.js` (no `.ts`) and `src/vendor/lib.ts` (negated) are out.
+      expect(await filesOnDisk(sut, allPaths)).toEqual([
+        'keep/data.ts',
+        'src/app.ts',
+        'src/vendor/lib.ts',
+      ]);
       expect(await skipWorktreePaths(sut)).toEqual([
         'README.md',
         'src/app.js',
-        'src/vendor/lib.ts',
+        'src/vendor/notes.md',
       ]);
 
       // Act — `list` returns the raw pattern lines verbatim, in file order.
@@ -377,6 +382,7 @@ describe.skipIf(GIT === undefined)(
 
           // Act — narrow the cone so `out/gone.ts` becomes skip-worktree.
           await repo.sparseCheckout.set({ patterns: ['kept.ts'], cone: true });
+          // Single repo whose subject is git's own read view: stock config on purpose.
           const lsFiles = runGit(['-C', tmpdir, 'ls-files', '-t']);
 
           // Assert — canonical git surfaces the skip-worktree bit as the `S` tag.

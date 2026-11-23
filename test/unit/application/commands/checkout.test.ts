@@ -2706,3 +2706,51 @@ describe('checkout — a switch from an unborn HEAD', () => {
     });
   });
 });
+
+describe('Given a switch from an unborn HEAD over an index that was written', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When checkout switches to a branch', () => {
+    it('Then the index counts as refreshed against the empty tree', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/orphan\n');
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTreeJudging');
+      const sut = checkout;
+
+      // Act
+      const outcome = await sut(ctx, { rev: 'other' }).catch((error: unknown) => error);
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1]).toMatchObject({
+        headTree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+        refreshedIndex: true,
+      });
+      expect(outcome).toMatchObject({ data: { code: 'CHECKOUT_OVERWRITE_DIRTY' } });
+    });
+  });
+});
+
+describe('Given a switch from a born HEAD', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When checkout switches to a branch', () => {
+    it('Then the index counts as refreshed against the HEAD tree', async () => {
+      // Arrange
+      const { ctx, newer } = await seedWithOlderBranch();
+      const headTree = (await readTree(ctx, newer)).id;
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTreeJudging');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { rev: 'other' });
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1]).toMatchObject({ headTree, refreshedIndex: true });
+    });
+  });
+});

@@ -16,6 +16,7 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
+import { FILE_MODE } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -28,6 +29,7 @@ import { lstatIfReachable } from '../../primitives/internal/fs-probes.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { attributeBlobLookup } from '../../primitives/internal/read-gitattributes.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
+import { withEntryKinds } from '../../primitives/internal/sparse-entry-kinds.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -71,6 +73,20 @@ interface Partitioned {
 const isIncluded = (matcher: SparseMatcher | undefined, entry: IndexEntry): boolean =>
   matcher === undefined ? true : matcher(escapedPathOf(entry));
 
+/**
+ * A gitlink is never compared with its directory's content: git removes it by `rmdir`, so a populated one stays.
+ * A directory standing where a file is tracked is never up to date, so the file is kept as a local change.
+ */
+const isDirtyEntry = async (
+  isDirty: ReturnType<typeof createWorkingTreeDirtyCheck>,
+  absPath: string,
+  entry: IndexEntry,
+  stat: { readonly isDirectory: boolean },
+): Promise<boolean> => {
+  if (entry.mode === FILE_MODE.GITLINK) return false;
+  return stat.isDirectory || isDirty(absPath, entry.id);
+};
+
 /** `path`, plus `pathBytes` only for a lossy entry — a lossy entry never aliases its UTF-8 twin. */
 const changesetPathOf = (entry: IndexEntry): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({
   path: entry.path,
@@ -103,8 +119,9 @@ const partition = async (
       continue;
     }
     const absPath = joinPath(workdir, entry.path);
-    const present = (await lstatIfReachable(ctx.fs, absPath)) !== undefined;
-    const dirty = present ? await isDirty(absPath, entry.id) : false;
+    const stat = await lstatIfReachable(ctx.fs, absPath);
+    const present = stat !== undefined;
+    const dirty = stat === undefined ? false : await isDirtyEntry(isDirty, absPath, entry, stat);
     if (dirty && opts.force !== true) retained.push(entry);
     else removable.push({ entry, present });
   }
@@ -154,7 +171,8 @@ const REAPPLY_HINT =
   '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.';
 
 /**
- * An included entry is `noop` when anything stands at its path (a dangling link counts) or a file or link
+ * An included entry is `noop` when it was not skip-worktree (git writes only an entry it re-includes, so an
+ * absent one stays absent), when anything stands at its path (a dangling link counts) or when a file or link
  * stands on its leading path, else `add`; a lossy one is never probed, its decoded name being another file.
  */
 const includedChange = async (
@@ -163,6 +181,7 @@ const includedChange = async (
   scanner: LeadingPathScanner,
   entry: IndexEntry,
 ): Promise<IncludedChange> => {
+  if (!entry.flags.skipWorktree) return { change: noopEntry(entry) };
   if (isLossy(entry)) return { change: addEntry(entry) };
   if ((await lstatIfReachable(ctx.fs, joinPath(workdir, entry.path))) !== undefined) {
     return { change: noopEntry(entry) };
@@ -249,7 +268,8 @@ export const applySparseCheckout = async (
   try {
     const index = await readIndex(ctx);
     const stage0 = index.entries.filter((entry) => entry.flags.stage === 0);
-    const part = await partition(ctx, workdir, stage0, opts);
+    const judging = await withEntryKinds(ctx, 'sparse-checkout', opts.matcher, [stage0]);
+    const part = await partition(ctx, workdir, stage0, { ...opts, matcher: judging });
     const changeset = await buildChangeset(ctx, workdir, part);
     const applied = await applyChangesetWithAttributes(
       ctx,

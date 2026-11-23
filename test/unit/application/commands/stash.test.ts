@@ -18,6 +18,7 @@ import {
   stashPop,
   stashPush,
 } from '../../../../src/application/commands/stash.js';
+import * as applyMergeMod from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
@@ -5405,6 +5406,47 @@ describe('stash apply under a cone that excludes a/', () => {
   });
 });
 
+describe('stash push under a cone that excludes a/', () => {
+  const sparseRepoWithPresentFile = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await write(ctx, 'a/f', 'f1\n');
+    await write(ctx, 'b/f', 'f1\n');
+    await add(ctx, ['a/f', 'b/f']);
+    await commit(ctx, { message: 'base', author });
+    await sparseCheckoutSet(ctx, { patterns: ['b'] });
+    await write(ctx, 'a/f', 'f2\n');
+    const index = await readIndex(ctx);
+    const lock = await acquireIndexLock(ctx);
+    await lock.commit(
+      index.entries.map((e) =>
+        e.path === 'a/f' ? { ...e, flags: { ...e.flags, skipWorktree: false } } : e,
+      ),
+      'replace',
+    );
+    return ctx;
+  };
+
+  describe('Given sparse on and an out-of-pattern entry without the bit holding a change', () => {
+    describe('When stash push runs', () => {
+      it('Then the file is removed and the entry is skip-worktree at HEAD blob', async () => {
+        // Arrange
+        const ctx = await sparseRepoWithPresentFile();
+        const sut = stashPush;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'a/f');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/a/f`)).toBe(false);
+        expect(entry?.flags.skipWorktree).toBe(true);
+        expect(entry?.id).toBe(await hashBlob(ctx, new TextEncoder().encode('f1\n')));
+      });
+    });
+  });
+});
+
 describe('stash push core.fileMode', () => {
   const FROZEN_CLOCK_MS = 1_700_000_000_000;
 
@@ -5480,6 +5522,33 @@ describe('stash push core.fileMode', () => {
         // Assert
         expect(three).toBe(one);
       });
+    });
+  });
+});
+
+describe('Given a stash whose work tree differs from its base', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When stash apply merges it onto the current index', () => {
+    it('Then the merge is told the index was refreshed first', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await write(ctx, 'f', 'f1\n');
+      await add(ctx, ['f']);
+      await commit(ctx, { message: 'base', author });
+      await write(ctx, 'f', 'f2\n');
+      await stashPush(ctx, {});
+      const merge = vi.spyOn(applyMergeMod, 'applyMergeToWorktree');
+      const sut = stashApply;
+
+      // Act
+      await sut(ctx, {});
+
+      // Assert
+      expect(merge.mock.calls[0]?.[1]).toMatchObject({ refreshedIndex: true });
     });
   });
 });

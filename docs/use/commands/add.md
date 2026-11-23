@@ -53,7 +53,7 @@ An unmatched positive pathspec refuses the whole call with `PATHSPEC_NO_MATCH` u
 
 ## Skip-worktree entries
 
-Skip-worktree entries are never restaged, removed or cleared, on any route (literal, glob, `.`, `all: true`). A positive pathspec that matches only skip-worktree entries is not refused: it is listed in `sparse` (spelling as typed, argument order, duplicates kept, `.` included) and every other match is staged. git prints the sparse-checkout advice for these and exits 1.
+Skip-worktree entries, and tracked paths outside the sparse patterns, are never restaged, removed or cleared, on any route (literal, glob, `.`, `all: true`). The second class matters because every index read clears the skip-worktree bit of an entry whose path is present on disk (see [`readIndex`](../primitives/read-index.md)), so a present out-of-pattern file carries no bit yet is still left alone, as git's per-route predicates leave it: the tracked-update routes test the sparse patterns, the unmatched-literal route tests the bit. A positive pathspec that matches only such entries is not refused: it is listed in `sparse` (spelling as typed, argument order, duplicates kept, `.` included) and every other match is staged. An untracked literal outside the patterns is listed in `sparse` too, by its path, after the tracked ones; when an ignore rule hides it, it is reported in `ignored` instead. git prints the sparse-checkout advice for these and exits 1.
 
 ## Ignored paths
 
@@ -132,7 +132,7 @@ When nothing was staged (every path already matches the index), `add` leaves the
 
 ## Directory and file replacement
 
-A non-directory (symlink or regular file) that replaced a tracked directory is staged by `add <it>` and drops every index entry beneath it, whichever route names it: a literal, a `<dir>` / `.` / glob pathspec, or `all: true`. Entries the pathspec selects that are gone from disk are reported in `removed` (git's `remove` lines); excluded and skip-worktree entries beneath it are dropped without being reported. A path that already held a stage-0 entry is replaced in place with no such drop, as in git.
+A non-directory (symlink or regular file) that replaced a tracked directory is staged by `add <it>` and drops every index entry beneath it, whichever route names it: a literal, a `<dir>` / `.` / glob pathspec, or `all: true`. Entries the pathspec selects that are gone from disk are reported in `removed` (git's `remove` lines); excluded, skip-worktree and out-of-pattern entries beneath it are dropped without being reported. A path that already held a stage-0 entry is replaced in place with no such drop, as in git.
 
 The mirror holds too: a directory that replaced a tracked file or symlink drops that entry when anything beneath it is staged. It is silent for `add a/b` and reported in `removed` for `add a`, `.` or `all: true`. `add a/b` (or `add a a/b`) when `a` is now a regular file stages the removal of `a/b` instead of refusing.
 

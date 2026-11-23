@@ -1003,9 +1003,16 @@ const resetAfterPush = async (
   if (opts.includeUntracked === true)
     await cleanStashedUntracked(ctx, workDir, inputs, currentIndex);
   const target = opts.keepIndex === true ? iTree : base.bTree;
+  const sparse = await loadSparseMatcher(ctx);
   const result = await materializeTreeJudging(
     ctx,
-    { targetTree: target, currentIndex, force: true, forceRewriteAll: true },
+    {
+      targetTree: target,
+      currentIndex,
+      force: true,
+      forceRewriteAll: true,
+      ...(sparse !== undefined ? { sparse } : {}),
+    },
     'oneway',
   );
   await lock.commit(result.newIndexEntries, 'replace', {
@@ -1453,6 +1460,7 @@ const mergeStash = async (
     theirsTree: trees.wTree,
     currentIndex: trees.currentIndex,
     labels: STASH_LABELS,
+    refreshedIndex: true,
   });
   if (result.kind !== 'clean') return result;
   return { kind: 'clean', newIndexEntries: result.result.newIndexEntries };

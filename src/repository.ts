@@ -1,5 +1,6 @@
 import { createCachingIndexResolver } from './adapters/snapshot-resolvers/caching-index-resolver.js';
 import { createCachingTreeResolver } from './adapters/snapshot-resolvers/caching-tree-resolver.js';
+import { createClearingIndexResolver } from './adapters/snapshot-resolvers/clearing-index-resolver.js';
 import { createCounterGenerationView } from './adapters/snapshot-resolvers/counter-generation-view.js';
 import { createFsWorkdirEnumerator } from './adapters/snapshot-resolvers/fs-workdir-enumerator.js';
 import { createInMemoryWriteEventBus } from './adapters/snapshot-resolvers/in-memory-write-event-bus.js';
@@ -500,8 +501,10 @@ export interface Repository {
 const buildSnapshotFactory = (ctx: Context): SnapshotFactory => {
   const view = createCounterGenerationView();
   const bus = createInMemoryWriteEventBus(view);
-  const indexResolver = createSingleFlightIndexResolver(
-    createCachingIndexResolver(createRawIndexResolver(), ctx.fs, bus.stream, view),
+  const indexResolver = createClearingIndexResolver(
+    createSingleFlightIndexResolver(
+      createCachingIndexResolver(createRawIndexResolver(), ctx.fs, bus.stream, view),
+    ),
   );
   const treeResolver = createCachingTreeResolver(createRawTreeResolver());
   const workdirEnumerator = createFsWorkdirEnumerator();

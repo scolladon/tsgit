@@ -66,6 +66,7 @@ import {
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { mergeEntryKinds } from './internal/sparse-entry-kinds.js';
 import { retireSparseMovers, withRetiredSkipped } from './internal/sparse-movers.js';
 import { withConflictStopStats } from './internal/stat-conflict-index.js';
 import {
@@ -105,6 +106,8 @@ export interface ApplyMergeInput {
   readonly currentIndex: GitIndex;
   /** Per-operation conflict labels for any content markers written. */
   readonly labels?: MergeLabels;
+  /** The operation refreshes the index before it merges, as git's `stash apply` does and a cherry-pick or rebase does not. */
+  readonly refreshedIndex?: boolean;
 }
 
 export type ApplyMergeResult =
@@ -500,8 +503,18 @@ const materialiseConflict = async (
   },
   changed: ReadonlySet<FilePath>,
   currentIndex: GitIndex,
-  sparse: SparseMatcher | undefined,
+  {
+    sparse: rawSparse,
+    refreshedIndex,
+  }: { sparse: SparseMatcher | undefined; refreshedIndex: boolean },
 ): Promise<ApplyMergeResult> => {
+  const { judging: sparse, assumed } = await mergeEntryKinds(
+    ctx,
+    rawSparse,
+    currentIndex.entries,
+    merged.outcomes,
+    refreshedIndex,
+  );
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
   // partway through it.
@@ -515,8 +528,8 @@ const materialiseConflict = async (
   );
   const retirement = await retireSparseMovers(
     ctx,
-    { currentIndex, conflicts: merged.conflicts },
-    sparse,
+    { currentIndex, conflicts: merged.conflicts, assumed },
+    rawSparse,
   );
   return {
     kind: 'conflict',
@@ -605,6 +618,7 @@ export const applyMergeToWorktree = async (
       ...(sparse !== undefined ? { sparse } : {}),
       // git's two-way rule: a path ours and the result agree on keeps its index entry and work file.
       headTree: input.oursTree,
+      ...(input.refreshedIndex === true ? { refreshedIndex: true } : {}),
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
       force: true,
     });
@@ -614,7 +628,10 @@ export const applyMergeToWorktree = async (
       : mergedTree;
     return { kind: 'clean', mergedTree, indexTree, result: materialized };
   }
-  return materialiseConflict(ctx, merged, changed, input.currentIndex, sparse);
+  return materialiseConflict(ctx, merged, changed, input.currentIndex, {
+    sparse,
+    refreshedIndex: input.refreshedIndex === true,
+  });
 };
 
 /**

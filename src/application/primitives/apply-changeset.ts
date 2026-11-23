@@ -90,7 +90,7 @@ import {
 } from './internal/write-converted-entry.js';
 import { everySourceLoadable } from './object-store.js';
 import { readExecutableBitTrust } from './read-executable-bit-trust.js';
-import { readIndex } from './read-index.js';
+import { readRawIndex } from './read-index.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
 export type IgnoredOccupants = 'overwrite' | 'protect';
@@ -415,7 +415,7 @@ const deletedPaths = (
 // The index is read only when a path is reached through a symlinked directory.
 const trackedLookupOf = (ctx: Context): TrackedLookup => {
   const byPath = lazily(async () => {
-    const index = await readIndex(ctx);
+    const index = await readRawIndex(ctx);
     const entries = new Map<FilePath, IndexEntry>();
     for (const entry of index.entries) if (entry.flags.stage === 0) entries.set(entry.path, entry);
     return { entries, indexMtime: index.indexMtime };

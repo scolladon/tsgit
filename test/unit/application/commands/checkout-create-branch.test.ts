@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -6,9 +6,17 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import type { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const author: AuthorIdentity = {
@@ -458,6 +466,127 @@ describe('checkout from an unborn HEAD with no start point', () => {
         // Assert
         expect(result).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/main' });
         expect(await headFile(ctx)).toBe('ref: refs/heads/o\n');
+      });
+    });
+  });
+});
+
+const T0 = 1_700_000_000_000;
+const LATER_MS = 10_000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const entryA = async (ctx: Context): Promise<IndexEntry> => {
+  const found = (await readIndex(ctx)).entries.find((e) => e.path === 'a.txt');
+  if (found === undefined) throw new Error('a.txt is not tracked');
+  return found;
+};
+
+/** The work file is touched after the index was written, so a refreshing write would re-stat it. */
+const seedTouched = async (): Promise<Context> => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(T0);
+  const { ctx } = await seed();
+  vi.setSystemTime(T0 + LATER_MS);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'B');
+  vi.setSystemTime(T0 + 2 * LATER_MS);
+  return ctx;
+};
+
+const markUnmerged = async (ctx: Context): Promise<void> => {
+  const index = await readIndex(ctx);
+  const [staged] = index.entries;
+  if (staged === undefined) throw new Error('nothing staged');
+  const conflict = (stage: 1 | 2 | 3): IndexEntry => ({
+    ...staged,
+    path: 'n' as FilePath,
+    flags: { ...staged.flags, stage },
+  });
+  const lock = await acquireIndexLock(ctx);
+  await lock.commit([...index.entries, conflict(1), conflict(2), conflict(3)], 'replace');
+  await lock.release();
+};
+
+const stagesOf = async (ctx: Context): Promise<ReadonlyArray<number>> =>
+  (await readIndex(ctx)).entries.filter((e) => e.path === 'n').map((e) => e.flags.stage);
+
+describe('checkout createBranch that stays on the current commit', () => {
+  describe('Given a repository on main with a touched tracked file', () => {
+    describe('When checkout creates a branch with no start point', () => {
+      it('Then the index file is not rewritten and HEAD attaches to the branch', async () => {
+        // Arrange
+        const ctx = await seedTouched();
+        const before = await entryA(ctx);
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { createBranch: { name: 'x' } });
+
+        // Assert
+        const after = await entryA(ctx);
+        expect(after.mtimeSeconds).toBe(before.mtimeSeconds);
+        expect(result).toMatchObject({ branch: 'refs/heads/x', detached: false, changedPaths: 0 });
+        expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/x\n');
+      });
+    });
+
+    describe.each([
+      ['an explicit HEAD start point', { rev: 'HEAD', createBranch: { name: 'x' } }],
+      ['noTrack', { createBranch: { name: 'x', noTrack: true } }],
+      ['force', { force: true, createBranch: { name: 'x' } }],
+      ['detach', { detach: true, rev: 'main' }],
+      ['a plain rev', { rev: 'main' }],
+    ] as const)('When checkout runs with %s', (_label, opts) => {
+      it('Then the index is rewritten', async () => {
+        // Arrange
+        const ctx = await seedTouched();
+        const before = await entryA(ctx);
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, opts);
+
+        // Assert
+        expect((await entryA(ctx)).mtimeSeconds).toBeGreaterThan(before.mtimeSeconds);
+      });
+    });
+  });
+
+  describe('Given an unmerged index', () => {
+    describe('When checkout creates a branch with no start point', () => {
+      it('Then HEAD moves to it and every stage stays', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        await markUnmerged(ctx);
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { createBranch: { name: 'x' } });
+
+        // Assert
+        expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/x\n');
+        expect(await stagesOf(ctx)).toEqual([1, 2, 3]);
+      });
+    });
+
+    describe('When checkout creates a branch at an explicit HEAD', () => {
+      it('Then it still refuses and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        await markUnmerged(ctx);
+        const sut = checkout;
+
+        // Act
+        const outcome = await sut(ctx, { rev: 'HEAD', createBranch: { name: 'x' } }).then(
+          () => undefined,
+          (error: TsgitError) => error,
+        );
+
+        // Assert
+        expect(outcome).toBeDefined();
+        expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
       });
     });
   });

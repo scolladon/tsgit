@@ -10,6 +10,7 @@ import {
   buildSparseMatcher,
   parseSparseCheckout,
   type SparseMatcher,
+  type SparseMatchOptions,
 } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
@@ -50,6 +51,11 @@ export const readSparsePatternText = async (ctx: Context): Promise<string | unde
   return DECODER.decode(bytes);
 };
 
+/** How the patterns compare paths: `core.ignorecase` folds ASCII case, as git's path comparison does. */
+export const readSparseMatchOptions = async (ctx: Context): Promise<SparseMatchOptions> => ({
+  ignoreCase: (await readConfig(ctx)).core?.ignoreCase === true,
+});
+
 /**
  * Build the sparse matcher for the current repository. Returns `undefined`
  * when the resolved `core.sparseCheckout` is falsy/absent — sparse is inactive and callers
@@ -70,6 +76,5 @@ export const loadSparseMatcher = async (ctx: Context): Promise<SparseMatcher | u
       '.git/info/sparse-checkout is not cone-shaped; falling back to non-cone matching',
     );
   }
-  const ignoreCase = (await readConfig(ctx)).core?.ignoreCase === true;
-  return buildSparseMatcher(parsed.spec, { ignoreCase });
+  return buildSparseMatcher(parsed.spec, await readSparseMatchOptions(ctx));
 };

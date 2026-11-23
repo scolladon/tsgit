@@ -160,6 +160,16 @@ export interface FileSystem {
   readonly lstatIfReachable?: (path: string) => Promise<FileStat | undefined>;
 
   /**
+   * Whether an entry is reachable at `path`, answered synchronously: `true` where {@link lstat}
+   * succeeds, `false` wherever it refuses for any reason, `undefined` when this call cannot be
+   * answered synchronously (an adapter that still has to resolve its roots asynchronously). It
+   * builds no refusal for a miss, so a caller probing many mostly-absent paths pays the syscall
+   * alone. OPTIONAL: an adapter that cannot block omits it, and the caller asks
+   * {@link lstatIfReachable} or {@link lstat} instead, which answers identically.
+   */
+  readonly lstatReachableSync?: (path: string) => boolean | undefined;
+
+  /**
    * Read entire file as a UTF-8 string, exactly as {@link readUtf8} does, except that it
    * resolves `undefined` exactly where `readUtf8` refuses FILE_NOT_FOUND — every other refusal
    * `readUtf8` raises still rejects, a directory included. OPTIONAL: a miss probe that spends no

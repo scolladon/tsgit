@@ -302,7 +302,9 @@ function containedByPrefix(
   normalizedParent: string,
   parentWithSep: string,
 ): boolean {
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(parentWithSep);
+  if (normalizedChild === normalizedParent) return true;
+  // `slice` + `===` outruns `startsWith` on a long prefix; the two are equivalent here.
+  return normalizedChild.slice(0, parentWithSep.length) === parentWithSep;
 }
 
 /** @internal */
@@ -390,6 +392,9 @@ async function runSync<T>(budget: TurnBudget, op: () => T, path: string): Promis
     throw err;
   }
 }
+
+/** Sync presence probes run between two budget consultations. */
+const BUDGET_CHECK_EVERY = 16;
 
 type PresenceProbeKind = 'stat' | 'lstat';
 
@@ -1006,6 +1011,7 @@ export class NodeFileSystem implements FileSystem {
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
     this.syncIo = syncIo;
+    if (syncIo !== undefined) this.lstatReachableSync = (path) => this.reachableSync(syncIo, path);
     this.rootsArePreResolved = rootsArePreResolved;
     this.removeTreeConcurrency = removeTreeConcurrency;
   }
@@ -1388,6 +1394,42 @@ export class NodeFileSystem implements FileSystem {
     return sync === undefined
       ? orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path)
       : tryLstatSync(sync, real, this.pathPolicy.dirname(real), path);
+  };
+
+  /**
+   * One synchronous `lstat`: `true` when it succeeds, `false` for every refusal (a miss, a regular
+   * file in the path, a permission or containment refusal) — absence is the defined answer, as for
+   * `lstat` in a presence decision. `undefined` ("ask the async probe") until an async read has
+   * resolved the root set, since containment cannot be decided without it, and once the turn's
+   * sync budget is spent, so a long walk yields to the event loop instead of monopolizing it.
+   * Under the `threadpool` opt-out, which allows no blocking call, the probe is not offered at all,
+   * so a caller can tell an adapter that never answers from one whose turn is merely spent.
+   */
+  readonly lstatReachableSync?: (path: string) => boolean | undefined;
+
+  private readonly reachableSync = (sync: SyncIoPolicy, path: string): boolean | undefined => {
+    const roots = this.resolvedRootSet;
+    if (roots === undefined || !this.admitsSyncProbe(sync.budget)) return undefined;
+    try {
+      const real = this.resolveRead(path, roots.all);
+      return sync.ops.lstatSync(real, { throwIfNoEntry: false }) !== undefined;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Probes still allowed before the budget is consulted again: a probe costs less than the clock reads that would time it. */
+  private probesBeforeBudgetCheck = 0;
+
+  private admitsSyncProbe = (budget: TurnBudget): boolean => {
+    if (this.probesBeforeBudgetCheck > 0) {
+      this.probesBeforeBudgetCheck--;
+      return true;
+    }
+    if (budget.admit() !== undefined) return false;
+    budget.charge(budget.now());
+    this.probesBeforeBudgetCheck = BUDGET_CHECK_EVERY - 1;
+    return true;
   };
 
   /** `tryLstat` blind to the miss's cause: one `lstat`, never the parent `stat` that tells `ENOTDIR` apart. */

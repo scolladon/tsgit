@@ -450,7 +450,8 @@ export const listing = (dir: string): string[] =>
 
 export const indexState = (dir: string): string[] => [
   runGit(['-C', dir, 'ls-files', '-s']),
-  runGit(['-C', dir, 'ls-files', '-t']),
+  // git clears the bit of a present file on read unless told to expect files outside the patterns.
+  runGit(['-C', dir, '-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t']),
 ];
 
 export const v1 = (entryPath: string): TreeEntry => regular(entryPath, 'v1\n');

@@ -5,6 +5,7 @@ import { __resetSectionsCacheForTests } from '../../../../src/application/primit
 import {
   loadSparseMatcher,
   MAX_SPARSE_PATTERN_FILE_BYTES,
+  readSparseMatchOptions,
   readSparsePatternText,
 } from '../../../../src/application/primitives/read-sparse-checkout.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -284,28 +285,29 @@ describe('primitives/read-sparse-checkout', () => {
 
     describe('Given a cone-shaped file but cone NOT requested', () => {
       describe('When loadSparseMatcher', () => {
-        it('Then it is parsed as non-cone (a root file is excluded)', async () => {
-          // Arrange — the same cone-shaped text parsed two ways: in cone mode a
-          // root file is always included; in non-cone mode the `!/*/` rule
-          // excludes it. `sparseCheckoutCone` is absent → non-cone.
+        it('Then it is parsed as non-cone (a wildcard directory line matches by glob)', async () => {
+          // Arrange — cone-shaped text whose directory line carries a wildcard:
+          // non-cone git reads `/docs*/` as a glob, a cone reading would take it
+          // as the literal directory `docs*`. `sparseCheckoutCone` is absent → non-cone.
           const ctx = createMemoryContext();
           await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n');
-          await seedPatternFile(ctx, '/*\n!/*/\n/docs/\n');
+          await seedPatternFile(ctx, '/*\n!/*/\n/docs*/\n');
 
           // Act
           const result = await loadSparseMatcher(ctx);
 
-          // Assert — `readme` excluded proves the non-cone interpretation; a
-          // `coneRequested = true` mutant would parse cone and include it.
-          expect(result?.('readme' as FilePath)).toBe(false);
+          // Assert — `docs-x/f` included proves the glob reading (git: `H ab/f` for
+          // `/a*/`); a `coneRequested = true` mutant would exclude it.
+          expect(result?.('docs-x/f' as FilePath)).toBe(true);
+          expect(result?.('other/f' as FilePath)).toBe(false);
         });
       });
     });
 
-    describe('Given the same cone-shaped file WITH cone requested', () => {
+    describe('Given a cone-shaped file WITH cone requested', () => {
       describe('When loadSparseMatcher', () => {
         it('Then it is parsed as cone (a root file is included)', async () => {
-          // Arrange — identical text, but `sparseCheckoutCone = true` flips the
+          // Arrange — a cone-shaped text and `sparseCheckoutCone = true` flips the
           // interpretation to cone, where root files are always included.
           const ctx = createMemoryContext();
           await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n');
@@ -422,6 +424,27 @@ describe('primitives/read-sparse-checkout', () => {
           expect(result?.('B/f' as FilePath)).toBe(accepts);
           expect(result?.('b/f' as FilePath)).toBe(true);
         });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'core.ignorecase = true', config: '[core]\n\tignorecase = true\n', expected: true },
+    { label: 'core.ignorecase = false', config: '[core]\n\tignorecase = false\n', expected: false },
+    { label: 'core.ignorecase absent', config: '', expected: false },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When readSparseMatchOptions', () => {
+      it('Then ignoreCase follows the setting', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, config);
+        const sut = readSparseMatchOptions;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ ignoreCase: expected });
       });
     });
   });
