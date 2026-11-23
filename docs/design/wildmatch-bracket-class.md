@@ -194,6 +194,7 @@ where git says `0`.
 | C33 | `[[:foo:]]` | `a` `f` `[[:foo:]]` all 0 |
 | C34 | `[[::]]` | `:` `[` `[[::]]` all 0 |
 | C35 | `[[:DIGIT:]]` | `5`=0 `D`=0 |
+| C35b | `[[:constructor:]]`, `[[:toString:]]`, `[[:valueOf:]]`, `[[:hasOwnProperty:]]`, `[[:__proto__:]]` † | `a`=0 for each (attributes pin). On main's `ref-glob` the first three match every byte and `[[:__proto__:]]` throws `TypeError` (G-f) |
 | C36 | `[[:digit:]]` | `5`=1 `a`=0 `[`=0 |
 | C37 | `[[:alpha:]]` | `a`=1 `Z`=1 `5`=0 `_`=0 |
 | C38 | `[[:alnum:]]` | `a`=1 `5`=1 `_`=0 |
@@ -287,6 +288,7 @@ values identical unless shown)**
 | G-c ignore/attributes never fold case. Only sparse passes `caseFold` | L1–L4, E12, E13, F1–F12 under ic=true | `parseGitignore`, `parseGitattributes`, `read-gitignore.ts`, `read-gitattributes.ts`, `ignore-evaluator.ts` | **Fold** (D-2: the brief's ic=true class rows cannot go green without it) |
 | G-d `?` matches one UTF-16 unit; git matches one byte | Q2, Q3, Y3, SP11 | the `single` token of `compileGlob` | **Fold** (D-5: same matcher) |
 | G-e `parseGitattributes` applies a `!`-led pattern; git skips the line | N1 | `parseGitattributes` (`buildRule`) | **Fold** (D-5: the function this change edits). The warning is a DC (DC-F) |
+| G-f the `[:name:]` lookup reads a plain object, so a name inherited from `Object.prototype` resolves: three names match every byte and `__proto__` throws. Found during implementation | C35b | the class table of the shared core (main: `ref-glob.ts` `CLASS_TESTS`) | **Fold** (D-5: the seam the change moves; reachable from a cloned `.gitignore` once `compileGlob` runs on the core). An own-key `Map` lookup: B6d already says any other name aborts |
 | today's `caseFold` lowers the whole pattern | E13 (ic=true `\A` vs `A`), F1, F7, F10, F11 | `compileGlob` | replaced by the fold model of §3 |
 
 ### Code map (names, not line numbers)
