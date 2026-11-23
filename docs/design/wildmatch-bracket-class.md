@@ -17,13 +17,15 @@
 
 ### The backlog statement, re-pinned
 
-Re-pinned on main f77dbbaa (2026-11-23) against git 2.56.0. Probes ran on macOS with `GIT_*`
-scrubbed, an isolated `HOME` and `GIT_CONFIG_NOSYSTEM=1`. `core.ignorecase` was set to `false`
-and to `true` explicitly in every probe repository (lesson 042). Verdicts come from `git
-check-ignore -q --no-index`, `git check-attr` and `git sparse-checkout set --no-cone` (files
+Re-pinned on main f77dbbaa (2026-11-23) against git 2.56.1: the local binary moved from 2.56.0
+to 2.56.1 during the run, before any probe ran. `wildmatch.c`, `dir.c` and `attr.c` are
+byte-identical in v2.56.0 and v2.56.1, so every rule below holds for both. Probes ran on macOS
+with `GIT_*` scrubbed, an isolated `HOME` and `GIT_CONFIG_NOSYSTEM=1`. `core.ignorecase` was set
+to `false` and to `true` explicitly in every probe repository (lesson 042). Verdicts come from
+`git check-ignore -q --no-index`, `git check-attr` and `git sparse-checkout set --no-cone` (files
 present afterwards). The tsgit verdicts come from `isIgnored`,
-`buildAttributeProvider`+`resolveAttribute` and `sparseCheckoutSet` on main. Supplementary rows
-marked † ran on git 2.56.1 with the same isolation.
+`buildAttributeProvider`+`resolveAttribute` and `sparseCheckoutSet` on main. Rows marked † are
+the designer's supplementary probes, same binary and isolation.
 
 - **Confirmed:** every row of the backlog entry (`*.py[cod]`, `br[a]/` sparse, `br[a]/*`
   attributes).
@@ -38,7 +40,7 @@ marked † ran on git 2.56.1 with the same isolation.
      a file. Re-pinned with `x[--0]` vs `x.` = 1 †.
   Interop rows avoid all three shapes.
 
-### git's rule (v2.56.0 `wildmatch.c` `dowild`; `dir.c`; `attr.c`)
+### git's rule (`wildmatch.c` `dowild`; `dir.c`; `attr.c` — identical in v2.56.0 and v2.56.1)
 
 #### Around wildmatch (`dir.c`, `attr.c`)
 
@@ -110,7 +112,7 @@ The `[.a.]`/`[=a=]` forms are not special (C54, C55). Sets and `?` consume one b
 2-byte `é` needs two of them (Y1–Y4, Q2, Q3). Class tables (git's `sane_ctype`, ASCII only):
 `space` = SP HT LF CR (not VT/FF); `punct` holds `_` and `~`; `cntrl` = 0x00–0x1F and 0x7F.
 
-### Pinned matrix (git 2.56.0, † = 2.56.1; tsgit main f77dbbaa)
+### Pinned matrix (git 2.56.1, † = supplementary probe; tsgit main f77dbbaa)
 
 `1` = the pattern matches the path. "main differs" lists the cells where tsgit main gives the
 other verdict, for ignore (I) and attributes (A). Rows show `ic=false` unless marked. An `ic=true`
