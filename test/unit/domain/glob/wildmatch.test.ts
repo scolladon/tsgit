@@ -64,6 +64,247 @@ describe('wildmatch', () => {
     });
   });
 
+  describe('Given the WM_PATHNAME dialect and bracket expressions', () => {
+    describe('When matching negation marker', () => {
+      it.each([
+        ['[!a]', 'a', false],
+        ['[!a]', 'b', true],
+        ['[!a]', '!', true],
+        ['[^a]', '^', true],
+        ['[^a]', 'a', false],
+        ['[a!]', '!', true],
+        ['[a!]', 'b', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching a first closing bracket', () => {
+      it.each([
+        ['[]a]', ']', true],
+        ['[]a]', 'b', false],
+        ['[!]a]', ']', false],
+        ['[!]a]', 'b', true],
+        ['[]-a]', ']', true],
+        ['[]-a]', '^', true],
+        ['[]-a]', 'a', true],
+        ['[]-a]', '-', false],
+        ['[]-a]', 'b', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching an escaped member', () => {
+      it.each([
+        ['[\\]]', ']', true],
+        ['[\\]]', '\\', false],
+        ['[a-\\c]', 'b', true],
+        ['[a-\\c]', '\\', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching a range', () => {
+      it.each([
+        ['[c-a]', 'c', true],
+        ['[c-a]', 'a', false],
+        ['[c-a]', 'b', false],
+        ['[a-c-e]', 'b', true],
+        ['[a-c-e]', '-', true],
+        ['[a-c-e]', 'e', true],
+        ['[a-c-e]', 'd', false],
+        ['x[--0]', 'x.', true],
+        ['x[--0]', 'x-', true],
+        ['x[--0]', 'x,', false],
+        ['x[--0]', 'x1', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching a class opener without a closing name', () => {
+      it.each([
+        ['[[:alpha]', '[', true],
+        ['[[:alpha]', 'a', true],
+        ['[[:alpha]', 'p', true],
+        ['[[:alpha]', ':', true],
+        ['[[:alpha]', 'x', false],
+        ['[[:]]', '[]', true],
+        ['[[:]]', ':]', true],
+        ['[[:]]', '[', false],
+        ['[[:]]', ']', false],
+        ['[[:a]b:]]', 'ab:]]', true],
+        ['[[:a]b:]]', '[b:]]', true],
+        ['[[:a]b:]]', ':b:]]', true],
+        ['[[:a]b:]]', 'xb:]]', false],
+        ['[[:a]b:]]', 'b', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching a named class', () => {
+      it.each([
+        ['[[:space:]]', ' ', true],
+        ['[[:space:]]', '\t', true],
+        ['[[:space:]]', '\v', false],
+        ['[[:space:]]', '\f', false],
+        ['[[:punct:]]', '_', true],
+        ['[[:punct:]]', '~', true],
+        ['[[:cntrl:]]', '\x01', true],
+        ['[[:cntrl:]]', '\x7f', true],
+        ['[[:cntrl:]]', 'a', false],
+        ['[[:digit:]-z]', '5', true],
+        ['[[:digit:]-z]', '-', true],
+        ['[[:digit:]-z]', 'z', true],
+        ['[[:digit:]-z]', 'a', false],
+        ['[a-[:digit:]]', 'a]', true],
+        ['[a-[:digit:]]', 'd]', true],
+        ['[a-[:digit:]]', '5', false],
+        ['[a-[:digit:]]', '5]', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching a set against a slash', () => {
+      it.each([
+        ['a[/]b', 'a/b', false],
+        ['x/a[!b]c', 'x/a/c', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+    describe('When matching a byte above ASCII', () => {
+      it.each([
+        ['[é]', 'é', false],
+        ['[!a][!a]', 'é', true],
+        ['??', 'é', true],
+        ['?', 'é', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the flags-0 dialect and a slash', () => {
+    describe('When matching a slash', () => {
+      it.each([
+        ['[/]', '/', true],
+        ['?', '/', true],
+        ['[!a]', '/', true],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, FLAGS_0);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a pattern with an unterminated or unknown bracket expression', () => {
+    describe('When tokenizing', () => {
+      it.each([
+        '[a\\]',
+        '[]',
+        '[!]',
+        '*[',
+        '[[::]]',
+        '[[:DIGIT:]]',
+        '[[:foo:]]',
+        '[[:digit:]',
+        '[[:',
+        '[[:a',
+      ])('Then %j yields no tokens', (pattern) => {
+        // Arrange
+        const sut = tokenizeWildmatch;
+
+        // Act
+        const result = sut(encode(pattern), PATHNAME);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['flags-0', FLAGS_0],
+    ['WM_PATHNAME', PATHNAME],
+  ])('Given the %s dialect and a class name inherited from Object.prototype', (_label, flags) => {
+    describe('When tokenizing', () => {
+      it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'])(
+        'Then [[:%s:]] yields no tokens',
+        (name) => {
+          // Arrange
+          const sut = tokenizeWildmatch;
+
+          // Act
+          const result = sut(encode(`[[:${name}:]]`), flags);
+
+          // Assert
+          expect(result).toBeUndefined();
+        },
+      );
+    });
+  });
+
   describe('Given a pattern git would abort on', () => {
     describe('When tokenizing', () => {
       it.each(['a\\', '[a', '[[:foo:]]', '[[:digit:]'])('Then %j yields no tokens', (pattern) => {

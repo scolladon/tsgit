@@ -33,18 +33,23 @@ const COLON = 0x3a; // :
 const DASH = 0x2d; // -
 const SLASH = 0x2f; // /
 
+const BYTE_VALUES = 256;
+
 type ByteTest = (byte: number) => boolean;
 
 /**
  * `star` — any run of bytes, `/` included; `segment` — any run without `/`
  * (a WM_PATHNAME `*`); `dirs` — a WM_PATHNAME `**` + `/`: zero or more whole
- * `<segment>/` runs; `match` — one byte its test admits.
+ * `<segment>/` runs; `byte` — exactly that byte; `set` — one byte whose entry
+ * in the 256-slot `table` is 1 (`?` and `[…]`, `/` already excluded under
+ * WM_PATHNAME).
  */
 export type WildmatchToken =
   | { readonly kind: 'star' }
   | { readonly kind: 'segment' }
   | { readonly kind: 'dirs' }
-  | { readonly kind: 'match'; readonly test: ByteTest };
+  | { readonly kind: 'byte'; readonly value: number }
+  | { readonly kind: 'set'; readonly table: Uint8Array };
 
 const CROSSING_STAR: WildmatchToken = { kind: 'star' };
 const SEGMENT_STAR: WildmatchToken = { kind: 'segment' };
@@ -67,29 +72,48 @@ const isGraph = (b: number): boolean => isPrint(b) && b !== 0x20;
 /** git's `ISALNUM`/`ISALPHA`/… — the twelve `[:class:]` names `dowild`
  *  recognises, restricted to the C-locale ASCII range (bytes ≥ 0x80 never
  *  classify, matching a scrubbed, locale-less environment). */
-const CLASS_TESTS: Readonly<Record<string, ByteTest>> = {
-  alnum: (b) => isAlpha(b) || isDigit(b),
-  alpha: isAlpha,
-  blank: (b) => b === 0x20 || b === 0x09,
-  cntrl: (b) => b < 0x20 || b === 0x7f,
-  digit: isDigit,
-  graph: isGraph,
-  lower: (b) => b >= 0x61 && b <= 0x7a,
-  print: isPrint,
-  punct: (b) => isGraph(b) && !isAlpha(b) && !isDigit(b),
-  space: isSpace,
-  upper: (b) => b >= 0x41 && b <= 0x5a,
-  xdigit: (b) => isDigit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66),
+// A Map, not an object literal: class names come from repository-controlled
+// patterns, and an inherited key such as `constructor` must not resolve.
+const CLASS_TESTS: ReadonlyMap<string, ByteTest> = new Map([
+  ['alnum', (b) => isAlpha(b) || isDigit(b)],
+  ['alpha', isAlpha],
+  ['blank', (b) => b === 0x20 || b === 0x09],
+  ['cntrl', (b) => b < 0x20 || b === 0x7f],
+  ['digit', isDigit],
+  ['graph', isGraph],
+  ['lower', (b) => b >= 0x61 && b <= 0x7a],
+  ['print', isPrint],
+  ['punct', (b) => isGraph(b) && !isAlpha(b) && !isDigit(b)],
+  ['space', isSpace],
+  ['upper', (b) => b >= 0x41 && b <= 0x5a],
+  ['xdigit', (b) => isDigit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)],
+]);
+
+const markClass = (table: Uint8Array, test: ByteTest): void => {
+  for (let x = 0; x < BYTE_VALUES; x++) if (test(x)) table[x] = 1;
 };
 
-const bracketTest = (negated: boolean, atoms: ReadonlyArray<BracketAtom>): ByteTest => {
-  const matchesAtom = (atom: BracketAtom, byte: number): boolean => {
-    if (atom.kind === 'byte') return byte === atom.value;
-    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. every range is preceded in the same set by the byte member that seeded its `lo` (git's `prev_ch`), so `byte === atom.lo` is already admitted by that member and this bound is unobservable.
-    if (atom.kind === 'range') return byte >= atom.lo && byte <= atom.hi;
-    return atom.test(byte);
-  };
-  return (byte: number): boolean => negated !== atoms.some((atom) => matchesAtom(atom, byte));
+const markAtom = (table: Uint8Array, atom: BracketAtom): void => {
+  if (atom.kind === 'byte') table[atom.value] = 1;
+  else if (atom.kind === 'range') table.fill(1, atom.lo, atom.hi + 1);
+  else markClass(table, atom.test);
+};
+
+/** The 256-slot admit table of a bracket expression: every byte a member
+ *  admits, flipped when negated, and never `/` under WM_PATHNAME. Cost is
+ *  O(atoms + 256) at compile time; matching is one array read per byte. */
+const buildSetTable = (
+  atoms: ReadonlyArray<BracketAtom>,
+  negated: boolean,
+  flags: WildmatchFlags,
+): Uint8Array => {
+  const table = new Uint8Array(BYTE_VALUES);
+  for (const atom of atoms) markAtom(table, atom);
+  for (let x = 0; x < BYTE_VALUES; x++) {
+    const admitted = (table[x] === 1) !== negated;
+    table[x] = admitted && !(flags.pathname && x === SLASH) ? 1 : 0;
+  }
+  return table;
 };
 
 /** Parse one `[…]` member starting at `bytes[i]`, `i` past any negation
@@ -102,13 +126,15 @@ interface MemberResult {
   readonly rangeSeed: number | undefined;
 }
 
-const parseClassAttempt = (bytes: Uint8Array, i: number): MemberResult | undefined => {
-  let j = i + 2;
-  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. `j` can only walk up to `bytes.length`, and the refusal below rejects both that and the `bytes.length + 1` this mutant reaches instead.
-  while (j < bytes.length && bytes[j] !== RBRACKET) j += 1;
-  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the scan above stops at `j === bytes.length`, so a strict bound never fires and leaves the same abort the proof below describes.
-  // Stryker disable next-line ConditionalExpression: equivalent — `j === bytes.length` means no `]` exists at or after `i + 2` and `bytes[i + 1]` is `:`, so the caller's own scan also runs off the end and aborts; dropping this early refusal only moves where `undefined` comes from.
-  if (j >= bytes.length) return undefined; // unterminated — caller aborts
+// `closeAfter[i + 2]` is the first `]` the name could end at; `n` (no `]`) falls
+// into the branches below: a name ending in `:` still aborts or resolves, any
+// other tail makes the `[` a plain member and the set aborts unterminated.
+const parseClassAttempt = (
+  bytes: Uint8Array,
+  i: number,
+  closeAfter: Int32Array,
+): MemberResult | undefined => {
+  const j = closeAfter[i + 2] as number;
   const nameLength = j - i - 3;
   if (nameLength < 0 || bytes[j - 1] !== COLON) {
     // No real "name:]" found — the leading '[' is an ordinary member; resume
@@ -116,7 +142,7 @@ const parseClassAttempt = (bytes: Uint8Array, i: number): MemberResult | undefin
     return { atom: { kind: 'byte', value: LBRACKET }, next: i + 1, rangeSeed: LBRACKET };
   }
   const name = decode(bytes.subarray(i + 2, j - 1));
-  const test = CLASS_TESTS[name];
+  const test = CLASS_TESTS.get(name);
   if (test === undefined) return undefined; // unknown class name — abort
   return { atom: { kind: 'class', test }, next: j + 1, rangeSeed: undefined };
 };
@@ -125,6 +151,7 @@ const parseMember = (
   bytes: Uint8Array,
   i: number,
   prevSeed: number | undefined,
+  closeAfter: Int32Array,
 ): MemberResult | undefined => {
   const byte = bytes[i] as number;
   if (byte === BACKSLASH) {
@@ -149,7 +176,7 @@ const parseMember = (
     }
     return { atom: { kind: 'range', lo: prevSeed, hi }, next, rangeSeed: undefined };
   }
-  if (byte === LBRACKET && bytes[i + 1] === COLON) return parseClassAttempt(bytes, i);
+  if (byte === LBRACKET && bytes[i + 1] === COLON) return parseClassAttempt(bytes, i, closeAfter);
   return { atom: { kind: 'byte', value: byte }, next: i + 1, rangeSeed: byte };
 };
 
@@ -160,7 +187,8 @@ const parseMember = (
 const parseBracket = (
   bytes: Uint8Array,
   open: number,
-  dialect: Dialect,
+  closeAfter: Int32Array,
+  flags: WildmatchFlags,
 ): { readonly token: WildmatchToken; readonly next: number } | undefined => {
   let i = open + 1;
   let negated = false;
@@ -172,20 +200,20 @@ const parseBracket = (
   let rangeSeed: number | undefined;
   let first = true;
   for (;;) {
-    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. a member's `next` never overshoots `bytes.length`, so at `i === bytes.length` the mutant parses one member off the end, lands on `bytes.length + 1` and refuses on the following turn; the caller still sees `undefined`.
+    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. a member's `next` overshoots `bytes.length` by one at most, so at `i === bytes.length` the mutant parses one plain member off the end, lands on `bytes.length + 1` and refuses on the following turn; the caller still sees `undefined`.
     if (i >= bytes.length) return undefined; // ran off the end — unterminated
     if (!first && bytes[i] === RBRACKET) {
       i += 1;
       break;
     }
     first = false;
-    const member = parseMember(bytes, i, rangeSeed);
+    const member = parseMember(bytes, i, rangeSeed, closeAfter);
     if (member === undefined) return undefined;
     atoms.push(member.atom);
     rangeSeed = member.rangeSeed;
     i = member.next;
   }
-  return { token: { kind: 'match', test: dialect.single(bracketTest(negated, atoms)) }, next: i };
+  return { token: { kind: 'set', table: buildSetTable(atoms, negated, flags) }, next: i };
 };
 
 interface ScannedToken {
@@ -196,14 +224,19 @@ interface ScannedToken {
 /** What the `wildmatch` flags change: how a `*` run tokenises, and whether a
  *  one-byte matcher (`?`, `[…]`) may match `/`. */
 interface Dialect {
+  readonly flags: WildmatchFlags;
   readonly starRun: (bytes: Uint8Array, start: number, end: number) => ScannedToken;
-  readonly single: (test: ByteTest) => ByteTest;
+  readonly anyByte: WildmatchToken;
 }
+
+const REF_FLAGS: WildmatchFlags = { pathname: false };
+const PATHNAME_FLAGS: WildmatchFlags = { pathname: true };
 
 /** flags 0: every `*` run is one `star`, and a one-byte matcher admits `/`. */
 const REF_DIALECT: Dialect = {
+  flags: REF_FLAGS,
   starRun: (_bytes, _start, end) => ({ token: CROSSING_STAR, next: end }),
-  single: (test) => test,
+  anyByte: { kind: 'set', table: buildSetTable([], true, REF_FLAGS) },
 };
 
 /** `dowild`'s WM_PATHNAME `**`: two or more stars standing alone between
@@ -226,8 +259,9 @@ const pathnameStarRun = (bytes: Uint8Array, start: number, end: number): Scanned
 };
 
 const PATHNAME_DIALECT: Dialect = {
+  flags: PATHNAME_FLAGS,
   starRun: pathnameStarRun,
-  single: (test) => (byte) => byte !== SLASH && test(byte),
+  anyByte: { kind: 'set', table: buildSetTable([], true, PATHNAME_FLAGS) },
 };
 
 // A run of one or more consecutive `*` — scanned whole, then tokenised by the
@@ -245,18 +279,31 @@ const scanEscape = (bytes: Uint8Array, i: number): ScannedToken | undefined => {
   const escaped = bytes[i + 1];
   // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. without this refusal the token tests `b === undefined`, which no byte satisfies, so the compiled matcher rejects every ref exactly as the `() => false` this abort produces.
   if (escaped === undefined) return undefined;
-  return { token: { kind: 'match', test: (b) => b === escaped }, next: i + 2 };
+  return { token: { kind: 'byte', value: escaped }, next: i + 2 };
 };
 
-const scanToken = (bytes: Uint8Array, i: number, dialect: Dialect): ScannedToken | undefined => {
+const scanToken = (
+  bytes: Uint8Array,
+  i: number,
+  closeAfter: Int32Array,
+  dialect: Dialect,
+): ScannedToken | undefined => {
   const byte = bytes[i] as number;
   if (byte === STAR) return scanStarRun(bytes, i, dialect);
-  if (byte === QUESTION) {
-    return { token: { kind: 'match', test: dialect.single(() => true) }, next: i + 1 };
-  }
+  if (byte === QUESTION) return { token: dialect.anyByte, next: i + 1 };
   if (byte === BACKSLASH) return scanEscape(bytes, i);
-  if (byte === LBRACKET) return parseBracket(bytes, i, dialect);
-  return { token: { kind: 'match', test: (b) => b === byte }, next: i + 1 };
+  if (byte === LBRACKET) return parseBracket(bytes, i, closeAfter, dialect.flags);
+  return { token: { kind: 'byte', value: byte }, next: i + 1 };
+};
+
+/** `closeAfter[i]` — the index of the first `]` at or after `i`, `bytes.length`
+ *  when none: one backward pass, so a `[:` lookahead never scans twice. */
+const indexClosers = (bytes: Uint8Array): Int32Array => {
+  const closeAfter = new Int32Array(bytes.length + 1).fill(bytes.length);
+  for (let i = bytes.length - 1; i >= 0; i--) {
+    closeAfter[i] = bytes[i] === RBRACKET ? i : (closeAfter[i + 1] as number);
+  }
+  return closeAfter;
 };
 
 /** Tokenise a pattern's UTF-8 bytes, or `undefined` when the pattern can
@@ -267,9 +314,10 @@ const tokenize = (
   dialect: Dialect,
 ): ReadonlyArray<WildmatchToken> | undefined => {
   const tokens: WildmatchToken[] = [];
+  const closeAfter = indexClosers(bytes);
   let i = 0;
   while (i < bytes.length) {
-    const scanned = scanToken(bytes, i, dialect);
+    const scanned = scanToken(bytes, i, closeAfter, dialect);
     if (scanned === undefined) return undefined;
     tokens.push(scanned.token);
     i = scanned.next;
@@ -314,15 +362,13 @@ const stepSegment = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8
   return cur;
 };
 
-const isSlash: ByteTest = (byte) => byte === SLASH;
-
 // `dirs` — nothing at all, or any run ending in a `/`. Rare (the WM_PATHNAME
 // dialect only), so it keeps its own two rows.
 const stepDirs = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8Array => {
   const size = text.length + 1;
   const throughSlash = stepStar(
     text,
-    stepMatch(isSlash, text, next, new Uint8Array(size)),
+    stepByte(SLASH, text, next, new Uint8Array(size)),
     new Uint8Array(size),
   );
   for (let j = 0; j < size; j++) cur[j] = throughSlash[j] === 1 || next[j] === 1 ? 1 : 0;
@@ -338,18 +384,32 @@ const stepToken = (
   if (token.kind === 'star') return stepStar(text, next, cur);
   if (token.kind === 'segment') return stepSegment(text, next, cur);
   if (token.kind === 'dirs') return stepDirs(text, next, cur);
-  return stepMatch(token.test, text, next, cur);
+  if (token.kind === 'byte') return stepByte(token.value, text, next, cur);
+  return stepSet(token.table, text, next, cur);
 };
 
-const stepMatch = (
-  test: ByteTest,
+const stepByte = (
+  value: number,
   text: Uint8Array,
   next: Uint8Array,
   cur: Uint8Array,
 ): Uint8Array => {
-  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the extra turn reads `next[text.length + 1]` past the end, which is never `1`, so no cell is written whatever `test` answers for the undefined byte beyond the text.
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the extra turn reads `next[text.length + 1]` past the end, which is never `1`, so no cell is written whatever the comparison answers for the undefined byte beyond the text.
   for (let j = 0; j < text.length; j++) {
-    if (test(text[j] as number) && next[j + 1] === 1) cur[j] = 1;
+    if (text[j] === value && next[j + 1] === 1) cur[j] = 1;
+  }
+  return cur;
+};
+
+const stepSet = (
+  table: Uint8Array,
+  text: Uint8Array,
+  next: Uint8Array,
+  cur: Uint8Array,
+): Uint8Array => {
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the extra turn reads `next[text.length + 1]` past the end, which is never `1`, so no cell is written whatever the table answers for the undefined byte beyond the text.
+  for (let j = 0; j < text.length; j++) {
+    if (table[text[j] as number] === 1 && next[j + 1] === 1) cur[j] = 1;
   }
   return cur;
 };
