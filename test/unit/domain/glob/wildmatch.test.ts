@@ -182,6 +182,26 @@ describe('wildmatch', () => {
         expect(result).toBe(expected);
       });
     });
+    describe('When a `[` member is not followed by a colon and a `:]` comes later', () => {
+      it.each([
+        ['[[a:]', 'a', true],
+        ['[[a:]', '[', true],
+        ['[[a:]', 'b', false],
+        ['[[x:]', 'x', true],
+        ['[[x:]', 'a', false],
+        ['[[a:]b', 'ab', true],
+        ['[[a:]b', 'b', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
     describe('When matching a named class', () => {
       it.each([
         ['[[:space:]]', ' ', true],
