@@ -44,14 +44,13 @@ const NEVER: GlobMatcher = { test: () => false };
 const UNDECIDED: Shortcut = () => undefined;
 const SEPARATOR = '/';
 const STAR = '*';
-const GLOB_SPECIALS: ReadonlySet<string> = new Set(['*', '?', '[', '\\']);
+const GLOB_SPECIAL = /[*?[\\]/;
+const NOT_FOUND = -1;
 
 // git's `simple_length`: how far the pattern is plain text.
 const simpleLength = (pattern: string): number => {
-  for (let i = 0; i < pattern.length; i++) {
-    if (GLOB_SPECIALS.has(pattern[i] as string)) return i;
-  }
-  return pattern.length;
+  const special = pattern.search(GLOB_SPECIAL);
+  return special === NOT_FOUND ? pattern.length : special;
 };
 
 const literalShortcut = (literal: string, anchored: boolean): Shortcut =>
@@ -79,6 +78,7 @@ const shortcutOf = (pattern: string, anchored: boolean, caseFold: boolean): Shor
   const plain = simpleLength(text);
   if (plain === text.length) return literalShortcut(text, anchored);
   if (isEndsWith(text, anchored)) return endsWithShortcut(text.slice(1));
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. with no plain text the prefix is empty, every path starts with it, and the prefix shortcut answers `undefined` as `UNDECIDED` does: taking this branch then costs one wasted test per path, never a verdict.
   if (plain > 0) return prefixShortcut(text.slice(0, plain), anchored);
   return UNDECIDED;
 };

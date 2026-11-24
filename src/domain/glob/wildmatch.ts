@@ -112,12 +112,14 @@ const CLASS_TESTS: ReadonlyMap<string, ByteTest> = new Map([
 const CASE_OFFSET = LOWER_A - UPPER_A;
 
 const markClass = (table: Uint8Array, test: ByteTest): void => {
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. one more turn at `x === BYTE_VALUES` can only write `table[256]`, past the end of a 256-slot typed array: a silent no-op.
   for (let x = 0; x < BYTE_VALUES; x++) if (test(x)) table[x] = 1;
 };
 
 // Under case folding the text arrives lowered, so a lower-case byte is admitted
 // when its upper-case form lies in the range; the members themselves stay as written.
 const markRange = (table: Uint8Array, lo: number, hi: number, caseFold: boolean): void => {
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. one more turn at `x === BYTE_VALUES` can only write `table[256]`, past the end of a 256-slot typed array: a silent no-op.
   for (let x = 0; x < BYTE_VALUES; x++) {
     const folded = caseFold && isLower(x) && inRange(lo, hi, x - CASE_OFFSET);
     if (inRange(lo, hi, x) || folded) table[x] = 1;
@@ -140,6 +142,7 @@ const buildSetTable = (
 ): Uint8Array => {
   const table = new Uint8Array(BYTE_VALUES);
   for (const atom of atoms) markAtom(table, atom, flags.caseFold);
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. one more turn at `x === BYTE_VALUES` reads `table[256]` (`undefined`) and writes past the end of a 256-slot typed array: a silent no-op.
   for (let x = 0; x < BYTE_VALUES; x++) {
     const admitted = (table[x] === 1) !== negated;
     table[x] = admitted && !(flags.pathname && x === SLASH) ? 1 : 0;
@@ -156,6 +159,7 @@ const SLOTS_PER_KEY_UNIT = 16;
 /** The sixteen table slots from `first` on, one bit each. */
 const keyUnitOf = (table: Uint8Array, first: number): number => {
   let bits = 0;
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. one more turn can only set bit 16 of `bits`, and `String.fromCharCode` keeps the low sixteen bits.
   for (let slot = 0; slot < SLOTS_PER_KEY_UNIT; slot++) {
     bits |= (table[first + slot] as number) << slot;
   }
@@ -166,7 +170,9 @@ const keyUnitOf = (table: Uint8Array, first: number): number => {
 // key exactly when they admit the same bytes. A pattern can hold a set every
 // few bytes, so the key is sixteen units built from locals, with no array.
 const keyOf = (table: Uint8Array): string => {
+  // Equivalent mutant, deliberately not suppressed — any other start is shared by every key, so two keys still differ exactly when their tables do.
   let key = '';
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. one more turn reads sixteen slots past the end (`undefined`, which shifts as 0) and appends the same U+0000 to every key, so two keys still differ exactly when their tables do.
   for (let first = 0; first < BYTE_VALUES; first += SLOTS_PER_KEY_UNIT) {
     key += String.fromCharCode(keyUnitOf(table, first));
   }
@@ -392,6 +398,7 @@ const scanToken = (compile: Compile, i: number): ScannedToken | undefined => {
  *  when none: one backward pass, so a `[:` lookahead never scans twice. */
 const indexClosers = (bytes: Uint8Array): Int32Array => {
   const closeAfter = new Int32Array(bytes.length + 1).fill(bytes.length);
+  // Two equivalent mutants, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. Stopping before `i === 0` leaves `closeAfter[0]` at its fill value, and no reader asks for it: the lookahead reads `closeAfter[i + 2]` for an `i` past an opening `[`. Starting two slots higher stores 0 in `closeAfter[bytes.length]`, so an index past the last `]` reads 0 where it read `bytes.length`: the lookahead then takes the `[` as a plain member, and with no `]` left the set aborts unterminated, as it does when a name is read there.
   for (let i = bytes.length - 1; i >= 0; i--) {
     closeAfter[i] = bytes[i] === RBRACKET ? i : (closeAfter[i + 1] as number);
   }
@@ -468,6 +475,7 @@ const stepDirs = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8Arr
     stepByte(SLASH, text, next, new Uint8Array(size)),
     new Uint8Array(size),
   );
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. one more turn at `j === size` reads past both rows (`undefined`, never 1) and writes 0 past the end of `cur`: a silent no-op.
   for (let j = 0; j < size; j++) cur[j] = throughSlash[j] === 1 || next[j] === 1 ? 1 : 0;
   return cur;
 };
@@ -525,6 +533,7 @@ export const matchWildmatch = (
   for (let i = tokens.length - 1; i >= 0; i--) {
     cur.fill(0);
     stepToken(tokens[i] as WildmatchToken, text, next, cur);
+    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. without this return an all-zero row stays all-zero through every remaining step, so the match still ends on `next[0] === 0`: the return only saves those steps.
     if (!cur.includes(1)) return false;
     [next, cur] = [cur, next];
   }
