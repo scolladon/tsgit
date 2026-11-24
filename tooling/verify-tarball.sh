@@ -545,7 +545,17 @@ done
 # literal-prefix reject —
 # runtime code in every distribution form, none removable without dropping the
 # behaviour.
-SIZE_CAP=$((1551 * 1024))
+# Raised 1551 -> 1553 KiB by git's wildmatch grammar in ignore, attribute and
+# sparse patterns: the measured pack landed at 1 589 340 B, 1 116 B over the old
+# cap, attributable to the case-fold rules of the shared wildmatch core (plain
+# bytes lowered, ranges retried in upper case, the upper class admitting lower
+# case), the set table pool and its key, the one-byte set shortcut, git's
+# suffix fast path, the fixed-tail refusal, the two-entry fold and encode
+# caches, the negative attribute pattern rule and the core.ignorecase reads of
+# the ignore and attribute sources — runtime code in every distribution form,
+# none removable without dropping the behaviour. The glob compiler's own table
+# fill and tokenizer, which the shared core replaces, paid part of it back.
+SIZE_CAP=$((1553 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
