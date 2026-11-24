@@ -140,7 +140,7 @@ describe('parseGitignore', () => {
           expected: 'foo',
           label: 'a single unescaped trailing space is stripped',
         },
-        { input: 'foo\\ \n', expected: 'foo ', label: 'an escaped trailing space is preserved' },
+        { input: 'foo\\ \n', expected: 'foo\\ ', label: 'an escaped trailing space is preserved' },
         // Line is exactly backslash + space (length 2). stripTrailingSpaces
         // starts at end=2; the `end >= 2` guard must hold so it inspects
         // charCodeAt(0)===0x5c and breaks, preserving the space. The
@@ -148,7 +148,7 @@ describe('parseGitignore', () => {
         // stripped → pattern '\'.
         {
           input: '\\ ',
-          expected: ' ',
+          expected: '\\ ',
           label: 'a bare escaped space (length-2 line) is preserved',
         },
       ])('Then $label', ({ input, expected }) => {
@@ -173,7 +173,80 @@ describe('parseGitignore', () => {
 
         // Assert
         expect(result).toHaveLength(1);
-        expect(result[0]?.pattern).toBe('#literal');
+        expect(result[0]?.pattern).toBe('\\#literal');
+        expect(result[0]?.compiled.test('#literal')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a line written with escapes', () => {
+    describe('When parsed', () => {
+      it.each([
+        { line: '!e\\[x]', expected: '!e\\[x]' },
+        { line: 'f\\[ab]/', expected: 'f\\[ab]/' },
+        { line: '/g[h]', expected: '/g[h]' },
+        { line: '\\#a', expected: '\\#a' },
+        { line: 'c\\ ', expected: 'c\\ ' },
+        { line: 'd\\*', expected: 'd\\*' },
+        { line: 'g\\\\h   ', expected: 'g\\\\h' },
+      ])('Then the rule reports $line as written', ({ line, expected }) => {
+        // Arrange + Act
+        const result = parseGitignore(line);
+
+        // Assert
+        expect(result[0]?.pattern).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given an escaped wildcard', () => {
+    describe('When matched', () => {
+      it.each([
+        { line: '\\*', path: 'x', expected: false },
+        { line: '\\*', path: '*', expected: true },
+        { line: '\\?', path: 'x', expected: false },
+        { line: 'd/\\*', path: 'd/x', expected: false },
+        { line: '**\\/b', path: 'b', expected: false },
+        { line: '\\[a]', path: '[a]', expected: true },
+        { line: '\\[a]', path: 'a', expected: false },
+        { line: '[[:__proto__:]]', path: 'a', expected: false },
+      ])('Then the escape reaches the matcher for $line vs $path', ({ line, path, expected }) => {
+        // Arrange
+        const sut = parseGitignore;
+
+        // Act
+        const result = sut(line)[0]?.compiled.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a folded rule set', () => {
+    describe('When parseGitignore runs with caseFold', () => {
+      it('Then *.LOG ignores x.log', () => {
+        // Arrange
+        const sut = parseGitignore;
+
+        // Act
+        const result = sut('*.LOG', { caseFold: true })[0]?.compiled.test('x.log');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When parseGitignore runs without the option', () => {
+      it('Then *.LOG does not ignore x.log', () => {
+        // Arrange
+        const sut = parseGitignore;
+
+        // Act
+        const result = sut('*.LOG')[0]?.compiled.test('x.log');
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });
@@ -403,7 +476,7 @@ describe('tokenizeIgnoreLine', () => {
 
   describe('Given an escaped pattern', () => {
     describe('When tokenized', () => {
-      it('Then the escape is removed from cleanPattern', () => {
+      it('Then the escape is kept in cleanPattern', () => {
         // Arrange
         const input = '\\#literal';
 
@@ -411,7 +484,25 @@ describe('tokenizeIgnoreLine', () => {
         const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(result?.cleanPattern).toBe('#literal');
+        expect(result?.cleanPattern).toBe('\\#literal');
+      });
+    });
+  });
+
+  describe('Given an escaped body', () => {
+    describe('When tokenized', () => {
+      it.each([
+        { line: '\\#a', cleanPattern: '\\#a', negated: false },
+        { line: '\\!a', cleanPattern: '\\!a', negated: false },
+        { line: '\\*', cleanPattern: '\\*', negated: false },
+        { line: 'a\\ ', cleanPattern: 'a\\ ', negated: false },
+      ])('Then cleanPattern keeps the escape of $line', ({ line, cleanPattern, negated }) => {
+        // Arrange + Act
+        const result = tokenizeIgnoreLine(line);
+
+        // Assert
+        expect(result?.cleanPattern).toBe(cleanPattern);
+        expect(result?.negated).toBe(negated);
       });
     });
   });

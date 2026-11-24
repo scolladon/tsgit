@@ -520,3 +520,26 @@ describe('nonConeMatcher with an entry kind', () => {
     });
   });
 });
+
+describe('compileSparseRule with escapes', () => {
+  describe('Given an escaped sparse rule', () => {
+    describe('When compiled', () => {
+      it.each([
+        { line: '\\*', path: 'x', expected: false },
+        { line: '\\*', path: '*', expected: true },
+        { line: '\\[a]', path: '[a]', expected: true },
+        { line: '\\[a]', path: 'a', expected: false },
+        { line: 'a\\', path: 'a\\', expected: false },
+      ])('Then $line matches $path as $expected', ({ line, path: candidate, expected }) => {
+        // Arrange
+        const sut = rule;
+
+        // Act
+        const result = sut(line).matcher.test(candidate);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
