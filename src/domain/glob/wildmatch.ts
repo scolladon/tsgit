@@ -151,19 +151,26 @@ const buildSetTable = (
  *  set as often as its length allows: it then holds one table, not one per use. */
 type SetPool = Map<string, WildmatchToken>;
 
-const KEY_UNIT_SHIFT = 4;
-const KEY_UNIT_MASK = 15;
+const SLOTS_PER_KEY_UNIT = 16;
+
+/** The sixteen table slots from `first` on, one bit each. */
+const keyUnitOf = (table: Uint8Array, first: number): number => {
+  let bits = 0;
+  for (let slot = 0; slot < SLOTS_PER_KEY_UNIT; slot++) {
+    bits |= (table[first + slot] as number) << slot;
+  }
+  return bits;
+};
 
 // One UTF-16 unit per sixteen table slots, one bit per slot: two tables share a
 // key exactly when they admit the same bytes. A pattern can hold a set every
-// few bytes, so the key is built in one pass and sixteen units.
+// few bytes, so the key is sixteen units built from locals, with no array.
 const keyOf = (table: Uint8Array): string => {
-  const units = new Uint16Array(BYTE_VALUES >> KEY_UNIT_SHIFT);
-  for (let slot = 0; slot < BYTE_VALUES; slot++) {
-    const unit = slot >> KEY_UNIT_SHIFT;
-    units[unit] = (units[unit] as number) | ((table[slot] as number) << (slot & KEY_UNIT_MASK));
+  let key = '';
+  for (let first = 0; first < BYTE_VALUES; first += SLOTS_PER_KEY_UNIT) {
+    key += String.fromCharCode(keyUnitOf(table, first));
   }
-  return String.fromCharCode(...units);
+  return key;
 };
 
 const pooledSet = (table: Uint8Array, pool: SetPool): WildmatchToken => {
