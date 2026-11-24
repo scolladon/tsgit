@@ -32,6 +32,26 @@ const bestMs = (work: () => void): number => {
   return best;
 };
 
+const TABLE_SLOTS = 256;
+/**
+ * Compiling a set cannot avoid one 256-slot table, written once and read once.
+ * The gate compares the whole compile with that work alone, measured in the
+ * same process, so it holds whatever the load: sharing tables must cost a
+ * small multiple of building them.
+ */
+const MAX_COMPILE_TO_TABLE_RATIO = 4;
+
+const tableWorkMs = (sets: number): number => {
+  const sink = { admitted: 0 };
+  return bestMs(() => {
+    for (let set = 0; set < sets; set++) {
+      const table = new Uint8Array(TABLE_SLOTS);
+      for (let slot = 0; slot < TABLE_SLOTS; slot++) table[slot] = slot & 1;
+      for (let slot = 0; slot < TABLE_SLOTS; slot++) sink.admitted += table[slot] as number;
+    }
+  });
+};
+
 /** Every rule tests its subject of every path, as a rule set does. */
 const matchingMs = (
   rules: ReadonlyArray<GlobMatcher>,
@@ -193,18 +213,19 @@ describe('compileGlob (performance)', () => {
 
   describe('Given a megabyte line repeating one two-member set', () => {
     describe('When compiled', () => {
-      it('Then it compiles within 1000 ms', () => {
+      it('Then compiling costs under four times filling one table per set', () => {
         // Arrange
+        const sut = compileGlob;
         const pattern = '[ab]'.repeat(REPEATED_SETS);
 
         // Act
-        const start = performance.now();
-        const sut = compileGlob(pattern, { anchored: true });
-        const elapsedMs = performance.now() - start;
+        const result = bestMs(() => {
+          sut(pattern, { anchored: true });
+        });
+        const tablesMs = tableWorkMs(REPEATED_SETS);
 
         // Assert
-        expect(sut.test('a'.repeat(REPEATED_SETS - 1))).toBe(false);
-        expect(elapsedMs).toBeLessThan(1000);
+        expect(result).toBeLessThan(tablesMs * MAX_COMPILE_TO_TABLE_RATIO);
       });
     });
   });
