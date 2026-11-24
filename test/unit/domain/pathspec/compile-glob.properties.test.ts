@@ -22,6 +22,8 @@ const PRINTABLE_NO_SLASH = fc
   .filter((c) => c !== SLASH)
   .map((c) => String.fromCharCode(c));
 const arbClassGrammarPattern = fc.stringMatching(/^[\][!^:\\*?/aAbB-]{0,16}$/);
+// Bytes a generated set often admits, so the oracle sees matches as well as refusals.
+const SET_NEIGHBOUR = fc.constantFrom('a', 'b', 'c', 'd', 'A', 'B', '0', '5', '9', '-');
 
 // git matches a pattern without `/` against the basename alone and any other
 // pattern against the whole path under WM_PATHNAME; the oracle mirrors that.
@@ -227,6 +229,35 @@ describe('compileGlob properties', () => {
               // Assert
               expect(result).toBe(true);
             }),
+            { numRuns: NUM_RUNS },
+          );
+        });
+      });
+    });
+  });
+
+  describe('Given a well-formed set around a middle byte near its members', () => {
+    describe.each([false, true])('And caseFold is %s', (caseFold) => {
+      describe('When the compiled matcher tests the path', () => {
+        it('Then it agrees with the recursive reference', () => {
+          fc.assert(
+            fc.property(
+              arbBracketMembers(),
+              fc.boolean(),
+              SET_NEIGHBOUR,
+              (members, negated, middle) => {
+                // Arrange
+                const pattern = `x[${negated ? '!' : ''}${members}]y`;
+                const sut = compileGlob(pattern, { anchored: false, caseFold });
+                const path = `x${middle}y`;
+
+                // Act
+                const result = sut.test(path);
+
+                // Assert
+                expect(result).toBe(referenceVerdict(pattern, path, caseFold));
+              },
+            ),
             { numRuns: NUM_RUNS },
           );
         });
