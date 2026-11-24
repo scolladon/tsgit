@@ -632,6 +632,33 @@ Every candidate was settled as recommended, so the design stands as written.
   no special). The `ref-glob` equivalence notes moved into `wildmatch.ts` are re-checked against
   the fold rows.
 
+## After the settled design
+
+Implementation and review changed the points below. The sections above stand as decided; where
+a line here contradicts one of them, this section wins.
+
+| Change | Measured | Record |
+|---|---|---|
+| The case fold and the byte encoding of a path are each remembered for the last two paths. The rules of one source test the same path in turn, and an attribute rule set tests a path and then its basename | folded ignore matching 19.9 / 19.5 ms against 17.6 / 18.2 ms case-exact; attribute-shaped loop 12.9 / 13.0 ms against 8.0 ms | ADR-1259, then ADR-1260 |
+| The tokens after a pattern's last star each consume one byte. A path whose last bytes fail them is refused before any table is filled | ignore-match bench 21.0 / 60.4 / 62.8 ms → 15.1 / 19.4 / 19.5 ms (no sets, sets, one-byte twin) | ADR-1260 |
+| A set holding one plain byte compiles to a byte token, never for `/` under `WM_PATHNAME`. Equal set tables are shared within one compile, keyed by the table packed sixteen slots to a UTF-16 unit | retained heap for a 1 MiB hostile file, branch against main: one line of `[ab]` 5.3 MB against 83 MB; 262 144 lines of `[a]` 163.6 against 161.5 MB. Compile of 262 144 × `[ab]`: 154 ms | review, security |
+| `asciiLower` lowers text that is ASCII throughout natively | identical output on every code unit, alone and embedded (362 162 comparisons) | ADR-1260 |
+| The compile bound of the perf suite gates compile time against filling one 256-slot table per set, measured in the same process (ratio 1.28, gate 4). It replaces the "under 1000 ms" row of the test strategy, which failed under load | 3 / 3 green at load 9–14 | review, tests |
+
+**Accepted residual.** A rule set where every line holds its own multi-member set keeps one
+256-byte table per rule: 209 715 lines of `[ab]` retain 212.7 MB against 131.0 MB on main. The
+growth is linear. A pool across rules is defeated by distinct sets, and a 32-byte bit set costs
+a shift and a mask per byte on the hot path.
+
+**Out-of-scope hunch, now proven.** A pattern holding bytes that are not valid UTF-8 never
+matches the path holding those bytes: the file is decoded as UTF-8 before parsing. It is left
+out of this change and recorded as a discovered impact.
+
+**Size caps.** Raised once, after review, on a clean build: browser bundle 374 → 374.4 kB
+(measured 374.32), full library 433.6 → 434.1 kB (434.02), domain chunk 130.4 → 130.8 kB
+(130.78), tarball 1551 → 1553 KiB (1 589 340 B). The attribution is the comment above
+`SIZE_CAP` in `tooling/verify-tarball.sh`.
+
 ## Out of scope
 
 - Cone-mode patterns: `parseCone` and the cone matcher never call `compileGlob`.
