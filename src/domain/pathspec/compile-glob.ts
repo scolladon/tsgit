@@ -78,6 +78,17 @@ const shortcutOf = (pattern: string, anchored: boolean, caseFold: boolean): Shor
   return UNDECIDED;
 };
 
+// A rule set tests one path against every rule: the fold of the last path is
+// kept so it is paid once per path, not once per rule. It caches a pure
+// function of the path, so it cannot change a verdict.
+let lastFold: { readonly path: string; readonly folded: string } | undefined;
+
+const foldOnce = (path: string): string => {
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. folding on every call returns the same text as reusing the kept fold of the same path; only the cost differs, which the performance suite gates.
+  if (lastFold?.path !== path) lastFold = { path, folded: asciiLower(path) };
+  return lastFold.folded;
+};
+
 export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobMatcher => {
   const caseFold = options.caseFold === true;
   const tokens = tokenizeWildmatch(encode(pattern), { pathname: true, caseFold });
@@ -86,7 +97,7 @@ export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobM
   const shortcut = shortcutOf(pattern, options.anchored, caseFold);
   return {
     test: (path) => {
-      const text = caseFold ? asciiLower(path) : path;
+      const text = caseFold ? foldOnce(path) : path;
       return shortcut(text) ?? matchWildmatch(program, encodeEscaped(text));
     },
   };

@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { compileGlob } from '../../../../src/domain/pathspec/compile-glob.js';
+import { compileGlob, type GlobMatcher } from '../../../../src/domain/pathspec/compile-glob.js';
+
+const RULE_COUNT = 40;
+const PATH_COUNT = 5000;
+const PASSES = 7;
+const MAX_FOLD_RATIO = 3;
+
+/** One pass tests every path against every rule, as a rule set does; the fastest pass is kept. */
+const bestPassMs = (rules: ReadonlyArray<GlobMatcher>, paths: ReadonlyArray<string>): number => {
+  let best = Number.POSITIVE_INFINITY;
+  for (let pass = 0; pass < PASSES; pass++) {
+    const start = performance.now();
+    for (const path of paths) for (const rule of rules) rule.test(path);
+    best = Math.min(best, performance.now() - start);
+  }
+  return best;
+};
 
 /**
  * Wall-clock ReDoS guard for the glob matcher. This is a PERFORMANCE test, not
@@ -45,6 +61,31 @@ describe('compileGlob (performance)', () => {
         // Assert
         expect(result).toBe(false);
         expect(elapsedMs).toBeLessThan(1000);
+      });
+    });
+  });
+
+  describe('Given 40 rules and 5000 mixed-case paths', () => {
+    describe('When every rule tests every path with and without case folding', () => {
+      it('Then folding costs under three times the case-exact pass', () => {
+        // Arrange — a rule set tests one path against every rule, so the fold of
+        // a path is owed once per path, not once per rule.
+        const patterns = Array.from({ length: RULE_COUNT }, (_, rule) => `*.ext${rule}`);
+        const paths = Array.from(
+          { length: PATH_COUNT },
+          (_, index) => `Dir${index}/File.Ext${index}`,
+        );
+        const exact = patterns.map((pattern) => compileGlob(pattern, { anchored: false }));
+        const folded = patterns.map((pattern) =>
+          compileGlob(pattern, { anchored: false, caseFold: true }),
+        );
+
+        // Act
+        const exactMs = bestPassMs(exact, paths);
+        const foldedMs = bestPassMs(folded, paths);
+
+        // Assert
+        expect(foldedMs).toBeLessThan(exactMs * MAX_FOLD_RATIO);
       });
     });
   });

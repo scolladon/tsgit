@@ -352,6 +352,26 @@ describe('compileGlob', () => {
       });
     });
 
+    describe('When two folded matchers alternate between two paths', () => {
+      it('Then each verdict belongs to the path just tested', () => {
+        // Arrange
+        const sut = compileGlob('*.log', { anchored: false, caseFold: true });
+        const other = compileGlob('*.txt', { anchored: false, caseFold: true });
+
+        // Act
+        const result = [
+          sut.test('A.LOG'),
+          other.test('A.LOG'),
+          sut.test('B.TXT'),
+          other.test('B.TXT'),
+          sut.test('A.LOG'),
+        ];
+
+        // Assert
+        expect(result).toEqual([true, false, false, true, true]);
+      });
+    });
+
     describe('When escapes and sets meet a path of another case', () => {
       it.each([
         ['\\a', 'A', true],
