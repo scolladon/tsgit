@@ -56,6 +56,10 @@ describe('asciiLower', () => {
       { text: 'Hello-World 9', expected: 'hello-world 9' },
       { text: 'É', expected: 'É' },
       { text: 'ÀB', expected: 'Àb' },
+      { text: 'Dir/File.TXT', expected: 'dir/file.txt' },
+      { text: 'A\uDC80B', expected: 'a\uDC80b' },
+      { text: 'İX', expected: 'İx' },
+      { text: '', expected: '' },
     ])("Then '$text' reads '$expected'", ({ text, expected }) => {
       // Arrange
       const sut = asciiLower;
