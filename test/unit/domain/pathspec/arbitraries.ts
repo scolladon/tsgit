@@ -91,3 +91,61 @@ export const arbUnbracketedBody = (): fc.Arbitrary<string> =>
     GLOB_BODY_CHARS.filter((c) => c !== '\\'),
     8,
   );
+
+const DERIVED_PATH_UNITS = [
+  'a',
+  'A',
+  'b',
+  'B',
+  '/',
+  '-',
+  ']',
+  '[',
+  '!',
+  '^',
+  ':',
+  '\\',
+  'é',
+  'z',
+  '5',
+  '_',
+  ' ',
+  '.',
+];
+const SLASH_FRAGMENTS = ['/', '\\/'];
+
+// What one path character may become in a pattern: fragments that admit it
+// (an escape, `?`, `*`, a set, a range or a class holding it) and a few that
+// refuse it, so escapes, stars and sets mix in one pattern.
+const fragmentsFor = (unit: string): ReadonlyArray<string> => {
+  if (unit === '/') return SLASH_FRAGMENTS;
+  const escaped = `\\${unit}`;
+  return [
+    escaped,
+    escaped,
+    '?',
+    '*',
+    `[${escaped}]`,
+    `[${escaped}-${escaped}]`,
+    `[${escaped}-z]`,
+    `[[:alpha:]${escaped}]`,
+    `[[:upper:]${escaped}]`,
+    `[!${escaped}]`,
+    '[^[:punct:]]',
+  ];
+};
+
+export const arbDerivedPath = (): fc.Arbitrary<string> => arbChars(DERIVED_PATH_UNITS, 6);
+
+/** A path and a pattern built from it one character at a time, so the pattern often matches it. */
+export const arbPathWithDerivedPattern = (): fc.Arbitrary<{
+  readonly path: string;
+  readonly pattern: string;
+}> =>
+  fc
+    .array(fc.constantFrom(...DERIVED_PATH_UNITS), { minLength: 1, maxLength: 6 })
+    .chain((units) =>
+      fc
+        .tuple(...units.map((unit) => fc.constantFrom(...fragmentsFor(unit))))
+        .map((fragments) => ({ path: units.join(''), pattern: fragments.join('') })),
+    );

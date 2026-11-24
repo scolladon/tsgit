@@ -115,6 +115,8 @@ describe('wildmatch', () => {
         ['[\\]]', '\\', false],
         ['[a-\\c]', 'b', true],
         ['[a-\\c]', '\\', false],
+        ['[\\a-c]', 'b', true],
+        ['[\\a-c]', '\\', false],
       ])('Then %j against %j gives %s', (pattern, text, expected) => {
         // Arrange
         const sut = wildmatch;
@@ -166,6 +168,9 @@ describe('wildmatch', () => {
         ['[[:a]b:]]', ':b:]]', true],
         ['[[:a]b:]]', 'xb:]]', false],
         ['[[:a]b:]]', 'b', false],
+        ['[[:]:]]', '[:]]', true],
+        ['[[:]:]]', '::]]', true],
+        ['[[:]:]]', 'x:]]', false],
       ])('Then %j against %j gives %s', (pattern, text, expected) => {
         // Arrange
         const sut = wildmatch;
@@ -264,8 +269,12 @@ describe('wildmatch', () => {
         ['[X-c]', 'Y', true],
         ['[X-c]', 'y', true],
         ['[X-c]', 'd', false],
+        ['[X-c]', '{', false],
+        ['[X-c]', '~', false],
         ['[A-A]', 'a', true],
         ['[[:upper:]]', 'a', true],
+        ['[[:digit:]]', 'a', false],
+        ['[[:digit:]]', '5', true],
       ])('Then %j against %j gives %s', (pattern, text, expected) => {
         // Arrange
         const sut = wildmatch;

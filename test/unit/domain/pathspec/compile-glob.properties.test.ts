@@ -5,10 +5,12 @@ import { compileGlob } from '../../../../src/domain/pathspec/compile-glob.js';
 import { arbCaseMask, flipAsciiCase } from '../path/arbitraries.js';
 import {
   arbBracketMembers,
+  arbDerivedPath,
   arbEscapedPath,
   arbFoldGlobBody,
   arbFoldPath,
   arbLiteralPattern,
+  arbPathWithDerivedPattern,
   arbUnbracketedBody,
 } from './arbitraries.js';
 import { referenceWildmatch } from './dowild-reference.js';
@@ -256,6 +258,33 @@ describe('compileGlob properties', () => {
 
                 // Assert
                 expect(result).toBe(referenceVerdict(pattern, path, caseFold));
+              },
+            ),
+            { numRuns: NUM_RUNS },
+          );
+        });
+      });
+    });
+  });
+
+  describe('Given a pattern derived from a path one character at a time', () => {
+    describe.each([false, true])('And caseFold is %s', (caseFold) => {
+      describe('When it tests that path or an unrelated one', () => {
+        it('Then it agrees with the recursive reference', () => {
+          fc.assert(
+            fc.property(
+              arbPathWithDerivedPattern(),
+              fc.option(arbDerivedPath(), { nil: undefined }),
+              ({ path, pattern }, unrelated) => {
+                // Arrange
+                const tested = unrelated ?? path;
+                const sut = compileGlob(pattern, { anchored: pattern.includes('/'), caseFold });
+
+                // Act
+                const result = sut.test(tested);
+
+                // Assert
+                expect(result).toBe(referenceVerdict(pattern, tested, caseFold));
               },
             ),
             { numRuns: NUM_RUNS },

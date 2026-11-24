@@ -67,29 +67,29 @@ describe('buildIgnoreEvaluator', () => {
         // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
-        const baseReadUtf8 = ctx.fs.readUtf8;
-        let configReads = 0;
+        // A cached config is revalidated by a stat, not re-read: every file
+        // system call on the config counts, whatever its kind.
+        let configTouches = 0;
         const countingFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
-            if (prop === 'readUtf8') {
-              return async (p: string) => {
-                if (p.endsWith('/config')) configReads += 1;
-                return baseReadUtf8(p);
-              };
-            }
-            return Reflect.get(target, prop, receiver);
+            const member: unknown = Reflect.get(target, prop, receiver);
+            if (typeof member !== 'function') return member;
+            return (...args: unknown[]) => {
+              if (typeof args[0] === 'string' && args[0].endsWith('/config')) configTouches += 1;
+              return Reflect.apply(member, target, args);
+            };
           },
         });
         const evaluator = await buildIgnoreEvaluator({ ...ctx, fs: countingFs });
-        const readsAtBuild = configReads;
+        const touchesAtBuild = configTouches;
         const sut = evaluator.loadDirRules;
 
         // Act
         await sut('sub' as FilePath);
 
         // Assert
-        expect(readsAtBuild).toBeGreaterThan(0);
-        expect(configReads).toBe(readsAtBuild);
+        expect(touchesAtBuild).toBeGreaterThan(0);
+        expect(configTouches).toBe(touchesAtBuild);
       });
     });
   });

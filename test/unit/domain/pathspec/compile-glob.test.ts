@@ -757,19 +757,24 @@ describe('compileGlob', () => {
 
     describe('When the pattern is plain text', () => {
       it.each([
-        ['A', true, 'a', true],
-        ['src', false, 'a/src', true],
-        ['src', false, 'a-src', false],
-      ] as const)('Then %s against %s answers %s', (pattern, _anchored, path, expected) => {
-        // Arrange
-        const sut = compileGlob(pattern, { anchored: false, caseFold: pattern === 'A' });
+        ['A', true, true, 'a', true],
+        ['A', true, false, 'a', false],
+        ['src', false, false, 'a/src', true],
+        ['src', false, false, 'a-src', false],
+        ['src', true, false, 'a/src', false],
+      ] as const)(
+        'Then %s (anchored %s, caseFold %s) against %s answers %s',
+        (pattern, anchored, caseFold, path, expected) => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored, caseFold });
 
-        // Act
-        const result = sut.test(path);
+          // Act
+          const result = sut.test(path);
 
-        // Assert
-        expect(result).toBe(expected);
-      });
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
     });
   });
 

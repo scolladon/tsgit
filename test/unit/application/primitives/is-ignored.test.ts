@@ -35,9 +35,9 @@ describe('isIgnored', () => {
   });
 
   describe.each([
-    ['info/exclude', 'a', 'A'],
-    ['global excludes', 'a', 'A'],
-    ['a nested .gitignore', 'sub/a', 'A'],
+    ['info/exclude', 'a'],
+    ['global excludes', 'a'],
+    ['a nested .gitignore', 'sub/a'],
   ])('Given core.ignorecase true and %s holding A', (source, checked) => {
     describe(`When isIgnored checks ${checked}`, () => {
       it('Then it is ignored', async () => {

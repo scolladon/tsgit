@@ -190,8 +190,11 @@ describe('parseGitignore', () => {
         { line: 'd\\*', expected: 'd\\*' },
         { line: 'g\\\\h   ', expected: 'g\\\\h' },
       ])('Then the rule reports $line as written', ({ line, expected }) => {
-        // Arrange + Act
-        const result = parseGitignore(line);
+        // Arrange
+        const sut = parseGitignore;
+
+        // Act
+        const result = sut(line);
 
         // Assert
         expect(result[0]?.pattern).toBe(expected);
@@ -497,8 +500,11 @@ describe('tokenizeIgnoreLine', () => {
         { line: '\\*', cleanPattern: '\\*', negated: false },
         { line: 'a\\ ', cleanPattern: 'a\\ ', negated: false },
       ])('Then cleanPattern keeps the escape of $line', ({ line, cleanPattern, negated }) => {
-        // Arrange + Act
-        const result = tokenizeIgnoreLine(line);
+        // Arrange
+        const sut = tokenizeIgnoreLine;
+
+        // Act
+        const result = sut(line);
 
         // Assert
         expect(result?.cleanPattern).toBe(cleanPattern);

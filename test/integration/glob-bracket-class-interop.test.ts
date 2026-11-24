@@ -123,14 +123,23 @@ const CASES: ReadonlyArray<GlobCase> = [
   ['a[b/c]d', ['abd', 'acd', 'a/d']],
   ['[A]', ['a', 'A']],
   ['[A-Z]', ['a', 'A', '5']],
-  ['[X-c]', ['a', 'A', 'Y', 'y', 'd']],
+  ['[X-c]', ['a', 'A', 'Y', 'y', 'd', '{']],
   ['[!A]', ['a', 'A', 'b']],
   ['[!b]', ['B', 'b', 'c']],
   ['[[:upper:]]', ['A', 'a', '5']],
+  ['[[:lower:]]', ['a', 'A', '5']],
   ['x[A]', ['xa', 'xA', 'Xa']],
   ['[A-A]', ['a', 'A']],
   ['[é]', ['é', 'e']],
   ['[!a][!a]', ['é', 'bb']],
+  ['[\\a-c]', ['a', 'b', 'c', '\\', 'd']],
+  ['[[:]:]]', ['[:]]', 'x:]]'], ['::]]']],
+  ['[a^]', ['a', '^', 'b']],
+  ['[![:digit:]]', ['5', 'a']],
+  ['[[:alpha:][:digit:]]', ['a', '5', '_']],
+  ['[[:DIGIT:]]', ['5', 'D']],
+  ['d/a[[:punct:]]b', ['d/a/b', 'd/a_b']],
+  ['x[ab]', ['xa', 'd/xa', 'd/xc']],
 ];
 
 const IGNORE_CASES: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = CASES.map(
@@ -272,18 +281,33 @@ const checkIgnoreRow = async (
   };
 };
 
-const PATTERN_LINES = ['!e\\[x]', 'f\\[ab]/', '/g[h]', '\\#a', 'c\\ ', 'd\\*', 'g\\\\h   '];
-const PATTERN_PATHS = ['f[ab]', 'gh', '#a', 'c ', 'd*', 'g\\h'];
+// `e*` ignores `e[x]` unless the negated line after it matches: the escaped
+// negation is then visible in both tools.
+const PATTERN_LINES = ['e*', '!e\\[x]', 'f\\[ab]/', '/g[h]', '\\#a', 'c\\ ', 'd\\*', 'g\\\\h   '];
+const PATTERN_PATHS = ['e[x]', 'ex', 'f[ab]', 'gh', '#a', 'c ', 'd*', 'g\\h'];
+const NEGATION = '!';
+const QUAD = 4;
+
+interface VerboseMatch {
+  readonly pattern: string;
+  readonly path: string;
+  /** `<source>|<line>|<pattern>|<path>`, as `check-ignore -v` reports them. */
+  readonly triple: string;
+}
 
 /** `<source> <line> <pattern> <path>` quads of `check-ignore -v -z`. */
-const verboseTriples = (stdoutFields: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const triples: string[] = [];
-  for (let index = 0; index + 3 < stdoutFields.length; index += 4) {
-    triples.push(
-      `${stdoutFields[index]}|${stdoutFields[index + 1]}|${stdoutFields[index + 2]}|${stdoutFields[index + 3]}`,
-    );
+const verboseMatches = (stdoutFields: ReadonlyArray<string>): ReadonlyArray<VerboseMatch> => {
+  const matches: VerboseMatch[] = [];
+  for (let index = 0; index + QUAD <= stdoutFields.length; index += QUAD) {
+    const [source, line, pattern, matched] = stdoutFields.slice(index, index + QUAD) as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    matches.push({ pattern, path: matched, triple: `${source}|${line}|${pattern}|${matched}` });
   }
-  return triples.sort();
+  return matches;
 };
 
 const checkVerboseRow = async (
@@ -291,10 +315,17 @@ const checkVerboseRow = async (
   ignoreCase: string,
 ): Promise<{
   readonly expected: ReadonlyArray<string>;
+  readonly negated: ReadonlyArray<string>;
   readonly result: ReadonlyArray<string>;
 }> => {
   const repo = await writeIgnoreRepo(root, ignoreCase, `${PATTERN_LINES.join('\n')}\n`, ['f[ab]']);
-  const expected = verboseTriples(gitCheckIgnore(repo, ['-v'], PATTERN_PATHS));
+  const reported = verboseMatches(gitCheckIgnore(repo, ['-v'], PATTERN_PATHS));
+  // With -v git also reports the negated line that un-ignores a path.
+  const negated = reported.filter((match) => match.pattern.startsWith(NEGATION));
+  const expected = reported
+    .filter((match) => !match.pattern.startsWith(NEGATION))
+    .map((match) => match.triple)
+    .sort();
   const matches = await isIgnored(
     createNodeContext({ workDir: repo }),
     PATTERN_PATHS.map((candidate) => ({
@@ -306,7 +337,7 @@ const checkVerboseRow = async (
     .filter((match) => match.ignored && match.source !== undefined)
     .map((match) => `.gitignore|${match.source?.line}|${match.source?.pattern}|${match.path}`)
     .sort();
-  return { expected, result };
+  return { expected, negated: negated.map((match) => match.triple), result };
 };
 
 const seedCommittedRepo = async (
@@ -420,9 +451,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — bracket class, escape and fold 
           const sut = checkVerboseRow;
 
           // Act
-          const { expected, result } = await sut(root, ignoreCase);
+          const { expected, negated, result } = await sut(root, ignoreCase);
 
-          // Assert
+          // Assert — git reports the escaped negation as written, and the path
+          // it un-ignores is absent from both ignored lists.
+          expect(negated).toEqual(['.gitignore|2|!e\\[x]|e[x]']);
           expect(result).toEqual(expected);
         },
       );
