@@ -5,6 +5,7 @@ import {
 } from '../../../domain/ignore/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { readConfig } from '../config-read.js';
 import type { IgnorePredicate } from './ignore-predicate.js';
 import { readGitignore, readGlobalExcludes, readInfoExclude } from './read-gitignore.js';
 
@@ -27,18 +28,19 @@ export interface IgnoreEvaluator {
  * never read.
  */
 export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluator> => {
+  const caseFold = (await readConfig(ctx)).core?.ignoreCase === true;
   const base: IgnoreLevel[] = [];
-  const global = await readGlobalExcludes(ctx);
+  const global = await readGlobalExcludes(ctx, { caseFold });
   if (global !== undefined) base.push({ basedir: '', rules: global, kind: 'global' });
-  const info = await readInfoExclude(ctx);
+  const info = await readInfoExclude(ctx, { caseFold });
   if (info !== undefined) base.push({ basedir: '', rules: info, kind: 'info' });
-  const root = await readGitignore(ctx, '');
+  const root = await readGitignore(ctx, '', { caseFold });
   if (root !== undefined) base.push({ basedir: '', rules: root, kind: 'gitignore' });
   const cache = new Map<FilePath | '', IgnoreRuleset>();
   const loadDirRules = async (dir: FilePath | ''): Promise<IgnoreRuleset> => {
     const cached = cache.get(dir);
     if (cached !== undefined) return cached;
-    const loaded = (await readGitignore(ctx, dir)) ?? [];
+    const loaded = (await readGitignore(ctx, dir, { caseFold })) ?? [];
     cache.set(dir, loaded);
     return loaded;
   };

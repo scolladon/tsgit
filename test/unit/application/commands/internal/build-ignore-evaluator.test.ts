@@ -61,6 +61,39 @@ describe('buildIgnoreEvaluator', () => {
     });
   });
 
+  describe('Given a built evaluator', () => {
+    describe('When loadDirRules loads sub', () => {
+      it('Then the config is not read again', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
+        const baseReadUtf8 = ctx.fs.readUtf8;
+        let configReads = 0;
+        const countingFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'readUtf8') {
+              return async (p: string) => {
+                if (p.endsWith('/config')) configReads += 1;
+                return baseReadUtf8(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const evaluator = await buildIgnoreEvaluator({ ...ctx, fs: countingFs });
+        const readsAtBuild = configReads;
+        const sut = evaluator.loadDirRules;
+
+        // Act
+        await sut('sub' as FilePath);
+
+        // Assert
+        expect(readsAtBuild).toBeGreaterThan(0);
+        expect(configReads).toBe(readsAtBuild);
+      });
+    });
+  });
+
   describe('Given the evaluator', () => {
     describe('When loadDirRules is invoked for the same directory twice', () => {
       it('Then the second call returns the cached ruleset (same value, no second read)', async () => {
@@ -124,6 +157,24 @@ describe('buildRepoIgnorePredicate', () => {
 
         // Act / Assert
         expect(await sut('foo.log' as FilePath, false)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given core.ignorecase true and a root *.log', () => {
+    describe('When buildRepoIgnorePredicate tests X.LOG', () => {
+      it('Then it is ignored', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tignorecase = true\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const ignored = await sut('X.LOG' as FilePath, false);
+
+        // Assert
+        expect(ignored).toBe(true);
       });
     });
   });
