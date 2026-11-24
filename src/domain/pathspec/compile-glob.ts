@@ -47,6 +47,14 @@ const STAR = '*';
 const GLOB_SPECIAL = /[*?[\\]/;
 const NOT_FOUND = -1;
 
+// The fast paths below are git's (`dir.c`): a pure literal, a leading `*` over
+// plain text, and a plain prefix every match must carry. Each answers what the
+// wildmatch program would answer for the same text, or `undefined` to leave it
+// the verdict. Measuring the plain run shorter, never selecting a shortcut, or
+// having one answer `undefined` hands the path to the program: the cost
+// changes, never a verdict, and the ignore-match bench measures the cost. The
+// mutants that only do that are equivalent and deliberately not suppressed.
+
 // git's `simple_length`: how far the pattern is plain text.
 const simpleLength = (pattern: string): number => {
   const special = pattern.search(GLOB_SPECIAL);
