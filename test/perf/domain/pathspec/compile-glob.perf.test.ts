@@ -1,21 +1,70 @@
 import { describe, expect, it } from 'vitest';
+import { encodeEscaped } from '../../../../src/domain/objects/encoding.js';
 import { compileGlob, type GlobMatcher } from '../../../../src/domain/pathspec/compile-glob.js';
+import { asciiLower } from '../../../../src/domain/pretty/ascii.js';
 
 const RULE_COUNT = 40;
 const PATH_COUNT = 5000;
 const PASSES = 7;
-const MAX_FOLD_RATIO = 3;
+/**
+ * A rule set owes one preparation (fold, encode) per path. The gates compare
+ * its cost with the same preparation repeated once per rule: paying it per
+ * rule costs at least that much, paying it per path a small share of it.
+ */
+const MAX_SHARE_OF_PER_RULE_WORK = 0.5;
 
-/** One pass tests every path against every rule, as a rule set does; the fastest pass is kept. */
-const bestPassMs = (rules: ReadonlyArray<GlobMatcher>, paths: ReadonlyArray<string>): number => {
+/** The subject each rule sees for a path: attribute rules alternate the path and its basename. */
+type SubjectOf = (path: string, rule: number) => string;
+
+const wholePath: SubjectOf = (path) => path;
+const pathOrBasename: SubjectOf = (path, rule) =>
+  rule % 2 === 0 ? path : path.slice(path.lastIndexOf('/') + 1);
+
+const bestMs = (work: () => void): number => {
   let best = Number.POSITIVE_INFINITY;
   for (let pass = 0; pass < PASSES; pass++) {
     const start = performance.now();
-    for (const path of paths) for (const rule of rules) rule.test(path);
+    work();
     best = Math.min(best, performance.now() - start);
   }
   return best;
 };
+
+/** Every rule tests its subject of every path, as a rule set does. */
+const matchingMs = (
+  rules: ReadonlyArray<GlobMatcher>,
+  paths: ReadonlyArray<string>,
+  subjectOf: SubjectOf,
+): number =>
+  bestMs(() => {
+    for (const path of paths) {
+      for (let rule = 0; rule < rules.length; rule++) {
+        (rules[rule] as GlobMatcher).test(subjectOf(path, rule));
+      }
+    }
+  });
+
+/** The same subjects, each prepared once per rule and never matched. */
+const perRuleWorkMs = (
+  prepare: (subject: string) => { readonly length: number },
+  paths: ReadonlyArray<string>,
+  subjectOf: SubjectOf,
+): number => {
+  const sink = { length: 0 };
+  return bestMs(() => {
+    for (const path of paths) {
+      for (let rule = 0; rule < RULE_COUNT; rule++) {
+        sink.length += prepare(subjectOf(path, rule)).length;
+      }
+    }
+  });
+};
+
+const MIXED_CASE_PATHS = Array.from(
+  { length: PATH_COUNT },
+  (_, index) => `Dir${index}/File.Ext${index}`,
+);
+const LOWER_CASE_PATHS = MIXED_CASE_PATHS.map(asciiLower);
 
 /**
  * Wall-clock ReDoS guard for the glob matcher. This is a PERFORMANCE test, not
@@ -65,27 +114,70 @@ describe('compileGlob (performance)', () => {
     });
   });
 
-  describe('Given 40 rules and 5000 mixed-case paths', () => {
-    describe('When every rule tests every path with and without case folding', () => {
-      it('Then folding costs under three times the case-exact pass', () => {
-        // Arrange — a rule set tests one path against every rule, so the fold of
-        // a path is owed once per path, not once per rule.
-        const patterns = Array.from({ length: RULE_COUNT }, (_, rule) => `*.ext${rule}`);
-        const paths = Array.from(
-          { length: PATH_COUNT },
-          (_, index) => `Dir${index}/File.Ext${index}`,
-        );
-        const exact = patterns.map((pattern) => compileGlob(pattern, { anchored: false }));
-        const folded = patterns.map((pattern) =>
-          compileGlob(pattern, { anchored: false, caseFold: true }),
-        );
+  describe('Given 40 folding rules and 5000 mixed-case paths', () => {
+    const rules = Array.from({ length: RULE_COUNT }, (_, rule) =>
+      compileGlob(`*.ext${rule}`, { anchored: false, caseFold: true }),
+    );
+
+    describe('When every rule tests every path', () => {
+      it('Then matching costs under half of folding the path once per rule', () => {
+        // Arrange
+        const sut = matchingMs;
 
         // Act
-        const exactMs = bestPassMs(exact, paths);
-        const foldedMs = bestPassMs(folded, paths);
+        const result = sut(rules, MIXED_CASE_PATHS, wholePath);
 
         // Assert
-        expect(foldedMs).toBeLessThan(exactMs * MAX_FOLD_RATIO);
+        const perRuleMs = perRuleWorkMs(asciiLower, MIXED_CASE_PATHS, wholePath);
+        expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
+      });
+    });
+
+    describe('When the rules alternate between the path and its basename', () => {
+      it('Then matching still costs under half of folding once per rule', () => {
+        // Arrange
+        const sut = matchingMs;
+
+        // Act
+        const result = sut(rules, MIXED_CASE_PATHS, pathOrBasename);
+
+        // Assert
+        const perRuleMs = perRuleWorkMs(asciiLower, MIXED_CASE_PATHS, pathOrBasename);
+        expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
+      });
+    });
+  });
+
+  describe('Given 40 star-led rules ending in a set and 5000 paths', () => {
+    const rules = Array.from({ length: RULE_COUNT }, (_, rule) =>
+      compileGlob(`*.e[xy]t${rule}`, { anchored: false }),
+    );
+
+    describe('When every rule tests every path', () => {
+      it('Then matching costs under half of encoding the path once per rule', () => {
+        // Arrange
+        const sut = matchingMs;
+
+        // Act
+        const result = sut(rules, LOWER_CASE_PATHS, wholePath);
+
+        // Assert
+        const perRuleMs = perRuleWorkMs(encodeEscaped, LOWER_CASE_PATHS, wholePath);
+        expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
+      });
+    });
+
+    describe('When the rules alternate between the path and its basename', () => {
+      it('Then matching still costs under half of encoding once per rule', () => {
+        // Arrange
+        const sut = matchingMs;
+
+        // Act
+        const result = sut(rules, LOWER_CASE_PATHS, pathOrBasename);
+
+        // Assert
+        const perRuleMs = perRuleWorkMs(encodeEscaped, LOWER_CASE_PATHS, pathOrBasename);
+        expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
       });
     });
   });

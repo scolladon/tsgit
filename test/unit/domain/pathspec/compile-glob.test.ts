@@ -372,6 +372,20 @@ describe('compileGlob', () => {
       });
     });
 
+    describe('When one folded matcher tests three paths in turn', () => {
+      it('Then no verdict is borrowed from an earlier path', () => {
+        // Arrange
+        const sut = compileGlob('*.log', { anchored: false, caseFold: true });
+        const paths = ['A.LOG', 'B.LOG', 'C.TXT', 'A.LOG', 'C.TXT', 'B.LOG'];
+
+        // Act
+        const result = paths.map((path) => sut.test(path));
+
+        // Assert
+        expect(result).toEqual([true, true, false, true, false, true]);
+      });
+    });
+
     describe('When escapes and sets meet a path of another case', () => {
       it.each([
         ['\\a', 'A', true],
@@ -590,6 +604,57 @@ describe('compileGlob', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a pattern whose last star is followed by one-byte tokens', () => {
+    describe('When the path ends, or does not end, with those bytes', () => {
+      it.each([
+        ['*.e[xy]t', false, 'a.ext', true],
+        ['*.e[xy]t', false, 'd/a.eyt', true],
+        ['*.e[xy]t', false, '.ext', true],
+        ['*.e[xy]t', false, 'a.ezt', false],
+        ['*.e[xy]t', false, 'a.exx', false],
+        ['*.e[xy]t', false, 'ext', false],
+        ['*[ab]-1', false, 'x-a-1', true],
+        ['*[ab]-1', false, 'x-b-1', true],
+        ['*[ab]-1', false, 'x-c-1', false],
+        ['*[ab]-1', false, 'x-a-2', false],
+        ['*[ab]-1', false, '-1', false],
+        ['*\\*', false, 'a*', true],
+        ['*\\*', false, 'ab', false],
+        ['?*[bc]', true, 'xb', true],
+        ['?*[bc]', true, 'b', false],
+        ['d/*[bc]', true, 'x/ab', false],
+        ['[ab]c', true, 'ac', true],
+        ['[ab]c', true, 'c', false],
+      ] as const)(
+        'Then %s (anchored %s) against %s answers %s',
+        (pattern, anchored, path, expected) => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored });
+
+          // Act
+          const result = sut.test(path);
+
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
+    });
+
+    describe('When one matcher tests three paths in turn', () => {
+      it('Then no verdict is borrowed from an earlier path', () => {
+        // Arrange
+        const sut = compileGlob('*.l[o0]g', { anchored: false });
+        const paths = ['a.log', 'b.l0g', 'c.txt', 'a.log', 'c.txt', 'b.l0g'];
+
+        // Act
+        const result = paths.map((path) => sut.test(path));
+
+        // Assert
+        expect(result).toEqual([true, true, false, true, false, true]);
       });
     });
   });
