@@ -8,10 +8,12 @@ trigger: a guard of the form `a || b` whose example table already has a row name
 evidence:
   - src/domain/refs/loose-ref.ts:67
   - test/unit/domain/refs/loose-ref.test.ts:83-84
+  - src/domain/glob/wildmatch.ts:278
+  - test/unit/domain/glob/wildmatch.test.ts:185-194
 source: { run: fsck-broken-ref-chain-unreadable, phase: validation, date: 2026-10-31 }
 status: active
 supersedes: []
-last-verified: 2026-10-31
+last-verified: 2026-11-24
 ---
 # 024 — A guard operand needs a row only it rejects
 
@@ -42,3 +44,5 @@ For an operand mutant, apply the report's exact replacement, never the whole con
 - `test/unit/domain/refs/loose-ref.test.ts:83-84` — "39 hex digits" (line feed included, decided by
   the hex-digit operand) and "39 hex digits with no line feed" (decided by the length operand; fails
   under the mutant, passes on the real code).
+- `src/domain/glob/wildmatch.ts:278` — `byte === LBRACKET && bytes[i + 1] === COLON`: the colon operand survived until `[[a:]` had a row.
+- `test/unit/domain/glob/wildmatch.test.ts:185-194` — the rows only that operand decides: a `[` member with no colon after it and a `:]` further on.

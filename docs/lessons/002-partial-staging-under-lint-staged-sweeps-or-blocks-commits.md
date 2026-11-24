@@ -11,7 +11,7 @@ evidence:
 source: { run: lift-delta-chain-read-cap, phase: implementation, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-11-08
+last-verified: 2026-11-24
 ---
 # 002 — Partial staging under lint-staged sweeps or blocks commits
 
