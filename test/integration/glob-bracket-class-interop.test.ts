@@ -1,7 +1,7 @@
 /**
  * Cross-tool interop — bracket sets, backslash escapes and case folding in
  * ignore, attribute and non-cone sparse patterns. Each verdict is compared
- * with live git (`git check-ignore`, `git sparse-checkout set --no-cone`), under both values of
+ * with live git (`git check-ignore`, `git check-attr`, `git sparse-checkout set --no-cone`), under both values of
  * `core.ignorecase`: the expectation is git's own answer, never a hard-coded
  * list, because folding changes what git keeps.
  *
@@ -18,7 +18,9 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
+import { buildAttributeProvider } from '../../src/application/primitives/internal/read-gitattributes.js';
 import { isIgnored } from '../../src/application/primitives/is-ignored.js';
+import { resolveAttribute } from '../../src/domain/attributes/index.js';
 import type { FilePath } from '../../src/domain/objects/object-id.js';
 import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -134,6 +136,78 @@ const CASES: ReadonlyArray<GlobCase> = [
 const IGNORE_CASES: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = CASES.map(
   ([pattern, paths]) => [pattern, paths] as const,
 ).filter(([, paths]) => process.platform !== 'win32' || !paths.some(isWindowsHostilePath));
+
+const ATTRIBUTE_CASES: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = CASES.map(
+  ([pattern, paths, attributeOnlyPaths = []]) =>
+    [pattern, [...paths, ...attributeOnlyPaths]] as const,
+).filter(([, paths]) => process.platform !== 'win32' || !paths.some(isWindowsHostilePath));
+
+const NEGATIVE_CASES: ReadonlyArray<readonly [string, string, ReadonlyArray<string>]> = [
+  ['!a', '!a probe', ['!a', 'a']],
+  ['\\!b', '\\!b probe', ['!b']],
+];
+
+const ATTRIBUTE = 'probe';
+
+const writeAttributeRepo = async (
+  root: string,
+  ignoreCase: string,
+  gitattributes: string,
+): Promise<string> => {
+  const repo = await mkdtemp(path.join(root, 'attr-'));
+  runGit(['init', '-q', '-b', 'main', repo]);
+  git(repo, 'config', 'core.ignorecase', ignoreCase);
+  await writeFile(path.join(repo, '.gitattributes'), gitattributes);
+  return repo;
+};
+
+/** `<path> <attribute> <value>` NUL-separated triples; a warning on stderr is not a failure. */
+const attributesByGit = (
+  repo: string,
+  paths: ReadonlyArray<string>,
+): ReadonlyMap<string, string> => {
+  const { stdout, stderr, exitCode } = tryRunGitWithExit(
+    ['-C', repo, 'check-attr', '-z', '--stdin', ATTRIBUTE],
+    { input: `${paths.join('\0')}\0` },
+  );
+  if (exitCode !== 0) throw new Error(`git check-attr failed (${exitCode}): ${stderr}`);
+  const fields = stdout.split('\0');
+  const verdicts = new Map<string, string>();
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    verdicts.set(fields[index] as string, fields[index + 2] as string);
+  }
+  return verdicts;
+};
+
+const attributesByTsgit = async (
+  repo: string,
+  paths: ReadonlyArray<string>,
+): Promise<ReadonlyMap<string, string>> => {
+  const provider = await buildAttributeProvider(createNodeContext({ workDir: repo }));
+  const verdicts = new Map<string, string>();
+  for (const candidate of paths) {
+    const { sources, macros } = await provider.sourcesForPath(candidate as FilePath);
+    const value = resolveAttribute(sources, candidate as FilePath, ATTRIBUTE, macros);
+    verdicts.set(candidate, value === true ? 'set' : String(value));
+  }
+  return verdicts;
+};
+
+const checkAttributeRow = async (
+  root: string,
+  ignoreCase: string,
+  line: string,
+  paths: ReadonlyArray<string>,
+): Promise<{
+  readonly expected: ReadonlyArray<readonly [string, string]>;
+  readonly result: ReadonlyArray<readonly [string, string]>;
+}> => {
+  const repo = await writeAttributeRepo(root, ignoreCase, `${line}\n`);
+  return {
+    expected: [...attributesByGit(repo, paths)],
+    result: [...(await attributesByTsgit(repo, paths))],
+  };
+};
 
 const writeIgnoreRepo = async (
   root: string,
@@ -306,6 +380,32 @@ describe.skipIf(!GIT_AVAILABLE)('integration — bracket class, escape and fold 
 
         // Act
         const { expected, result } = await sut(root, ignoreCase, pattern, paths);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+
+    describe('When a .gitattributes rule is resolved', () => {
+      it.each(ATTRIBUTE_CASES)('Then %j over %j matches git check-attr', async (pattern, paths) => {
+        // Arrange
+        const sut = checkAttributeRow;
+
+        // Act
+        const { expected, result } = await sut(root, ignoreCase, `${pattern} ${ATTRIBUTE}`, paths);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+
+    describe('When a negative .gitattributes pattern is resolved', () => {
+      it.each(NEGATIVE_CASES)('Then %j matches git check-attr', async (_pattern, line, paths) => {
+        // Arrange
+        const sut = checkAttributeRow;
+
+        // Act
+        const { expected, result } = await sut(root, ignoreCase, line, paths);
 
         // Assert
         expect(result).toEqual(expected);

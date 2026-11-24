@@ -5,6 +5,7 @@ import {
   type ParsedAttributes,
   parseGitattributes,
 } from '../../../domain/attributes/index.js';
+import type { ParseGitattributesOptions } from '../../../domain/attributes/parse-gitattributes.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
@@ -26,9 +27,13 @@ import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
 import { findTreeEntry } from './resolve-tree-path.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
-const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttributes | undefined> => {
+const loadAndParse = async (
+  ctx: Context,
+  path: string,
+  options: ParseGitattributesOptions,
+): Promise<ParsedAttributes | undefined> => {
   const text = await loadCappedUtf8(ctx, path, MAX_GITATTRIBUTES_BYTES, gitattributesFileTooLarge);
-  return text === undefined ? undefined : parseGitattributes(text);
+  return text === undefined ? undefined : parseGitattributes(text, options);
 };
 
 /**
@@ -40,16 +45,21 @@ const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttribute
  * unaffected — neither lives in the work tree — so only this source is
  * skipped, never the whole provider.
  */
-const workTreeDirReader: DirReader = (ctx, dir) => {
+const workTreeDirReader: DirReader = (ctx, dir, options) => {
   const workDir = ctx.layout.workDir;
   if (workDir === undefined) return Promise.resolve(undefined);
   return loadAndParse(
     ctx,
     joinPath(workDir, dir === '' ? '.gitattributes' : `${dir}/.gitattributes`),
+    options,
   );
 };
 
-type DirReader = (ctx: Context, dir: FilePath | '') => Promise<ParsedAttributes | undefined>;
+type DirReader = (
+  ctx: Context,
+  dir: FilePath | '',
+  options: ParseGitattributesOptions,
+) => Promise<ParsedAttributes | undefined>;
 
 const GITATTRIBUTES_FILE = '.gitattributes';
 
@@ -105,22 +115,26 @@ const createDirTreeIndex = (tree: ObjectId) => {
 };
 
 /** Reads a `.gitattributes` blob under the same size guard whichever store named it. */
-const parseBlobAttributes = async (ctx: Context, id: ObjectId): Promise<ParsedAttributes> => {
+const parseBlobAttributes = async (
+  ctx: Context,
+  id: ObjectId,
+  options: ParseGitattributesOptions,
+): Promise<ParsedAttributes> => {
   await assertDeclaredSizeWithinCap(ctx, id);
   const { content } = await readBlob(ctx, id);
-  return parseGitattributes(decode(content));
+  return parseGitattributes(decode(content), options);
 };
 
 const treeDirReader = (tree: ObjectId): DirReader => {
   const dirTreeOf = createDirTreeIndex(tree);
-  return async (ctx, dir) => {
+  return async (ctx, dir, options) => {
     const dirTree = await dirTreeOf(ctx, dir);
     const entry = await (dirTree === undefined
       ? findTreeEntry(ctx, tree, `${dir}/${GITATTRIBUTES_FILE}`)
       : findTreeEntry(ctx, dirTree, GITATTRIBUTES_FILE));
     // Symlink-mode entries are never read: git refuses to follow them for attributes.
     if (entry === undefined || !isRegularFileMode(entry.mode)) return undefined;
-    return parseBlobAttributes(ctx, entry.id);
+    return parseBlobAttributes(ctx, entry.id, options);
   };
 };
 
@@ -137,20 +151,20 @@ export type AttributeDirection =
 
 const indexDirReader =
   (lookup: IndexBlobLookup): DirReader =>
-  async (ctx, dir) => {
+  async (ctx, dir, options) => {
     const id = await lookup(
       (dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`) as FilePath,
     );
     return id === undefined
       ? undefined
-      : undefinedWhenBlobAbsent(() => parseBlobAttributes(ctx, id));
+      : undefinedWhenBlobAbsent(() => parseBlobAttributes(ctx, id, options));
   };
 
 /** The fallback is consulted only when the primary store holds no such file. */
 const firstOf =
   (primary: DirReader, fallback: DirReader): DirReader =>
-  async (ctx, dir) =>
-    (await primary(ctx, dir)) ?? fallback(ctx, dir);
+  async (ctx, dir, options) =>
+    (await primary(ctx, dir, options)) ?? fallback(ctx, dir, options);
 
 const dirReaderFor = (direction: AttributeDirection | undefined): DirReader => {
   switch (direction?.kind) {
@@ -165,15 +179,21 @@ const dirReaderFor = (direction: AttributeDirection | undefined): DirReader => {
   }
 };
 
-const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
-  loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`);
+const readInfo = (
+  ctx: Context,
+  options: ParseGitattributesOptions,
+): Promise<ParsedAttributes | undefined> =>
+  loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`, options);
 
-const readGlobal = async (ctx: Context): Promise<ParsedAttributes | undefined> => {
+const readGlobal = async (
+  ctx: Context,
+  options: ParseGitattributesOptions,
+): Promise<ParsedAttributes | undefined> => {
   const raw = (await readConfig(ctx)).core?.attributesFile;
   if (raw === undefined || raw === '') return undefined;
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
-  return loadAndParse(ctx, resolved);
+  return loadAndParse(ctx, resolved, options);
 };
 
 /**
@@ -256,12 +276,14 @@ const buildAttributeProviderFrom = async (
   ctx: Context,
   readDir: DirReader,
 ): Promise<AttributeProvider> => {
-  const info = await readInfo(ctx);
-  const global = await readGlobal(ctx);
-  const root = await readDir(ctx, '');
+  const options = { caseFold: (await readConfig(ctx)).core?.ignoreCase === true };
+  const info = await readInfo(ctx, options);
+  const global = await readGlobal(ctx, options);
+  const root = await readDir(ctx, '', options);
   const macros = buildMacroRegistry([info, root, global].flatMap((file) => file?.macros ?? []));
   const stackOf = createDirectoryStacks(
-    (dir) => (dirEscapesWorktree(dir) ? Promise.resolve(undefined) : readDir(ctx, dir as FilePath)),
+    (dir) =>
+      dirEscapesWorktree(dir) ? Promise.resolve(undefined) : readDir(ctx, dir as FilePath, options),
     rootSourceOf(root),
   );
   const highest = rootSourceOf(info);

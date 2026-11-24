@@ -391,4 +391,83 @@ describe('parseGitattributes', () => {
       });
     });
   });
+
+  describe('Given a negative pattern line', () => {
+    describe('When parsed', () => {
+      it.each([
+        ['an unquoted negative pattern', '!a foo\n'],
+        ['a quoted negative pattern', '"!a" foo\n'],
+      ])('Then %s yields no rule', (_label, input) => {
+        // Arrange
+        const sut = parseGitattributes;
+
+        // Act
+        const result = sut(input);
+
+        // Assert
+        expect(result.rules).toHaveLength(0);
+      });
+
+      it('Then an escaped bang is the literal pattern', () => {
+        // Arrange
+        const sut = parseGitattributes;
+
+        // Act
+        const result = sut('\\!b foo\n');
+
+        // Assert
+        expect(result.rules).toHaveLength(1);
+        expect(result.rules[0]?.compiled.test('!b')).toBe(true);
+      });
+
+      it('Then a macro line is still a macro', () => {
+        // Arrange
+        const sut = parseGitattributes;
+
+        // Act
+        const result = sut('[attr]m foo\n');
+
+        // Assert
+        expect(result.macros).toHaveLength(1);
+        expect(result.rules).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given the caseFold option', () => {
+    describe('When a *.TXT line is parsed', () => {
+      it('Then it matches a.txt', () => {
+        // Arrange
+        const sut = parseGitattributes;
+
+        // Act
+        const result = sut('*.TXT foo\n', { caseFold: true });
+
+        // Assert
+        expect(result.rules[0]?.compiled.test('a.txt')).toBe(true);
+      });
+
+      it('Then without the option it does not match a.txt', () => {
+        // Arrange
+        const sut = parseGitattributes;
+
+        // Act
+        const result = sut('*.TXT foo\n');
+
+        // Assert
+        expect(result.rules[0]?.compiled.test('a.txt')).toBe(false);
+      });
+
+      it('Then an escaped letter keeps its case', () => {
+        // Arrange
+        const sut = parseGitattributes;
+
+        // Act
+        const result = sut('\\A foo\n', { caseFold: true });
+
+        // Assert
+        expect(result.rules[0]?.compiled.test('A')).toBe(false);
+      });
+    });
+  });
 });

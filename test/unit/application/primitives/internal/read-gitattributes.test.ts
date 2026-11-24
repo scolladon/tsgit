@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
 import {
   type AttributeDirection,
   type AttributeProvider,
@@ -1522,6 +1523,143 @@ describe('buildAttributeProvider with an index direction', () => {
           size: MAX_GITATTRIBUTES_BYTES + 1,
           limit: MAX_GITATTRIBUTES_BYTES,
         });
+      });
+    });
+  });
+});
+
+describe('buildAttributeProvider under core.ignorecase', () => {
+  afterEach(() => {
+    __resetConfigCacheForTests();
+  });
+
+  const IGNORECASE_CONFIG = (value: string): string => `[core]\n\tignorecase = ${value}\n`;
+  const RULE = '*.TXT merge=x\n';
+
+  const resolveWith = async (
+    provider: AttributeProvider,
+    path: string,
+  ): Promise<ReturnType<typeof resolveAttribute>> => {
+    const { sources, macros } = await provider.sourcesForPath(path as FilePath);
+    return resolveAttribute(sources, path as FilePath, 'merge', macros);
+  };
+
+  type SourceRow = {
+    readonly source: string;
+    readonly path: string;
+    readonly build: (ctx: Context) => Promise<AttributeProvider>;
+  };
+
+  const SOURCES: ReadonlyArray<SourceRow> = [
+    {
+      source: 'root .gitattributes',
+      path: 'a.txt',
+      build: async (ctx) => {
+        await seed(ctx, '/repo/.gitattributes', RULE);
+        return buildAttributeProvider(ctx);
+      },
+    },
+    {
+      source: 'a/.gitattributes',
+      path: 'a/a.txt',
+      build: async (ctx) => {
+        await seed(ctx, '/repo/a/.gitattributes', RULE);
+        return buildAttributeProvider(ctx);
+      },
+    },
+    {
+      source: 'info/attributes',
+      path: 'a.txt',
+      build: async (ctx) => {
+        await seed(ctx, '/repo/.git/info/attributes', RULE);
+        return buildAttributeProvider(ctx);
+      },
+    },
+    {
+      source: 'core.attributesFile',
+      path: 'a.txt',
+      build: async (ctx) => {
+        await seed(ctx, '/repo/global-attrs', RULE);
+        return buildAttributeProvider(ctx);
+      },
+    },
+    {
+      source: 'a tree',
+      path: 'a.txt',
+      build: async (ctx) => {
+        const blob = await putBlob(ctx, RULE);
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', blob]]);
+        return buildTreeAttributeProvider(ctx, tree);
+      },
+    },
+    {
+      source: 'the index first',
+      path: 'a.txt',
+      build: async (ctx) => {
+        const blob = await putBlob(ctx, RULE);
+        return buildAttributeProvider(ctx, {
+          kind: 'index-first',
+          index: lookupOf({ '.gitattributes': blob }),
+        });
+      },
+    },
+  ];
+
+  const configFor = (value: string, source: string): string =>
+    source === 'core.attributesFile'
+      ? `${IGNORECASE_CONFIG(value)}\tattributesFile = /repo/global-attrs\n`
+      : IGNORECASE_CONFIG(value);
+
+  describe.each(SOURCES)('Given *.TXT merge=x in $source', ({ source, path, build }) => {
+    describe('When core.ignorecase is true and merge is resolved', () => {
+      it('Then a lowercase path is { set: x }', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/config', configFor('true', source));
+        const provider = await build(ctx);
+
+        // Act
+        const result = await resolveWith(provider, path);
+
+        // Assert
+        expect(result).toEqual({ set: 'x' });
+      });
+    });
+
+    describe('When core.ignorecase is false and merge is resolved', () => {
+      it('Then a lowercase path is unspecified', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/config', configFor('false', source));
+        const provider = await build(ctx);
+
+        // Act
+        const result = await resolveWith(provider, path);
+
+        // Assert
+        expect(result).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a built provider', () => {
+    describe('When sourcesForPath loads a nested directory', () => {
+      it('Then the config is not read again', async () => {
+        // Arrange
+        const sut = buildAttributeProvider;
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/config', IGNORECASE_CONFIG('true'));
+        await seed(ctx, '/repo/a/.gitattributes', RULE);
+        const provider = await sut(ctx);
+        const readSpy = vi.spyOn(ctx.fs, 'readUtf8');
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+
+        // Act
+        await provider.sourcesForPath('a/a.txt' as FilePath);
+
+        // Assert
+        const touched = [...readSpy.mock.calls, ...statSpy.mock.calls].map(([p]) => p);
+        expect(touched.filter((p) => p.endsWith('/config'))).toEqual([]);
       });
     });
   });
