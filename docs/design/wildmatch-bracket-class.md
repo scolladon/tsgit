@@ -659,6 +659,17 @@ out of this change and recorded as a discovered impact.
 (130.78), tarball 1551 → 1553 KiB (1 589 340 B). The attribution is the comment above
 `SIZE_CAP` in `tooling/verify-tarball.sh`.
 
+**Mutation.** One narrowed bucket, 773 mutants: 424 killed, 30 timed out, 15 survived. Each
+survivor is an equivalent with its proof on the line. Triage added two things the matrix and
+the test strategy lacked:
+
+- a pinned row, git 2.56.1, both `core.ignorecase` values: in `[[a:]` the inner `[` is not
+  followed by `:`, so it is a plain member although a `:]` comes later. The set matches `a`
+  and `[`, and not `b`;
+- `compile-glob-shortcuts.test.ts`, which counts runs of the wildmatch program. The fast
+  paths, the prefix reject and the fixed-tail refusal change cost and never a verdict, so no
+  verdict row could tell them from their absence. `simpleLength` became one regex search.
+
 ## Out of scope
 
 - Cone-mode patterns: `parseCone` and the cone matcher never call `compileGlob`.
