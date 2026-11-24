@@ -5,6 +5,8 @@ import { asciiLower } from '../../../../src/domain/pretty/ascii.js';
 
 const RULE_COUNT = 40;
 const PATH_COUNT = 5000;
+/** `[ab]` this many times is one megabyte, the largest ignore file read. */
+const REPEATED_SETS = 262_144;
 const PASSES = 7;
 /**
  * A rule set owes one preparation (fold, encode) per path. The gates compare
@@ -60,9 +62,11 @@ const perRuleWorkMs = (
   });
 };
 
+// The non-ASCII letter keeps the fold on its letter-by-letter path, where
+// folding a path again for every rule costs the most.
 const MIXED_CASE_PATHS = Array.from(
   { length: PATH_COUNT },
-  (_, index) => `Dir${index}/File.Ext${index}`,
+  (_, index) => `Dir${index}/Café.Ext${index}`,
 );
 const LOWER_CASE_PATHS = MIXED_CASE_PATHS.map(asciiLower);
 
@@ -122,13 +126,13 @@ describe('compileGlob (performance)', () => {
     describe('When every rule tests every path', () => {
       it('Then matching costs under half of folding the path once per rule', () => {
         // Arrange
-        const sut = matchingMs;
+        const sut = rules;
 
         // Act
-        const result = sut(rules, MIXED_CASE_PATHS, wholePath);
+        const result = matchingMs(sut, MIXED_CASE_PATHS, wholePath);
+        const perRuleMs = perRuleWorkMs(asciiLower, MIXED_CASE_PATHS, wholePath);
 
         // Assert
-        const perRuleMs = perRuleWorkMs(asciiLower, MIXED_CASE_PATHS, wholePath);
         expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
       });
     });
@@ -136,33 +140,38 @@ describe('compileGlob (performance)', () => {
     describe('When the rules alternate between the path and its basename', () => {
       it('Then matching still costs under half of folding once per rule', () => {
         // Arrange
-        const sut = matchingMs;
+        const sut = rules;
 
         // Act
-        const result = sut(rules, MIXED_CASE_PATHS, pathOrBasename);
+        const result = matchingMs(sut, MIXED_CASE_PATHS, pathOrBasename);
+        const perRuleMs = perRuleWorkMs(asciiLower, MIXED_CASE_PATHS, pathOrBasename);
 
         // Assert
-        const perRuleMs = perRuleWorkMs(asciiLower, MIXED_CASE_PATHS, pathOrBasename);
         expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
       });
     });
   });
 
-  describe('Given 40 star-led rules ending in a set and 5000 paths', () => {
+  // Both tails are gated: one ends in plain bytes, the other in a set, so a
+  // refusal that reads only one kind of token fails one of the two families.
+  describe.each([
+    ['a fixed byte run', (rule: number): string => `*.e[xy]t${rule}`],
+    ['a set', (rule: number): string => `*.e[xy]t${rule}[a-z]`],
+  ] as const)('Given 40 star-led rules ending in %s and 5000 paths', (_tail, patternOf) => {
     const rules = Array.from({ length: RULE_COUNT }, (_, rule) =>
-      compileGlob(`*.e[xy]t${rule}`, { anchored: false }),
+      compileGlob(patternOf(rule), { anchored: false }),
     );
 
     describe('When every rule tests every path', () => {
       it('Then matching costs under half of encoding the path once per rule', () => {
         // Arrange
-        const sut = matchingMs;
+        const sut = rules;
 
         // Act
-        const result = sut(rules, LOWER_CASE_PATHS, wholePath);
+        const result = matchingMs(sut, LOWER_CASE_PATHS, wholePath);
+        const perRuleMs = perRuleWorkMs(encodeEscaped, LOWER_CASE_PATHS, wholePath);
 
         // Assert
-        const perRuleMs = perRuleWorkMs(encodeEscaped, LOWER_CASE_PATHS, wholePath);
         expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
       });
     });
@@ -170,14 +179,32 @@ describe('compileGlob (performance)', () => {
     describe('When the rules alternate between the path and its basename', () => {
       it('Then matching still costs under half of encoding once per rule', () => {
         // Arrange
-        const sut = matchingMs;
+        const sut = rules;
 
         // Act
-        const result = sut(rules, LOWER_CASE_PATHS, pathOrBasename);
+        const result = matchingMs(sut, LOWER_CASE_PATHS, pathOrBasename);
+        const perRuleMs = perRuleWorkMs(encodeEscaped, LOWER_CASE_PATHS, pathOrBasename);
 
         // Assert
-        const perRuleMs = perRuleWorkMs(encodeEscaped, LOWER_CASE_PATHS, pathOrBasename);
         expect(result).toBeLessThan(perRuleMs * MAX_SHARE_OF_PER_RULE_WORK);
+      });
+    });
+  });
+
+  describe('Given a megabyte line repeating one two-member set', () => {
+    describe('When compiled', () => {
+      it('Then it compiles within 1000 ms', () => {
+        // Arrange
+        const pattern = '[ab]'.repeat(REPEATED_SETS);
+
+        // Act
+        const start = performance.now();
+        const sut = compileGlob(pattern, { anchored: true });
+        const elapsedMs = performance.now() - start;
+
+        // Assert
+        expect(sut.test('a'.repeat(REPEATED_SETS - 1))).toBe(false);
+        expect(elapsedMs).toBeLessThan(1000);
       });
     });
   });

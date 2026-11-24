@@ -115,15 +115,15 @@ const isFixed = (token: WildmatchToken): token is FixedToken =>
   token.kind === 'byte' || token.kind === 'set';
 
 // The tokens after the last star each consume exactly one byte, and a match
-// must reach the end of the path: they name its last bytes.
+// must reach the end of the path: they name its last bytes. The tail only
+// refuses early what the table fill would refuse: a shorter or weaker tail
+// changes the cost, never a verdict, and the performance suite gates the cost.
 const fixedTailOf = (tokens: ReadonlyArray<WildmatchToken>): ReadonlyArray<FixedToken> => {
-  const reversed: FixedToken[] = [];
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const token = tokens[i] as WildmatchToken;
-    if (!isFixed(token)) break;
-    reversed.push(token);
-  }
-  return reversed.reverse();
+  let start = tokens.length;
+  while (start > 0 && isFixed(tokens[start - 1] as WildmatchToken)) start -= 1;
+  // Every token from `start` on passed `isFixed`; a rule keeps this array for
+  // as long as it lives, so it is cut at its exact size.
+  return tokens.slice(start) as ReadonlyArray<FixedToken>;
 };
 
 const admits = (token: FixedToken, byte: number): boolean =>

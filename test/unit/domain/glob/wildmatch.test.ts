@@ -443,6 +443,28 @@ describe('wildmatch', () => {
       });
     });
 
+    describe('When two sets differ by a single member', () => {
+      it.each([
+        ['[ao][ap]', 'op', 'po'],
+        ['[a0][a1]', '01', '10'],
+        ['[a~][a}]', '~}', '}~'],
+        ['[a!][a"]', '!"', '"!'],
+      ])('Then %j keeps two tokens and tells %j from %j', (pattern, admitted, refused) => {
+        // Arrange
+        const sut = tokenizeWildmatch;
+
+        // Act
+        const result = sut(encode(pattern), PATHNAME);
+
+        // Assert
+        expect(new Set(result).size).toBe(2);
+        expect([
+          wildmatch(pattern, admitted, PATHNAME),
+          wildmatch(pattern, refused, PATHNAME),
+        ]).toEqual([true, false]);
+      });
+    });
+
     describe('When two patterns are tokenized', () => {
       it('Then they share no set token', () => {
         // Arrange
@@ -461,26 +483,29 @@ describe('wildmatch', () => {
   describe('Given a set holding one byte', () => {
     describe('When tokenizing', () => {
       it.each([
-        ['[a]', PATHNAME, 0x61],
-        ['[\\]]', PATHNAME, 0x5d],
-        ['[]]', PATHNAME, 0x5d],
-        ['[A]', FOLD, 0x41],
-        ['[/]', FLAGS_0, 0x2f],
-      ] as const)('Then %j is the byte token of its member', (pattern, flags, value) => {
-        // Arrange
-        const sut = tokenizeWildmatch;
+        ['[a]', 'WM_PATHNAME', PATHNAME, 0x61],
+        ['[\\]]', 'WM_PATHNAME', PATHNAME, 0x5d],
+        ['[]]', 'WM_PATHNAME', PATHNAME, 0x5d],
+        ['[A]', 'case folding', FOLD, 0x41],
+        ['[/]', 'flags 0', FLAGS_0, 0x2f],
+      ] as const)(
+        'Then %j under %s is the byte token of its member',
+        (pattern, _dialect, flags, value) => {
+          // Arrange
+          const sut = tokenizeWildmatch;
 
-        // Act
-        const result = sut(encode(pattern), flags);
+          // Act
+          const result = sut(encode(pattern), flags);
 
-        // Assert
-        expect(result).toEqual([{ kind: 'byte', value }]);
-      });
+          // Assert
+          expect(result).toEqual([{ kind: 'byte', value }]);
+        },
+      );
     });
 
-    describe('When the set is negated, repeats its byte or names a slash under WM_PATHNAME', () => {
+    describe('When the set is negated, has several members, is a range or a class, or is a slash under WM_PATHNAME', () => {
       it.each(['[!a]', '[aa]', '[/]', '[a-a]', '[[:digit:]]'])(
-        'Then %j stays a set token',
+        'Then %j under WM_PATHNAME stays a set token',
         (pattern) => {
           // Arrange
           const sut = tokenizeWildmatch;
