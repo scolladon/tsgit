@@ -46,8 +46,12 @@ Both caches hold a pure function of the path, and the refusal is a necessary con
 match, so no verdict changes.
 
 Measured after the change, same workloads: ignore-match bench 15.1 ms without sets, 19.4 ms with
-sets, 19.5 ms for the one-byte twin (from 21.0, 60.4 and 62.8 ms); folded ignore matching 19.4 ms
-on lower-case paths and 21.1 ms on mixed-case paths against 16.9 ms case-exact.
+sets, 19.5 ms for the one-byte twin (from 21.0, 60.4 and 62.8 ms); folded ignore matching 19.9 ms
+on lower-case paths and 19.5 ms on mixed-case paths against 17.6 and 18.2 ms case-exact. On an
+attribute-shaped loop (20000 files, ten unanchored rules on the basename and ten anchored rules
+on the path) folding costs 12.9 and 13.0 ms against 8.0 ms case-exact: the remainder is the fold
+itself, paid for the path and for its basename. `asciiLower` now lowers text that is ASCII
+throughout natively, which is the same result without a callback per letter.
 
 Superseded from ADR-1259: the single entry. Carried forward: the memo lives in
 `compile-glob.ts`, caches `asciiLower`, and changes no signature.
@@ -56,8 +60,9 @@ Superseded from ADR-1259: the single entry. Carried forward: the memo lives in
 
 ### Positive
 
-- A rule set with sets costs what its one-byte twin costs, and a folded rule set stays within a
-  quarter of a case-exact one on mixed anchored and unanchored rules.
+- A rule set with sets costs what its one-byte twin costs. A folded rule set costs about an
+  eighth more than a case-exact one on ignore rules, and about 1.6 times on rules that mix the
+  path and its basename.
 
 ### Negative
 
