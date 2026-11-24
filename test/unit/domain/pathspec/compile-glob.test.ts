@@ -164,15 +164,19 @@ describe('compileGlob', () => {
     });
   });
 
-  describe('Given a `[abc]` pattern', () => {
-    describe('When compiled in v1', () => {
-      it('Then the brackets are escaped (literal match — character classes not supported)', () => {
+  describe('Given a [abc] pattern', () => {
+    describe('When compiled', () => {
+      it('Then it is a bracket set', () => {
         // Arrange
-        const result = compileGlob('[abc]', { anchored: true });
+        const sut = compileGlob('[abc]', { anchored: true });
+
+        // Act
+        const matchesMember = sut.test('a');
+        const matchesSpelling = sut.test('[abc]');
 
         // Assert
-        expect(result.test('[abc]')).toBe(true);
-        expect(result.test('a')).toBe(false);
+        expect(matchesMember).toBe(true);
+        expect(matchesSpelling).toBe(false);
       });
     });
   });
@@ -348,6 +352,37 @@ describe('compileGlob', () => {
       });
     });
 
+    describe('When escapes and sets meet a path of another case', () => {
+      it.each([
+        ['\\a', 'A', true],
+        ['[A-Z]', 'a', true],
+        ['[[:upper:]]', 'a', true],
+        ['\\A', 'A', false],
+        ['[A]', 'A', false],
+        ['[!b]', 'B', false],
+      ] as const)('Then %s against %s answers %s', (pattern, path, expected) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored: true, caseFold: true });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+
+      it('Then a plain pattern still folds both sides', () => {
+        // Arrange
+        const sut = compileGlob('Dir/f', { anchored: true, caseFold: true });
+
+        // Act
+        const result = sut.test('DIR/F');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
     describe('When the option is absent', () => {
       it('Then the comparison stays exact', () => {
         // Arrange
@@ -381,7 +416,8 @@ describe('compileGlob', () => {
       ['', true, '', true],
       ['', true, 'a', false],
       ['', false, 'a/', true],
-      ['a\\*', true, 'a\\x', true],
+      ['a\\*', true, 'a\\x', false],
+      ['a\\*', true, 'a*', true],
     ] as const)(
       'When "%s" (anchored %s) is tested against "%s"',
       (pattern, anchored, path, expected) => {
@@ -416,6 +452,242 @@ describe('compileGlob', () => {
     });
   });
 
+  describe('Given a bracket expression', () => {
+    describe('When a path is tested', () => {
+      it.each([
+        ['[ab]', false, 'a', true],
+        ['[ab]', false, 'b', true],
+        ['[ab]', false, 'd/a', true],
+        ['[ab]', false, 'c', false],
+        ['[ab]', false, '[ab]', false],
+        ['*.py[cod]', false, 'm.pyc', true],
+        ['*.py[cod]', false, 'd/m.pyc', true],
+        ['*.py[cod]', false, 'm.py[cod]', false],
+        ['[ab]c', false, 'x/ac', true],
+      ] as const)(
+        'Then %s (anchored %s) against %s answers %s',
+        (pattern, anchored, path, expected) => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored });
+
+          // Act
+          const result = sut.test(path);
+
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
+    });
+  });
+
+  describe('Given a pattern git aborts on', () => {
+    describe('When tested against the path spelled like it', () => {
+      it.each([
+        '[a',
+        '[a\\]',
+        '[[:digit:]',
+        '[[:foo:]]',
+        '[[:constructor:]]',
+        '[[:__proto__:]]',
+        'a\\',
+      ])('Then %s is refused', (pattern) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored: true });
+
+        // Act
+        const result = sut.test(pattern);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When tested against a path the pattern would otherwise match', () => {
+      it.each([
+        ['[[:constructor:]]', 'a'],
+        ['[[:__proto__:]]', 'a'],
+        ['[[:foo:]]', 'a'],
+        ['a\\', 'a'],
+      ])('Then %s does not throw and matches nothing for %s', (pattern, path) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored: false });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an escape', () => {
+    describe('When a path is tested', () => {
+      it.each([
+        ['\\[a]', true, '[a]', true],
+        ['\\[a]', true, 'a', false],
+        ['\\*', true, '*', true],
+        ['\\*', true, 'x', false],
+        ['\\\\', true, '\\', true],
+        ['\\\\', true, '\\\\', false],
+        ['a\\/b', true, 'a/b', true],
+        ['**\\/b', true, 'b', false],
+        ['**\\/b', true, 'x/b', true],
+        ['**\\/b', true, 'x/y/b', true],
+        ['a/**\\/b', true, 'a/b', false],
+        ['a/**\\/b', true, 'a/x/b', true],
+      ] as const)(
+        'Then %s (anchored %s) against %s answers %s',
+        (pattern, anchored, path, expected) => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored });
+
+          // Act
+          const result = sut.test(path);
+
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
+    });
+  });
+
+  describe('Given a multi-byte path', () => {
+    describe('When a path is tested', () => {
+      it.each([
+        ['?', 'é', false],
+        ['??', 'é', true],
+        ['[!a][!a]', 'é', true],
+        ['[!a]', '\uDC80', true],
+        ['??', '\uDC80', false],
+        ['[é]', 'é', false],
+      ] as const)('Then %s against %s answers %s', (pattern, path, expected) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored: true });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe("Given git's fast paths", () => {
+    describe('When the pattern starts with a star but its rest is not plain text', () => {
+      it.each([
+        ['*a[b]', 'xab', true],
+        ['*a[b]', 'xa[b]', false],
+        ['*a\\b', 'xab', true],
+        ['*a\\b', 'xa\\b', false],
+        ['*a?', 'yab', true],
+        ['*a?', 'ya', false],
+        ['**a', 'd/xa', true],
+        ['**a', 'xa', true],
+        ['**.log', 'x.log', true],
+      ] as const)('Then %s (unanchored) against %s answers %s', (pattern, path, expected) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored: false });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When the pattern is a star then plain text', () => {
+      it.each([
+        ['*.log', false, 'x.log', true],
+        ['*.log', false, 'd/x.log', true],
+        ['*.log', false, 'x.log/y', false],
+        ['*.log', true, 'd/x.log', false],
+        ['*.log', true, 'x.log', true],
+        ['*', false, 'a/b', true],
+        ['*', false, '', true],
+        ['*/x', false, 'a/x', true],
+      ] as const)(
+        'Then %s (anchored %s) against %s answers %s',
+        (pattern, anchored, path, expected) => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored });
+
+          // Act
+          const result = sut.test(path);
+
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
+
+      it('Then caseFold folds the text it ends with', () => {
+        // Arrange
+        const sut = compileGlob('*.LOG', { anchored: false, caseFold: true });
+
+        // Act
+        const result = sut.test('x.log');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the pattern is led by plain text and then a wildcard', () => {
+      it.each([
+        ['\\*x', true, '*x', true],
+        ['[ab]c', false, 'x/ac', true],
+        ['?x', false, 'ax', true],
+        ['d/[ab]c', true, 'x/d/ac', false],
+        ['d/[ab]c', true, 'd/ac', true],
+        ['zz/*.c', false, 'xzz/a.c', false],
+        ['zz/*.c', false, 'x/zz/a.c', true],
+        ['zz/*.c', true, 'x/zz/a.c', false],
+      ] as const)(
+        'Then %s (anchored %s) against %s answers %s',
+        (pattern, anchored, path, expected) => {
+          // Arrange
+          const sut = compileGlob(pattern, { anchored });
+
+          // Act
+          const result = sut.test(path);
+
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
+
+      it('Then caseFold folds the prefix it demands', () => {
+        // Arrange
+        const sut = compileGlob('ZZ/*.c', { anchored: false, caseFold: true });
+
+        // Act
+        const result = sut.test('x/zz/a.c');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the pattern is plain text', () => {
+      it.each([
+        ['A', true, 'a', true],
+        ['src', false, 'a/src', true],
+        ['src', false, 'a-src', false],
+      ] as const)('Then %s against %s answers %s', (pattern, _anchored, path, expected) => {
+        // Arrange
+        const sut = compileGlob(pattern, { anchored: false, caseFold: pattern === 'A' });
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('equivalence with the original regex compiler', () => {
     const arbPattern = fc.string({
       unit: fc.constantFrom('a', 'b', '/', '*', '?', '.'),
@@ -444,10 +716,10 @@ describe('compileGlob', () => {
     });
 
     describe('Given a literal-led pattern and a path over the same small alphabet', () => {
-      const arbLead = fc.string({ unit: fc.constantFrom('a', 'b', 'A', '/', '\\'), maxLength: 6 });
+      const arbLead = fc.string({ unit: fc.constantFrom('a', 'b', 'A', '/'), maxLength: 6 });
       const arbTail = fc.string({ unit: fc.constantFrom('a', '*', '?', '/', 'B'), maxLength: 6 });
       const arbText = fc.string({
-        unit: fc.constantFrom('a', 'b', 'A', 'B', '/', '\\'),
+        unit: fc.constantFrom('a', 'b', 'A', 'B', '/'),
         maxLength: 12,
       });
 

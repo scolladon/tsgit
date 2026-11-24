@@ -53,7 +53,7 @@ export type WildmatchToken =
 
 const CROSSING_STAR: WildmatchToken = { kind: 'star' };
 const SEGMENT_STAR: WildmatchToken = { kind: 'segment' };
-const DIRS: WildmatchToken = { kind: 'dirs' };
+export const LEADING_DIRECTORIES: WildmatchToken = { kind: 'dirs' };
 
 /** One `[…]` member: a single byte, an inclusive byte range, or a POSIX class. */
 type BracketAtom =
@@ -271,7 +271,7 @@ const isWholeSegmentRun = (bytes: Uint8Array, start: number, end: number): boole
  *  `**` crosses `/`, and before a `/` also matches no directory at all. */
 const pathnameStarRun = (bytes: Uint8Array, start: number, end: number): ScannedToken => {
   if (!isWholeSegmentRun(bytes, start, end)) return { token: SEGMENT_STAR, next: end };
-  if (bytes[end] === SLASH) return { token: DIRS, next: end + 1 };
+  if (bytes[end] === SLASH) return { token: LEADING_DIRECTORIES, next: end + 1 };
   return { token: CROSSING_STAR, next: end };
 };
 

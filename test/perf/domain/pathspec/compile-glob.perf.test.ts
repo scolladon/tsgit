@@ -29,4 +29,41 @@ describe('compileGlob (performance)', () => {
       });
     });
   });
+
+  describe('Given an adversarial [a-z]* run', () => {
+    describe('When matched against 10000 a', () => {
+      it('Then it returns false within 1000 ms', () => {
+        // Arrange
+        const sut = compileGlob(`${'[a-z]*'.repeat(64)}b`, { anchored: true });
+        const adversarial = 'a'.repeat(10_000);
+
+        // Act
+        const start = performance.now();
+        const result = sut.test(adversarial);
+        const elapsedMs = performance.now() - start;
+
+        // Assert
+        expect(result).toBe(false);
+        expect(elapsedMs).toBeLessThan(1000);
+      });
+    });
+  });
+
+  describe('Given a bracket set holding 100000 class openers', () => {
+    describe('When compiled', () => {
+      it('Then it compiles within 1000 ms', () => {
+        // Arrange
+        const pattern = `[${'[:'.repeat(100_000)}x]`;
+
+        // Act
+        const start = performance.now();
+        const sut = compileGlob(pattern, { anchored: true });
+        const elapsedMs = performance.now() - start;
+
+        // Assert
+        expect(sut.test('x')).toBe(true);
+        expect(elapsedMs).toBeLessThan(1000);
+      });
+    });
+  });
 });
