@@ -3,9 +3,9 @@ import {
   buildMacroRegistry,
   type MacroRegistry,
   type ParsedAttributes,
+  type ParseGitattributesOptions,
   parseGitattributes,
 } from '../../../domain/attributes/index.js';
-import type { ParseGitattributesOptions } from '../../../domain/attributes/parse-gitattributes.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';

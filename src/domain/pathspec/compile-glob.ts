@@ -28,7 +28,7 @@ import { asciiLower } from '../pretty/ascii.js';
 export interface CompileGlobOptions {
   /** When true, the match is anchored at the start of the path. */
   readonly anchored: boolean;
-  /** Fold ASCII case as git's core.ignorecase does: plain pattern bytes and the path compare case-insensitively; escaped bytes and set members stay exact, as in git. */
+  /** Fold ASCII case as git's core.ignorecase does: plain pattern bytes and the path compare case-insensitively; an escaped byte and a single set member compare as written, while a range and `[:upper:]` also admit the other ASCII case. */
   readonly caseFold?: boolean;
 }
 

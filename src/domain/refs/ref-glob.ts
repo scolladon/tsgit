@@ -6,11 +6,14 @@
  * `**` cross it. The matcher itself lives in `../glob/wildmatch.ts`.
  */
 
-import { matchWildmatch, tokenizeWildmatch, type WildmatchFlags } from '../glob/wildmatch.js';
+import {
+  matchWildmatch,
+  PATHNAME_FLAGS,
+  REF_FLAGS,
+  tokenizeWildmatch,
+  type WildmatchFlags,
+} from '../glob/wildmatch.js';
 import { encode } from '../objects/encoding.js';
-
-const REF_FLAGS: WildmatchFlags = { pathname: false, caseFold: false };
-const PATHNAME_FLAGS: WildmatchFlags = { pathname: true, caseFold: false };
 
 const compileBytesWith = (
   pattern: string,

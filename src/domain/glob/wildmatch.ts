@@ -32,6 +32,19 @@ const CARET = 0x5e; // ^
 const COLON = 0x3a; // :
 const DASH = 0x2d; // -
 const SLASH = 0x2f; // /
+const TAB = 0x09;
+const LINE_FEED = 0x0a;
+const CARRIAGE_RETURN = 0x0d;
+const SPACE = 0x20;
+const DIGIT_ZERO = 0x30;
+const DIGIT_NINE = 0x39;
+const UPPER_A = 0x41;
+const UPPER_F = 0x46;
+const UPPER_Z = 0x5a;
+const LOWER_A = 0x61;
+const LOWER_F = 0x66;
+const LOWER_Z = 0x7a;
+const DELETE = 0x7f;
 
 const BYTE_VALUES = 256;
 
@@ -61,15 +74,20 @@ type BracketAtom =
   | { readonly kind: 'range'; readonly lo: number; readonly hi: number }
   | { readonly kind: 'class'; readonly test: ByteTest; readonly upper: boolean };
 
-const isUpper = (b: number): boolean => b >= 0x41 && b <= 0x5a;
-const isLower = (b: number): boolean => b >= 0x61 && b <= 0x7a;
+const inRange = (lo: number, hi: number, byte: number): boolean => byte >= lo && byte <= hi;
+
+const isUpper = (b: number): boolean => inRange(UPPER_A, UPPER_Z, b);
+const isLower = (b: number): boolean => inRange(LOWER_A, LOWER_Z, b);
 const isAlpha = (b: number): boolean => isUpper(b) || isLower(b);
-const isDigit = (b: number): boolean => b >= 0x30 && b <= 0x39;
+const isDigit = (b: number): boolean => inRange(DIGIT_ZERO, DIGIT_NINE, b);
+const isBlank = (b: number): boolean => b === SPACE || b === TAB;
 // git's own `isspace` (`sane_ctype`), not the C library's: vertical tab and form
 // feed are not spaces.
-const isSpace = (b: number): boolean => b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d;
-const isPrint = (b: number): boolean => b >= 0x20 && b < 0x7f;
-const isGraph = (b: number): boolean => isPrint(b) && b !== 0x20;
+const isSpace = (b: number): boolean => isBlank(b) || b === LINE_FEED || b === CARRIAGE_RETURN;
+const isPrint = (b: number): boolean => b >= SPACE && b < DELETE;
+const isGraph = (b: number): boolean => isPrint(b) && b !== SPACE;
+const isHexLetter = (b: number): boolean =>
+  inRange(UPPER_A, UPPER_F, b) || inRange(LOWER_A, LOWER_F, b);
 
 /** git's `ISALNUM`/`ISALPHA`/… — the twelve `[:class:]` names `dowild`
  *  recognises, restricted to the C-locale ASCII range (bytes ≥ 0x80 never
@@ -79,8 +97,8 @@ const isGraph = (b: number): boolean => isPrint(b) && b !== 0x20;
 const CLASS_TESTS: ReadonlyMap<string, ByteTest> = new Map([
   ['alnum', (b) => isAlpha(b) || isDigit(b)],
   ['alpha', isAlpha],
-  ['blank', (b) => b === 0x20 || b === 0x09],
-  ['cntrl', (b) => b < 0x20 || b === 0x7f],
+  ['blank', isBlank],
+  ['cntrl', (b) => b < SPACE || b === DELETE],
   ['digit', isDigit],
   ['graph', isGraph],
   ['lower', isLower],
@@ -88,12 +106,10 @@ const CLASS_TESTS: ReadonlyMap<string, ByteTest> = new Map([
   ['punct', (b) => isGraph(b) && !isAlpha(b) && !isDigit(b)],
   ['space', isSpace],
   ['upper', isUpper],
-  ['xdigit', (b) => isDigit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)],
+  ['xdigit', (b) => isDigit(b) || isHexLetter(b)],
 ]);
 
-const CASE_OFFSET = 0x20; // 'a' - 'A'
-
-const inRange = (lo: number, hi: number, byte: number): boolean => byte >= lo && byte <= hi;
+const CASE_OFFSET = LOWER_A - UPPER_A;
 
 const markClass = (table: Uint8Array, test: ByteTest): void => {
   for (let x = 0; x < BYTE_VALUES; x++) if (test(x)) table[x] = 1;
@@ -177,97 +193,89 @@ interface MemberResult {
   readonly rangeSeed: number | undefined;
 }
 
+/** A member that is one byte: it may seed a range on a later `-`. */
+const byteMember = (value: number, next: number): MemberResult => ({
+  atom: { kind: 'byte', value },
+  next,
+  rangeSeed: value,
+});
+
 // `closeAfter[i + 2]` is the first `]` the name could end at; `n` (no `]`) falls
 // into the branches below: a name ending in `:` still aborts or resolves, any
 // other tail makes the `[` a plain member and the set aborts unterminated.
-const parseClassAttempt = (
-  bytes: Uint8Array,
-  i: number,
-  closeAfter: Int32Array,
-): MemberResult | undefined => {
+const parseClassAttempt = ({ bytes, closeAfter }: Compile, i: number): MemberResult | undefined => {
   const j = closeAfter[i + 2] as number;
   const nameLength = j - i - 3;
-  if (nameLength < 0 || bytes[j - 1] !== COLON) {
-    // No real "name:]" found — the leading '[' is an ordinary member; resume
-    // scanning right after it (git's `p = s - 2` rewind then `next:`).
-    return { atom: { kind: 'byte', value: LBRACKET }, next: i + 1, rangeSeed: LBRACKET };
-  }
+  // No real "name:]" found — the leading '[' is an ordinary member; resume
+  // scanning right after it (git's `p = s - 2` rewind then `next:`).
+  if (nameLength < 0 || bytes[j - 1] !== COLON) return byteMember(LBRACKET, i + 1);
   const name = decode(bytes.subarray(i + 2, j - 1));
   const test = CLASS_TESTS.get(name);
   if (test === undefined) return undefined; // unknown class name — abort
-  return {
-    atom: { kind: 'class', test, upper: name === 'upper' },
-    next: j + 1,
-    rangeSeed: undefined,
-  };
+  const atom: BracketAtom = { kind: 'class', test, upper: name === 'upper' };
+  return { atom, next: j + 1, rangeSeed: undefined };
+};
+
+const parseEscapedMember = (bytes: Uint8Array, i: number): MemberResult | undefined => {
+  const escaped = bytes[i + 1];
+  if (escaped === undefined) return undefined; // trailing '\' in a set — abort
+  return byteMember(escaped, i + 2);
+};
+
+/** A `-` opens a range when a byte follows it that does not close the set. */
+const opensRange = (bytes: Uint8Array, i: number): boolean =>
+  bytes[i] === DASH &&
+  // Stryker disable next-line ArithmeticOperator,ConditionalExpression: equivalent — `i` always sits past the opening `[`, so `bytes[i - 1]` is defined and both mutants hold this conjunct constantly true; it only ever differs when `-` is the pattern's last byte, and that set is unterminated, so the caller aborts either way.
+  bytes[i + 1] !== undefined &&
+  bytes[i + 1] !== RBRACKET;
+
+/** `lo-hi` from the `-` at `bytes[i]`; the high bound may be escaped. */
+const parseRangeMember = (bytes: Uint8Array, i: number, lo: number): MemberResult | undefined => {
+  const escaped = bytes[i + 1] === BACKSLASH;
+  const at = escaped ? i + 2 : i + 1;
+  const hi = bytes[at];
+  if (hi === undefined) return undefined; // trailing '\' as a range bound — abort
+  return { atom: { kind: 'range', lo, hi }, next: at + 1, rangeSeed: undefined };
 };
 
 const parseMember = (
-  bytes: Uint8Array,
+  compile: Compile,
   i: number,
   prevSeed: number | undefined,
-  closeAfter: Int32Array,
 ): MemberResult | undefined => {
+  const { bytes } = compile;
   const byte = bytes[i] as number;
-  if (byte === BACKSLASH) {
-    const escaped = bytes[i + 1];
-    if (escaped === undefined) return undefined; // trailing '\' in a set — abort
-    return { atom: { kind: 'byte', value: escaped }, next: i + 2, rangeSeed: escaped };
-  }
-  if (
-    byte === DASH &&
-    prevSeed !== undefined &&
-    // Stryker disable next-line ArithmeticOperator,ConditionalExpression: equivalent — `i` always sits past the opening `[`, so `bytes[i - 1]` is defined and both mutants hold this conjunct constantly true; it only ever differs when `-` is the pattern's last byte, and that set is unterminated, so the caller aborts either way.
-    bytes[i + 1] !== undefined &&
-    bytes[i + 1] !== RBRACKET
-  ) {
-    let hi = bytes[i + 1] as number;
-    let next = i + 2;
-    if (hi === BACKSLASH) {
-      const escaped = bytes[i + 2];
-      if (escaped === undefined) return undefined; // trailing '\' as a range bound — abort
-      hi = escaped;
-      next = i + 3;
-    }
-    return { atom: { kind: 'range', lo: prevSeed, hi }, next, rangeSeed: undefined };
-  }
-  if (byte === LBRACKET && bytes[i + 1] === COLON) return parseClassAttempt(bytes, i, closeAfter);
-  return { atom: { kind: 'byte', value: byte }, next: i + 1, rangeSeed: byte };
+  if (byte === BACKSLASH) return parseEscapedMember(bytes, i);
+  if (prevSeed !== undefined && opensRange(bytes, i)) return parseRangeMember(bytes, i, prevSeed);
+  if (byte === LBRACKET && bytes[i + 1] === COLON) return parseClassAttempt(compile, i);
+  return byteMember(byte, i + 1);
 };
+
+// `!` or `^` right after the `[` negates; anywhere else they are plain members.
+const isNegation = (byte: number | undefined): boolean => byte === BANG || byte === CARET;
 
 /** Parse a `[…]` bracket expression starting at the `[` (`bytes[open]`).
  *  Returns the compiled token and the index past the closing `]`, or
  *  `undefined` when the set is unterminated or names an unknown class —
  *  both of which make the WHOLE pattern match nothing (see module docs). */
-const parseBracket = (
-  compile: Compile,
-  open: number,
-): { readonly token: WildmatchToken; readonly next: number } | undefined => {
-  const { bytes, closeAfter } = compile;
-  let i = open + 1;
-  let negated = false;
-  if (bytes[i] === BANG || bytes[i] === CARET) {
-    negated = true;
-    i += 1;
-  }
+const parseBracket = (compile: Compile, open: number): ScannedToken | undefined => {
+  const { bytes } = compile;
+  const negated = isNegation(bytes[open + 1]);
   const atoms: BracketAtom[] = [];
   let rangeSeed: number | undefined;
-  let first = true;
-  for (;;) {
+  let i = open + (negated ? 2 : 1);
+  // The first member is parsed before any `]` is looked for (git's do/while),
+  // so it may be `]` itself.
+  for (let first = true; first || bytes[i] !== RBRACKET; first = false) {
     // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. a member's `next` overshoots `bytes.length` by one at most, so at `i === bytes.length` the mutant parses one plain member off the end, lands on `bytes.length + 1` and refuses on the following turn; the caller still sees `undefined`.
     if (i >= bytes.length) return undefined; // ran off the end — unterminated
-    if (!first && bytes[i] === RBRACKET) {
-      i += 1;
-      break;
-    }
-    first = false;
-    const member = parseMember(bytes, i, rangeSeed, closeAfter);
+    const member = parseMember(compile, i, rangeSeed);
     if (member === undefined) return undefined;
     atoms.push(member.atom);
     rangeSeed = member.rangeSeed;
     i = member.next;
   }
-  return { token: setToken(atoms, negated, compile), next: i };
+  return { token: setToken(atoms, negated, compile), next: i + 1 };
 };
 
 interface ScannedToken {
@@ -291,8 +299,10 @@ interface Compile {
   readonly sets: SetPool;
 }
 
-const REF_FLAGS: WildmatchFlags = { pathname: false, caseFold: false };
-const PATHNAME_FLAGS: WildmatchFlags = { pathname: true, caseFold: false };
+/** `wildmatch(pattern, text, 0)`: the ref-glob dialect. */
+export const REF_FLAGS: WildmatchFlags = { pathname: false, caseFold: false };
+/** `wildmatch(pattern, text, WM_PATHNAME)`, case-exact. */
+export const PATHNAME_FLAGS: WildmatchFlags = { pathname: true, caseFold: false };
 
 /** flags 0: every `*` run is one `star`, and a one-byte matcher admits `/`. */
 const REF_DIALECT: Dialect = {
@@ -369,21 +379,10 @@ const indexClosers = (bytes: Uint8Array): Int32Array => {
 /** Tokenise a pattern's UTF-8 bytes, or `undefined` when the pattern can
  *  never match anything (an unterminated `[`, an unknown `[:class:]` name,
  *  or a trailing unescaped `\`). */
-const tokenize = (
-  bytes: Uint8Array,
-  dialect: Dialect,
-  flags: WildmatchFlags,
-): ReadonlyArray<WildmatchToken> | undefined => {
+const tokenize = (compile: Compile): ReadonlyArray<WildmatchToken> | undefined => {
   const tokens: WildmatchToken[] = [];
-  const compile: Compile = {
-    bytes,
-    closeAfter: indexClosers(bytes),
-    dialect,
-    flags,
-    sets: new Map(),
-  };
   let i = 0;
-  while (i < bytes.length) {
+  while (i < compile.bytes.length) {
     const scanned = scanToken(compile, i);
     if (scanned === undefined) return undefined;
     tokens.push(scanned.token);
@@ -405,7 +404,13 @@ export const tokenizeWildmatch = (
   pattern: Uint8Array,
   flags: WildmatchFlags,
 ): ReadonlyArray<WildmatchToken> | undefined =>
-  tokenize(pattern, flags.pathname ? PATHNAME_DIALECT : REF_DIALECT, flags);
+  tokenize({
+    bytes: pattern,
+    closeAfter: indexClosers(pattern),
+    dialect: flags.pathname ? PATHNAME_DIALECT : REF_DIALECT,
+    flags,
+    sets: new Map(),
+  });
 
 // Each step derives `cur` — the row for the tokens from this one on — from
 // `next`, the row for the tokens after it. The caller hands in a zeroed `cur`.
@@ -431,8 +436,9 @@ const stepSegment = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8
   return cur;
 };
 
-// `dirs` — nothing at all, or any run ending in a `/`. Rare (the WM_PATHNAME
-// dialect only), so it keeps its own two rows.
+// `dirs` — nothing at all, or any run ending in a `/`: a WM_PATHNAME `**/`, and
+// the leading token of every unanchored ignore-family rule. It fills two rows
+// of its own on each call.
 const stepDirs = (text: Uint8Array, next: Uint8Array, cur: Uint8Array): Uint8Array => {
   const size = text.length + 1;
   const throughSlash = stepStar(
