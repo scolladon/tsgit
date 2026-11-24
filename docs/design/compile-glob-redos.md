@@ -25,7 +25,8 @@ their full unit, integration and mutation suites.
 ### Out of scope
 
 - Character classes (`[abc]`), `{a,b}` alternation, git magic pathspec
-  prefixes — unsupported in v1, unchanged.
+  prefixes — unsupported in v1, unchanged. *Superseded: character classes are
+  now supported; see [wildmatch-bracket-class.md](wildmatch-bracket-class.md).*
 - `containsGlob` — a pure string scan, untouched.
 
 ## 2. Why a linear matcher (not a "safe regex")
@@ -93,7 +94,8 @@ type GlobToken =
 - Any other char → `literal` — including regex metacharacters (`.`, `+`, `(`,
   `[`, …): with no regex involved there is nothing to escape, every non-glob
   char is matched verbatim. (Confirms the existing "character classes are
-  literal in v1" behaviour.)
+  literal in v1" behaviour.) *Superseded: bracket sets are now parsed; see
+  [wildmatch-bracket-class.md](wildmatch-bracket-class.md).*
 
 ## 5. The matcher — a linear dynamic program
 
