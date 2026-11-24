@@ -59,9 +59,11 @@ const DIRS: WildmatchToken = { kind: 'dirs' };
 type BracketAtom =
   | { readonly kind: 'byte'; readonly value: number }
   | { readonly kind: 'range'; readonly lo: number; readonly hi: number }
-  | { readonly kind: 'class'; readonly test: ByteTest };
+  | { readonly kind: 'class'; readonly test: ByteTest; readonly upper: boolean };
 
-const isAlpha = (b: number): boolean => (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a);
+const isUpper = (b: number): boolean => b >= 0x41 && b <= 0x5a;
+const isLower = (b: number): boolean => b >= 0x61 && b <= 0x7a;
+const isAlpha = (b: number): boolean => isUpper(b) || isLower(b);
 const isDigit = (b: number): boolean => b >= 0x30 && b <= 0x39;
 // git's own `isspace` (`sane_ctype`), not the C library's: vertical tab and form
 // feed are not spaces.
@@ -81,22 +83,35 @@ const CLASS_TESTS: ReadonlyMap<string, ByteTest> = new Map([
   ['cntrl', (b) => b < 0x20 || b === 0x7f],
   ['digit', isDigit],
   ['graph', isGraph],
-  ['lower', (b) => b >= 0x61 && b <= 0x7a],
+  ['lower', isLower],
   ['print', isPrint],
   ['punct', (b) => isGraph(b) && !isAlpha(b) && !isDigit(b)],
   ['space', isSpace],
-  ['upper', (b) => b >= 0x41 && b <= 0x5a],
+  ['upper', isUpper],
   ['xdigit', (b) => isDigit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)],
 ]);
+
+const CASE_OFFSET = 0x20; // 'a' - 'A'
+
+const inRange = (lo: number, hi: number, byte: number): boolean => byte >= lo && byte <= hi;
 
 const markClass = (table: Uint8Array, test: ByteTest): void => {
   for (let x = 0; x < BYTE_VALUES; x++) if (test(x)) table[x] = 1;
 };
 
-const markAtom = (table: Uint8Array, atom: BracketAtom): void => {
+// Under case folding the text arrives lowered, so a lower-case byte is admitted
+// when its upper-case form lies in the range; the members themselves stay as written.
+const markRange = (table: Uint8Array, lo: number, hi: number, caseFold: boolean): void => {
+  for (let x = 0; x < BYTE_VALUES; x++) {
+    const folded = caseFold && isLower(x) && inRange(lo, hi, x - CASE_OFFSET);
+    if (inRange(lo, hi, x) || folded) table[x] = 1;
+  }
+};
+
+const markAtom = (table: Uint8Array, atom: BracketAtom, caseFold: boolean): void => {
   if (atom.kind === 'byte') table[atom.value] = 1;
-  else if (atom.kind === 'range') table.fill(1, atom.lo, atom.hi + 1);
-  else markClass(table, atom.test);
+  else if (atom.kind === 'range') markRange(table, atom.lo, atom.hi, caseFold);
+  else markClass(table, caseFold && atom.upper ? isAlpha : atom.test);
 };
 
 /** The 256-slot admit table of a bracket expression: every byte a member
@@ -108,7 +123,7 @@ const buildSetTable = (
   flags: WildmatchFlags,
 ): Uint8Array => {
   const table = new Uint8Array(BYTE_VALUES);
-  for (const atom of atoms) markAtom(table, atom);
+  for (const atom of atoms) markAtom(table, atom, flags.caseFold);
   for (let x = 0; x < BYTE_VALUES; x++) {
     const admitted = (table[x] === 1) !== negated;
     table[x] = admitted && !(flags.pathname && x === SLASH) ? 1 : 0;
@@ -144,7 +159,11 @@ const parseClassAttempt = (
   const name = decode(bytes.subarray(i + 2, j - 1));
   const test = CLASS_TESTS.get(name);
   if (test === undefined) return undefined; // unknown class name — abort
-  return { atom: { kind: 'class', test }, next: j + 1, rangeSeed: undefined };
+  return {
+    atom: { kind: 'class', test, upper: name === 'upper' },
+    next: j + 1,
+    rangeSeed: undefined,
+  };
 };
 
 const parseMember = (
@@ -224,17 +243,15 @@ interface ScannedToken {
 /** What the `wildmatch` flags change: how a `*` run tokenises, and whether a
  *  one-byte matcher (`?`, `[…]`) may match `/`. */
 interface Dialect {
-  readonly flags: WildmatchFlags;
   readonly starRun: (bytes: Uint8Array, start: number, end: number) => ScannedToken;
   readonly anyByte: WildmatchToken;
 }
 
-const REF_FLAGS: WildmatchFlags = { pathname: false };
-const PATHNAME_FLAGS: WildmatchFlags = { pathname: true };
+const REF_FLAGS: WildmatchFlags = { pathname: false, caseFold: false };
+const PATHNAME_FLAGS: WildmatchFlags = { pathname: true, caseFold: false };
 
 /** flags 0: every `*` run is one `star`, and a one-byte matcher admits `/`. */
 const REF_DIALECT: Dialect = {
-  flags: REF_FLAGS,
   starRun: (_bytes, _start, end) => ({ token: CROSSING_STAR, next: end }),
   anyByte: { kind: 'set', table: buildSetTable([], true, REF_FLAGS) },
 };
@@ -259,7 +276,6 @@ const pathnameStarRun = (bytes: Uint8Array, start: number, end: number): Scanned
 };
 
 const PATHNAME_DIALECT: Dialect = {
-  flags: PATHNAME_FLAGS,
   starRun: pathnameStarRun,
   anyByte: { kind: 'set', table: buildSetTable([], true, PATHNAME_FLAGS) },
 };
@@ -282,18 +298,23 @@ const scanEscape = (bytes: Uint8Array, i: number): ScannedToken | undefined => {
   return { token: { kind: 'byte', value: escaped }, next: i + 2 };
 };
 
+// Only the plain byte is lowered: `\x` and set members compare as written.
+const foldPlain = (byte: number, flags: WildmatchFlags): number =>
+  flags.caseFold && isUpper(byte) ? byte + CASE_OFFSET : byte;
+
 const scanToken = (
   bytes: Uint8Array,
   i: number,
   closeAfter: Int32Array,
   dialect: Dialect,
+  flags: WildmatchFlags,
 ): ScannedToken | undefined => {
   const byte = bytes[i] as number;
   if (byte === STAR) return scanStarRun(bytes, i, dialect);
   if (byte === QUESTION) return { token: dialect.anyByte, next: i + 1 };
   if (byte === BACKSLASH) return scanEscape(bytes, i);
-  if (byte === LBRACKET) return parseBracket(bytes, i, closeAfter, dialect.flags);
-  return { token: { kind: 'byte', value: byte }, next: i + 1 };
+  if (byte === LBRACKET) return parseBracket(bytes, i, closeAfter, flags);
+  return { token: { kind: 'byte', value: foldPlain(byte, flags) }, next: i + 1 };
 };
 
 /** `closeAfter[i]` — the index of the first `]` at or after `i`, `bytes.length`
@@ -312,12 +333,13 @@ const indexClosers = (bytes: Uint8Array): Int32Array => {
 const tokenize = (
   bytes: Uint8Array,
   dialect: Dialect,
+  flags: WildmatchFlags,
 ): ReadonlyArray<WildmatchToken> | undefined => {
   const tokens: WildmatchToken[] = [];
   const closeAfter = indexClosers(bytes);
   let i = 0;
   while (i < bytes.length) {
-    const scanned = scanToken(bytes, i, closeAfter, dialect);
+    const scanned = scanToken(bytes, i, closeAfter, dialect, flags);
     if (scanned === undefined) return undefined;
     tokens.push(scanned.token);
     i = scanned.next;
@@ -325,9 +347,11 @@ const tokenize = (
   return tokens;
 };
 
-/** The `wildmatch` flags that change tokenisation. */
+/** The `wildmatch` flags that change tokenisation: `pathname` is WM_PATHNAME,
+ *  `caseFold` is git's case folding. */
 export interface WildmatchFlags {
   readonly pathname: boolean;
+  readonly caseFold: boolean;
 }
 
 /** Tokenise a pattern's bytes under `flags`, or `undefined` when git would
@@ -336,7 +360,7 @@ export const tokenizeWildmatch = (
   pattern: Uint8Array,
   flags: WildmatchFlags,
 ): ReadonlyArray<WildmatchToken> | undefined =>
-  tokenize(pattern, flags.pathname ? PATHNAME_DIALECT : REF_DIALECT);
+  tokenize(pattern, flags.pathname ? PATHNAME_DIALECT : REF_DIALECT, flags);
 
 // Each step derives `cur` — the row for the tokens from this one on — from
 // `next`, the row for the tokens after it. The caller hands in a zeroed `cur`.
@@ -416,6 +440,8 @@ const stepSet = (
 
 // Two rows swap roles per token instead of one allocation each; a row with no
 // reachable cell ends the match, since every step only reads reachable cells.
+// Under `caseFold` the caller hands in text already ASCII-lowered: the core
+// lowers nothing at match time.
 export const matchWildmatch = (
   tokens: ReadonlyArray<WildmatchToken>,
   text: Uint8Array,

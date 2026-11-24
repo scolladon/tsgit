@@ -5,15 +5,17 @@ import {
   type WildmatchFlags,
 } from '../../../../src/domain/glob/wildmatch.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
+import { asciiLower } from '../../../../src/domain/pretty/ascii.js';
 
 const wildmatch = (pattern: string, text: string, flags: WildmatchFlags): boolean => {
   const tokens = tokenizeWildmatch(encode(pattern), flags);
   if (tokens === undefined) return false;
-  return matchWildmatch(tokens, encode(text));
+  return matchWildmatch(tokens, encode(flags.caseFold ? asciiLower(text) : text));
 };
 
-const FLAGS_0: WildmatchFlags = { pathname: false };
-const PATHNAME: WildmatchFlags = { pathname: true };
+const FLAGS_0: WildmatchFlags = { pathname: false, caseFold: false };
+const PATHNAME: WildmatchFlags = { pathname: true, caseFold: false };
+const FOLD: WildmatchFlags = { pathname: false, caseFold: true };
 
 describe('wildmatch', () => {
   describe('Given the flags-0 dialect', () => {
@@ -232,6 +234,87 @@ describe('wildmatch', () => {
 
         // Act
         const result = sut(pattern, text, PATHNAME);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given caseFold', () => {
+    describe('When a plain pattern letter differs in case', () => {
+      it.each([
+        ['A', 'a', true],
+        ['a*B', 'axb', true],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, FOLD);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When a range or a class meets a lowered letter', () => {
+      it.each([
+        ['[A-Z]', 'a', true],
+        ['[X-c]', 'Y', true],
+        ['[X-c]', 'y', true],
+        ['[X-c]', 'd', false],
+        ['[A-A]', 'a', true],
+        ['[[:upper:]]', 'a', true],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, FOLD);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When the pattern holds an escape or a set member', () => {
+      it.each([
+        ['\\a', 'A', true],
+        ['\\A', 'A', false],
+        ['\\A', 'a', false],
+        ['[A]', 'a', false],
+        ['[A]', 'A', false],
+        ['[a]', 'A', true],
+        ['[a-z]', 'A', true],
+        ['[!A]', 'A', true],
+        ['[!b]', 'B', false],
+        ['[[:lower:]]', 'A', true],
+        ['x[A]', 'xA', false],
+        ['*.PY[CO]', 'm.PYC', false],
+        ['*.PY[CO]', 'm.pyc', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, FOLD);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When the fold is off', () => {
+      it.each([
+        ['[A]', 'A', true],
+        ['[A-Z]', 'a', false],
+      ])('Then %j against %j gives %s', (pattern, text, expected) => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = sut(pattern, text, FLAGS_0);
 
         // Assert
         expect(result).toBe(expected);
