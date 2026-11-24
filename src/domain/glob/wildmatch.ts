@@ -131,6 +131,42 @@ const buildSetTable = (
   return table;
 };
 
+/** The set tokens of one compile, keyed by table content. A pattern may repeat a
+ *  set as often as its length allows: it then holds one table, not one per use. */
+type SetPool = Map<string, WildmatchToken>;
+
+const pooledSet = (table: Uint8Array, pool: SetPool): WildmatchToken => {
+  const key = String.fromCharCode(...table);
+  const known = pool.get(key);
+  if (known !== undefined) return known;
+  const token: WildmatchToken = { kind: 'set', table };
+  pool.set(key, token);
+  return token;
+};
+
+// A set of one plain byte is that byte, with no table to hold. `/` under
+// WM_PATHNAME stays a set: its table refuses the slash, a byte token would not.
+const soleByteOf = (
+  atoms: ReadonlyArray<BracketAtom>,
+  negated: boolean,
+  flags: WildmatchFlags,
+): number | undefined => {
+  if (negated || atoms.length !== 1) return undefined;
+  const only = atoms[0] as BracketAtom;
+  if (only.kind !== 'byte') return undefined;
+  return flags.pathname && only.value === SLASH ? undefined : only.value;
+};
+
+const setToken = (
+  atoms: ReadonlyArray<BracketAtom>,
+  negated: boolean,
+  compile: Compile,
+): WildmatchToken => {
+  const sole = soleByteOf(atoms, negated, compile.flags);
+  if (sole !== undefined) return { kind: 'byte', value: sole };
+  return pooledSet(buildSetTable(atoms, negated, compile.flags), compile.sets);
+};
+
 /** Parse one `[…]` member starting at `bytes[i]`, `i` past any negation
  *  marker. Returns the atom, the next index, and whether this member's
  *  value can seed a `lo-hi` range on a later `-` (git's `prev_ch`) — a range
@@ -204,11 +240,10 @@ const parseMember = (
  *  `undefined` when the set is unterminated or names an unknown class —
  *  both of which make the WHOLE pattern match nothing (see module docs). */
 const parseBracket = (
-  bytes: Uint8Array,
+  compile: Compile,
   open: number,
-  closeAfter: Int32Array,
-  flags: WildmatchFlags,
 ): { readonly token: WildmatchToken; readonly next: number } | undefined => {
+  const { bytes, closeAfter } = compile;
   let i = open + 1;
   let negated = false;
   if (bytes[i] === BANG || bytes[i] === CARET) {
@@ -232,7 +267,7 @@ const parseBracket = (
     rangeSeed = member.rangeSeed;
     i = member.next;
   }
-  return { token: { kind: 'set', table: buildSetTable(atoms, negated, flags) }, next: i };
+  return { token: setToken(atoms, negated, compile), next: i };
 };
 
 interface ScannedToken {
@@ -245,6 +280,15 @@ interface ScannedToken {
 interface Dialect {
   readonly starRun: (bytes: Uint8Array, start: number, end: number) => ScannedToken;
   readonly anyByte: WildmatchToken;
+}
+
+/** What one compile shares across its scans. */
+interface Compile {
+  readonly bytes: Uint8Array;
+  readonly closeAfter: Int32Array;
+  readonly dialect: Dialect;
+  readonly flags: WildmatchFlags;
+  readonly sets: SetPool;
 }
 
 const REF_FLAGS: WildmatchFlags = { pathname: false, caseFold: false };
@@ -302,19 +346,14 @@ const scanEscape = (bytes: Uint8Array, i: number): ScannedToken | undefined => {
 const foldPlain = (byte: number, flags: WildmatchFlags): number =>
   flags.caseFold && isUpper(byte) ? byte + CASE_OFFSET : byte;
 
-const scanToken = (
-  bytes: Uint8Array,
-  i: number,
-  closeAfter: Int32Array,
-  dialect: Dialect,
-  flags: WildmatchFlags,
-): ScannedToken | undefined => {
+const scanToken = (compile: Compile, i: number): ScannedToken | undefined => {
+  const { bytes, dialect } = compile;
   const byte = bytes[i] as number;
   if (byte === STAR) return scanStarRun(bytes, i, dialect);
   if (byte === QUESTION) return { token: dialect.anyByte, next: i + 1 };
   if (byte === BACKSLASH) return scanEscape(bytes, i);
-  if (byte === LBRACKET) return parseBracket(bytes, i, closeAfter, flags);
-  return { token: { kind: 'byte', value: foldPlain(byte, flags) }, next: i + 1 };
+  if (byte === LBRACKET) return parseBracket(compile, i);
+  return { token: { kind: 'byte', value: foldPlain(byte, compile.flags) }, next: i + 1 };
 };
 
 /** `closeAfter[i]` — the index of the first `]` at or after `i`, `bytes.length`
@@ -336,10 +375,16 @@ const tokenize = (
   flags: WildmatchFlags,
 ): ReadonlyArray<WildmatchToken> | undefined => {
   const tokens: WildmatchToken[] = [];
-  const closeAfter = indexClosers(bytes);
+  const compile: Compile = {
+    bytes,
+    closeAfter: indexClosers(bytes),
+    dialect,
+    flags,
+    sets: new Map(),
+  };
   let i = 0;
   while (i < bytes.length) {
-    const scanned = scanToken(bytes, i, closeAfter, dialect, flags);
+    const scanned = scanToken(compile, i);
     if (scanned === undefined) return undefined;
     tokens.push(scanned.token);
     i = scanned.next;

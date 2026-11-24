@@ -402,4 +402,87 @@ describe('wildmatch', () => {
       });
     });
   });
+
+  describe('Given a pattern repeating bracket sets', () => {
+    describe('When tokenizing sets with the same members', () => {
+      it.each(['[ab]'.repeat(50), '[ab][ba]', '[a-c][abc]'])(
+        'Then %j holds one shared set token',
+        (pattern) => {
+          // Arrange
+          const sut = tokenizeWildmatch;
+
+          // Act
+          const result = sut(encode(pattern), PATHNAME);
+
+          // Assert
+          expect(new Set(result).size).toBe(1);
+          expect(result?.[0]?.kind).toBe('set');
+        },
+      );
+    });
+
+    describe('When tokenizing sets with different members', () => {
+      it('Then each keeps its own verdict', () => {
+        // Arrange
+        const sut = wildmatch;
+
+        // Act
+        const result = [sut('[ab][ac]', 'bc', PATHNAME), sut('[ab][ac]', 'cb', PATHNAME)];
+
+        // Assert
+        expect(result).toEqual([true, false]);
+      });
+    });
+
+    describe('When two patterns are tokenized', () => {
+      it('Then they share no set token', () => {
+        // Arrange
+        const sut = tokenizeWildmatch;
+
+        // Act
+        const first = sut(encode('[ab]'), PATHNAME);
+        const second = sut(encode('[ab]'), PATHNAME);
+
+        // Assert
+        expect(first?.[0]).not.toBe(second?.[0]);
+      });
+    });
+  });
+
+  describe('Given a set holding one byte', () => {
+    describe('When tokenizing', () => {
+      it.each([
+        ['[a]', PATHNAME, 0x61],
+        ['[\\]]', PATHNAME, 0x5d],
+        ['[]]', PATHNAME, 0x5d],
+        ['[A]', FOLD, 0x41],
+        ['[/]', FLAGS_0, 0x2f],
+      ] as const)('Then %j is the byte token of its member', (pattern, flags, value) => {
+        // Arrange
+        const sut = tokenizeWildmatch;
+
+        // Act
+        const result = sut(encode(pattern), flags);
+
+        // Assert
+        expect(result).toEqual([{ kind: 'byte', value }]);
+      });
+    });
+
+    describe('When the set is negated, repeats its byte or names a slash under WM_PATHNAME', () => {
+      it.each(['[!a]', '[aa]', '[/]', '[a-a]', '[[:digit:]]'])(
+        'Then %j stays a set token',
+        (pattern) => {
+          // Arrange
+          const sut = tokenizeWildmatch;
+
+          // Act
+          const result = sut(encode(pattern), PATHNAME);
+
+          // Assert
+          expect(result?.map((token) => token.kind)).toEqual(['set']);
+        },
+      );
+    });
+  });
 });
