@@ -659,16 +659,21 @@ out of this change and recorded as a discovered impact.
 (130.78), tarball 1551 → 1553 KiB (1 589 340 B). The attribution is the comment above
 `SIZE_CAP` in `tooling/verify-tarball.sh`.
 
-**Mutation.** One narrowed bucket, 773 mutants: 424 killed, 30 timed out, 15 survived. Each
-survivor is an equivalent with its proof on the line. Triage added two things the matrix and
-the test strategy lacked:
+**Mutation.** One narrowed bucket, 773 mutants: 404 killed, 30 timed out, 35 survived. Every
+survivor is an equivalent, and none is suppressed:
 
-- a pinned row, git 2.56.1, both `core.ignorecase` values: in `[[a:]` the inner `[` is not
-  followed by `:`, so it is a plain member although a `:]` comes later. The set matches `a`
-  and `[`, and not `b`;
-- `compile-glob-shortcuts.test.ts`, which counts runs of the wildmatch program. The fast
-  paths, the prefix reject and the fixed-tail refusal change cost and never a verdict, so no
-  verdict row could tell them from their absence. `simpleLength` became one regex search.
+- 22 in `compile-glob.ts`. The fast paths, the prefix reject and the fixed-tail refusal each
+  answer what the wildmatch program would, or leave it the verdict: a mutant there changes
+  cost and never a verdict. The proof is the comment above each group. No call-count test
+  pins them (lesson 011);
+- 13 in `wildmatch.ts`: loop bounds that write past a typed array, a pool-key bit that
+  `String.fromCharCode` drops, a closer index no reader asks for, an early return that only
+  saves steps. Each proof is on its line.
+
+Triage pinned one row the matrix lacked, git 2.56.1, both `core.ignorecase` values: in
+`[[a:]` the inner `[` is not followed by `:`, so it is a plain member although a `:]` comes
+later. The set matches `a` and `[`, and not `b`. `simpleLength` became one regex search,
+which removed a loop-bound equivalent.
 
 ## Out of scope
 
