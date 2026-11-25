@@ -2,8 +2,15 @@
 
 Rename or move tracked paths, updating **both** the index and the working tree —
 faithful to `git mv`. The working file is renamed as-is and the source's index
-entry (blob id + mode) is copied to the destination; no blob is re-hashed, so an
-unstaged edit travels with the file while the staged content is preserved.
+entry (blob id + mode) is copied to the destination, so an unstaged edit travels
+with the file while the staged content is preserved.
+
+Each moved entry is refreshed at its new path, as git's `rename_index_entry_at` does. An
+entry whose content is unchanged takes the stat the rename left. An entry whose content
+differs keeps the stat it was read with, so a later comparison still sees it as changed, and
+the index write smudges it (records size 0) when it is racy and its stat still matches. A
+skip-worktree entry is left as it is. `mv` therefore reads, and hashes, a moved file whose
+stat changed.
 
 Every `(source → target)` pair is validated up front: on any refusal nothing is
 moved (unless `skipErrors`).
