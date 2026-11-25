@@ -5,7 +5,8 @@
  * scan cannot beat, since both must read every byte. tsgit-only: no comparable baseline.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, utimes, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -62,10 +63,18 @@ const buildFixture = async (): Promise<RacyFixture> => {
 const armIndex = (cwd: string, seconds: number): Promise<void> =>
   utimes(path.join(cwd, '.git', 'index'), seconds, seconds);
 
-const hashEveryFile = async (cwd: string, files: ReadonlyArray<string>): Promise<string> => {
-  const digest = createHash('sha1');
-  for (const file of files) digest.update(await readFile(path.join(cwd, file)));
-  return digest.digest('hex');
+/**
+ * The cheapest content check there is, as git pays it: one synchronous read and one blob
+ * SHA-1 per file. An asynchronous read per file would cost more than the scan it floors.
+ */
+const hashEveryFile = (cwd: string, files: ReadonlyArray<string>): void => {
+  for (const file of files) {
+    const bytes = readFileSync(path.join(cwd, file));
+    createHash('sha1')
+      .update(`blob ${String(bytes.length)}\0`)
+      .update(bytes)
+      .digest();
+  }
 };
 
 type Scan = (fixture: RacyFixture) => Promise<void>;
@@ -78,7 +87,7 @@ const racyScan: Scan = async ({ cwd, repo }) => {
 const settledScan: Scan = async ({ cwd, files, repo }) => {
   await armIndex(cwd, SHARED_SECOND + SETTLED_OFFSET_SECONDS);
   await repo.status();
-  await hashEveryFile(cwd, files);
+  hashEveryFile(cwd, files);
 };
 
 const racyWindowScenario = (given: string, whenThen: string, scan: Scan): void => {

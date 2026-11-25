@@ -358,10 +358,13 @@ re-smudge (size 0 stays 0), with one less content read. `racilyClean` filters wi
   `utimes`, so every entry is racy again (each `status` in the window writes the index back and
   closes it). The settled half of the twin sets `.git/index` to T+5.
 - Measured (implementation, `test/bench/status-racy-window.bench.ts`, ten samples per row, ratio
-  = racy mean / floor-twin mean, gate 1.5): 122.73 ms / 305.52 ms = 0.402; 125.35 ms / 305.70 ms
-  = 0.410; 125.30 ms / 308.94 ms = 0.406. Quiet machine (load 2.6 on 11 cores, no foreign
-  vitest or stryker), macOS arm64 (Darwin 27.2), Node v22.22.3, git 2.56.1. The racy window
-  costs well under the floor of reading and hashing every file.
+  = racy mean / floor-twin mean, gate 1.5): 129.80 ms / 121.31 ms = 1.07; 133.88 ms / 118.01 ms
+  = 1.13; 130.05 ms / 118.88 ms = 1.09. Quiet machine (load 3.6 to 3.9 on 11 cores, no foreign
+  vitest or stryker), macOS arm64 (Darwin 27.2), Node v22.22.3, git 2.56.1.
+- The floor twin reads each file once, synchronously, and hashes it as a blob. The first twin
+  awaited one asynchronous read per file: it took 305 ms, more than the scan it floors, and read
+  0.40 to 0.41, a ratio no defect could push past the gate. A second hash of every entry would
+  now read about 1.8 (one more 90 ms pass over the 120 ms twin).
 - Benches that could move: `test/bench/status.bench.ts` (settled and stat-invalid shapes; its
   copy leaves the index's second on purpose, so no movement is expected),
   `status-dirty.bench.ts`, `status-sparse.bench.ts`, `checkout.bench.ts`, `add.bench.ts`. Judge
