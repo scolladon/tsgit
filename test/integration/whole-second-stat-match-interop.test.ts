@@ -168,13 +168,13 @@ const sameSizeEditNewInode = async (repo: string): Promise<void> => {
 };
 
 /** Index written a second later by git itself, then a chmod a second after that: only the ctime second moved. */
-const chmodSecondsLater = async (repo: string): Promise<void> => {
+const chmodSecondsLater = async (repo: string, file = 'f'): Promise<void> => {
   await sleep(PAST_SECOND_MS);
   git(repo, 'status', '--porcelain');
   await sleep(PAST_SECOND_MS);
-  await chmod(path.join(repo, 'f'), GROUP_WRITABLE_MODE);
-  const worked = await lstat(path.join(repo, 'f'), { bigint: true });
-  if (worked.ctimeNs / NS_PER_SECOND > entryStamp(repo, 'f', 'ctime').seconds) return;
+  await chmod(path.join(repo, file), GROUP_WRITABLE_MODE);
+  const worked = await lstat(path.join(repo, file), { bigint: true });
+  if (worked.ctimeNs / NS_PER_SECOND > entryStamp(repo, file, 'ctime').seconds) return;
   throw premiseNeverMet('chmod a second later');
 };
 
@@ -332,6 +332,19 @@ const seedDirectoryTarget = async (repo: string, ignorecase: string): Promise<vo
   git(repo, 'add', 'dir/x');
   git(repo, 'commit', '-q', '-m', 'tgt');
   git(repo, 'checkout', '-q', 'main');
+};
+
+type StagedFileArrange = (repo: string) => Promise<void>;
+
+/** A file staged at `dir` whose stat then moved within the second of its add. */
+const stageFileMovedInItsSecond: StagedFileArrange = (repo) => sameSecondChmod(repo, 'dir');
+
+/** A file staged at `dir`, chmod-ed a second later while the config tells git to ignore ctime. */
+const stageFileMovedLaterCtimeIgnored: StagedFileArrange = async (repo) => {
+  git(repo, 'config', 'core.trustCtime', 'false');
+  await put(repo, 'dir', 'one\n');
+  git(repo, 'add', 'dir');
+  await chmodSecondsLater(repo, 'dir');
 };
 
 /** `a/f` and `b/h` committed on main. */
@@ -737,7 +750,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       });
 
-      describe('When a switch needs a directory where a staged file stat-moved within its second', () => {
+      describe.each([
+        ['stat-moved within its second', stageFileMovedInItsSecond],
+        [
+          'was chmod-ed a second later under core.trustCtime false',
+          stageFileMovedLaterCtimeIgnored,
+        ],
+      ] as const)('When a switch needs a directory where a staged file %s', (_shape, arrange) => {
         it('Then both tools switch under core.ignorecase true and refuse under false', async () => {
           // Arrange
           const pair = await makePeerPair('whole-second-icase-exists');
@@ -745,7 +764,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             initBothRepos(pair.peer, pair.ours);
             for (const repo of [pair.peer, pair.ours]) {
               await seedDirectoryTarget(repo, ignorecase);
-              await sameSecondChmod(repo, 'dir');
+              await arrange(repo);
             }
 
             // Act

@@ -527,13 +527,28 @@ runs `git config core.ignorecase <v>` before either tool reads it.
 | E1 / E2 | R whole-second | `ie_modified` / `checkout_entry` | `status()` / `checkout({ paths })` | modified / `abc` restored |
 | F1 / F2 | B3 | `ie_modified` / `checkout_entry` | `status()` / `checkout({ paths })` | modified / `abc` restored |
 | O1 | S2 equal, racy | `verify_uptodate` through a symlinked leading directory | the occupant-clash path (`checkout` of a change beneath `l -> d`) | proceeds as git does |
-| O2 | S2 equal, racy | `icase_exists` | `checkout` adding a case variant under `core.ignorecase=true` (twin `false` asserts git's refusal) | obstruction cleared as git clears it |
+| O2 | S2 equal, racy; S2 gated (`trustCtime=false`) | `icase_exists` | `checkout` of a branch that needs `dir/x` while a staged file `dir` stands in the way: under `core.ignorecase=true` git switches, under `false` it refuses | obstruction cleared as git clears it |
 | O3 | S2 equal, racy | `verify_uptodate` for sparse movers | `sparseCheckoutSet` excluding `a/` with `a/f` chmodded | `a/f` removed as git removes it |
 
 The git column of O1–O3, A6s and A7r comes from source (the routines above all call
 `ie_match_stat` / `ce_match_stat_basic` with the compare this change fixes). They are pinned
 against git at implementation, red first on main where main diverges. O3 is expected green on
 main, because `verdictOf` falls back to content. It stays as the per-consumer pin D-2 asks for.
+
+Corrected at implementation (each pinned against git 2.56.1 first, both `core.ignorecase` values):
+- O2's first fixture, a switch adding the case variant `F` of a tracked `f`, never reaches the
+  stat judge: tsgit refuses it with or without a `chmod`. That refusal predates this change and
+  was deferred to impact triage. The judge's consumer is a staged file where the target needs a
+  directory, so the row uses that shape.
+- An unforced switch refreshes the index before it judges, so the same-second shape is green on
+  main for O2 and cannot fail on the compare. The `core.trustCtime=false` shape does depend on
+  the obstruction judge receiving the policy: it goes red when the judge counts every field.
+- Guard rows were proven able to fail in a throwaway copy of the branch, one old behaviour at a
+  time: the nanosecond racy test turns E1, E2 and E3 red; no racily-smudged branch turns F1 and
+  F2 red; a nanosecond ctime compare turns A1, A2, A4, A5, A6s, E3 and O1 red; an ignored policy
+  turns C2, C2s, C3, C3s and L2 red; an always-minimal policy turns C1, C1s and L1 red; a smudge
+  pass that skips the content compare turns A7r red. O3 stays green under each of them, as
+  expected above.
 
 ### Perf
 
