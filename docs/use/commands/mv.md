@@ -116,6 +116,10 @@ file the index holds where a directory is now needed) and every entry beneath a 
 file now replaces) leave the index, as `git mv` does. This includes a tracked link that the
 moved path now passes through; `moved` lists only the moves, never what they replaced.
 
+Index write: the index is written only when at least one entry moved, as `git mv` does. A call
+whose every source is skipped under `skipErrors` leaves the index file as it was, and creates
+none in a repository that has none.
+
 ## Windows paths
 
 Under a Windows host (node runtime on win32, whatever filesystem the caller passes) a path containing `\` is refused with `INVALID_INDEX_ENTRY` and reason `backslash rejected under Windows path syntax`, as git for Windows does; parsing an index, `write-tree` and `archive` do not refuse it.
