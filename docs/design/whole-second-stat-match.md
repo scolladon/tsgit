@@ -15,7 +15,7 @@
 > - the smudger's nanosecond racy test skips an entry git smudges on an unrelated index write
 >   (row E3, divergent on main).
 >
-> Status: draft → self-reviewed ×3
+> Status: settled 2026-11-25 (rulings ADR-1261 to ADR-1267, DOCTRINE D-7)
 
 ## Context
 
@@ -217,7 +217,8 @@ ledger.
   it reads: mtime, ctime, size, inode, the two config keys, the index timestamp, B3's size/oid),
   052/018/012 (deterministic fixtures, drift a stat before a writes-nothing pin), 019 (each row
   names git's routine: `checkout_entry`, `oneway_merge`, `verify_uptodate`, `refresh_cache_ent`,
-  `add_to_index`, smudge), 050 (perf gate against git's floor, DC-C), 038 (consumers are listed
+  `add_to_index`, smudge), 050 (perf gate against git's floor: a same-process floor twin, D-7,
+  ADR-1267), 038 (consumers are listed
   from the primitive, `matchesCachedStat` / `isEntryStatClean` / `matchesContentStat` / `isRacy`,
   not from a wrapper).
 
@@ -247,6 +248,9 @@ ledger.
   are unchanged. `reports/api.json` does not move.
 - **R9** Ledger row 32.90 is removed from `docs/known-divergences.md` and backlog 32.87 is ticked
   (documentation phase).
+- **R10** `status` in the racy window costs at most 1.5 times its floor twin in the same process
+  (a settled `status` plus a bare read and SHA-1 of every tracked file), measured on the fixed
+  code, three runs, and the ratio recorded in this design (ADR-1267).
 
 ## Design
 
@@ -341,7 +345,20 @@ re-smudge (size 0 stays 0), with one less content read. `racilyClean` filters wi
   only those at or after the index's nanosecond. git does the same work. The window closes after
   one write: `status` writes the index back on `hasRacyTimestamp`. The cost appears on the first
   command after a same-second checkout, add or commit (the common "commit, then status" loop on a
-  small tree). DC-C gates it.
+  small tree). ADR-1267 gates it (R10): a bench pair in `test/bench/status-racy-window.bench.ts`,
+  `status` in the racy window against a floor twin in the same process made of a settled `status`
+  plus a bare read and SHA-1 of every tracked file; racy ≤ 1.5 × twin. Main is no yardstick: it
+  skips the hashing git does. The proposed floor of `readIndex` plus one hash per file, gated at
+  1.25, was refused by measurement: it omits the walk, the index compare against `HEAD` and the
+  index write that every `status` pays, so main's own racy path already reads 1.36 to 1.60 over
+  an `lstat`, read and hash of every file (ADR-1267 Context). A second hash of every entry (reader, then smudge pass) would read
+  about 1.8 against the twin, so 1.5 guards it.
+- Window arming, as measured: every tracked file's mtime is set to one instant inside second T
+  with `utimes` before the add; before each measured call `.git/index` is set to T.000 with
+  `utimes`, so every entry is racy again (each `status` in the window writes the index back and
+  closes it). The settled half of the twin sets `.git/index` to T+5.
+- Measurement to record (implementation): the racy / twin ratio on the fixed code, three runs,
+  written into this section.
 - Benches that could move: `test/bench/status.bench.ts` (settled and stat-invalid shapes; its
   copy leaves the index's second on purpose, so no movement is expected),
   `status-dirty.bench.ts`, `status-sparse.bench.ts`, `checkout.bench.ts`, `add.bench.ts`. Judge
@@ -393,7 +410,18 @@ commit.
 |---|---|---|---|---|
 | DC-A | How `StatCheck` reaches each judge | A: a `statCheck` field beside every `executableBit` (scope, `CachedStat`, `StatJudge`, `Judgement`, `ConversionScope`), read once per scan, lazily where the branch may not run · B: replace `executableBit` with one `StatPolicy { executableBit, statCheck }` from a new `readStatPolicy(ctx)` · C: a per-session memo inside `readStatCheck`, called from the predicates | A | Follows the `core.fileMode` precedent; each site gains one line and stays sync on the hot path. B is the cleaner end state, but its diff renames `executableBit` at about 30 sites and in many unit fixtures, which this fix does not need. C hides state in a primitive, keeps an `await` per entry in `statOnlyVerdict`'s caller chain, and needs an invalidation rule for a config write mid-command |
 | DC-B | How B3 recognises "the empty blob" | A: `isEmptyBlobOid(id)`: equal to the SHA-1 **or** SHA-256 constant (ids are algorithm-length, so they cannot collide) · B: carry the repository's `HashConfig` into the compare (via `StatCheck` resolution) and use `emptyBlobOid(config)` | A | Pure, sync, no plumbing. B adds a second policy to every holder in §3 for a check A answers exactly |
-| DC-C | Perf gate for the whole-second racy window (lesson 050) | A: a new `status` bench row on a tree whose every entry shares the index's second (fresh checkout, index mtime pinned with `utimes`), gated against git's floor: one hash per racy entry, measured as `readIndex` + hash of every file in the same process, ratio settled in decisions (≤ 1.25 proposed) · B: existing benches + `bench:ab` only · C: A gated as a percentage over main | A | Main skips the hashing git does, so main is no yardstick (lesson 050). The other benches run settled trees and will not see the window. C would fail on git's own work |
+| DC-C | Perf gate for the whole-second racy window (lesson 050) | A: a new `status` bench row on a tree whose every entry shares the index's second (index mtime pinned with `utimes`), gated against a floor of `readIndex` + hash of every file in the same process at ≤ 1.25 · B: existing benches + `bench:ab` only · C: A gated as a percentage over main | A (as proposed: 1.25 over `readIndex` + hash) — **refused by measurement**; ratified instead: a floor twin (settled `status` + bare read and SHA-1 of every tracked file), gate 1.5 (ADR-1267) | Main skips the hashing git does, so main is no yardstick (lesson 050). The other benches run settled trees and will not see the window. C would fail on git's own work. The proposed floor omits the walk, the `HEAD` compare and the index write every `status` pays: unreachable by correct code |
+
+### Settled (2026-11-25)
+
+- ADR-1261: one whole-second compare `matchesStatData` with the `StatCheck` gates, used by every judge (G-a, G-b; D-2, D-5).
+- ADR-1262: one whole-second `isRacyTimestamp` for every reader, `hasRacyTimestamp` and the smudge pass (G-c; D-5).
+- ADR-1263: B3 inside the shared compare (G-d; D-5).
+- ADR-1264: `shouldRefresh` uses the shared compare with the scan's `StatCheck` (G-e; D-2).
+- ADR-1265: DC-A adopted as option A on ADR-1230's precedent; covers G-f.
+- ADR-1266: DC-B adopted as option A (`isEmptyBlobOid`), no trade-off.
+- ADR-1267: DC-C user-ratified as the floor-twin bench pair, gate 1.5 (R10).
+- DOCTRINE D-7 added: a perf gate on work git itself does is a bench pair against a same-process floor twin.
 
 ### Settled by doctrine, not candidates
 
@@ -503,8 +531,15 @@ main, because `verdictOf` falls back to content. It stays as the per-consumer pi
 
 ### Perf
 
-DC-C row A: `test/bench/status-racy-window.bench.ts` (name to settle in planning), with its floor
-twin in the same process.
+ADR-1267 (R10): `test/bench/status-racy-window.bench.ts` holds the pair, in one process:
+- racy: `status` with every entry in the window. Every tracked file's mtime is set to one instant
+  inside second T with `utimes` before the add; before each measured call `.git/index` is set to
+  T.000 with `utimes`, so every entry is racy again (each `status` in the window writes the index
+  back and closes it);
+- floor twin: a settled `status` (`.git/index` set to T+5) plus a bare read and SHA-1 of every
+  tracked file.
+
+Gate: racy ≤ 1.5 × floor twin. Record the ratio on the fixed code, three runs, in Design §6.
 
 ### Mutation
 
