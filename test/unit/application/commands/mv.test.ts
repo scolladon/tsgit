@@ -190,6 +190,35 @@ describe('mv', () => {
     });
   });
 
+  describe('Given a file staged through an end-of-line conversion and rewritten with the same content a second later', () => {
+    describe('When mv renames it', () => {
+      it('Then the moved entry takes the stat of the file as it now stands', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({
+            '.gitattributes': '* text eol=crlf\n',
+            'a.txt': 'abc\r\n',
+          });
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'abc\r\n');
+          vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          const moved = await indexEntry(ctx, 'b.txt');
+          expect(moved?.mtimeSeconds).toBe((STAGED_AT_MS + MS_PER_SECOND) / MS_PER_SECOND);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
   describe('Given a tracked file rewritten with other content a second after it was staged', () => {
     describe('When mv renames it', () => {
       it('Then the moved entry keeps the stat it was staged with', async () => {
