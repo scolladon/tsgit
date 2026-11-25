@@ -1,15 +1,19 @@
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import { escapedPathOf } from '../../../domain/git-index/index-path-key.js';
-import type { ExecutableBitTrust } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import { compareAndRefresh, type WorkingTreeDelta } from '../compare-working-tree-entry.js';
+import {
+  type ComparisonScope,
+  compareAndRefresh,
+  type WorkingTreeDelta,
+} from '../compare-working-tree-entry.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
+import { readStatCheck } from '../read-stat-check.js';
 import { type CleanOrder, configuresFilterDriver, inIndexOrder } from './clean-order.js';
 import { boundedMapFor } from './concurrency.js';
 import { type AttributeProvider, buildCheckinAttributeProvider } from './read-gitattributes.js';
 import type { IsVerified } from './smudge-racily-clean.js';
-import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
+import { createLeadingPathScanner } from './symlinked-leading-path.js';
 
 /** The tracked pass: every tracked file's delta plus the entries whose stat data drifted. */
 export interface TrackedScan {
@@ -37,20 +41,10 @@ interface ScannedEntry {
 const scanEntry = async (
   ctx: Context,
   entry: IndexEntry,
-  provider: AttributeProvider,
-  indexMtime: GitIndex['indexMtime'],
-  filterDriversConfigured: boolean,
-  scanner: LeadingPathScanner,
-  executableBit: ExecutableBitTrust,
+  scope: ComparisonScope,
 ): Promise<ScannedEntry | undefined> => {
   if (entry.flags.skipWorktree) return undefined;
-  const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
-    provider,
-    ...(indexMtime !== undefined && { indexMtime }),
-    filterDriversConfigured,
-    scanner,
-    executableBit,
-  });
+  const { delta, refreshed } = await compareAndRefresh(ctx, entry, scope);
   return { path: escapedPathOf(entry), delta, refreshed };
 };
 
@@ -74,19 +68,18 @@ const scanWorkingTree = async (
 ): Promise<TrackedScan> => {
   const filterDriversConfigured = await configuresFilterDriver(ctx);
   const scanner = createLeadingPathScanner(ctx);
-  const executableBit = await readExecutableBitTrust(ctx);
+  const scope: ComparisonScope = {
+    provider,
+    ...(indexMtime !== undefined && { indexMtime }),
+    filterDriversConfigured,
+    scanner,
+    executableBit: await readExecutableBitTrust(ctx),
+    statCheck: await readStatCheck(ctx),
+  };
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
-        const scanned = await scanEntry(
-          ctx,
-          entry,
-          provider,
-          indexMtime,
-          filterDriversConfigured,
-          scanner,
-          executableBit,
-        );
+        const scanned = await scanEntry(ctx, entry, scope);
         onScanned();
         return scanned;
       } finally {

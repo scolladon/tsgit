@@ -43,6 +43,7 @@ import {
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { readExecutableBitTrust } from './read-executable-bit-trust.js';
+import { readStatCheck } from './read-stat-check.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -238,6 +239,7 @@ export const findWouldOverwrite = async (
     ...scopeOf(provider, currentIndex.indexMtime, scanner),
     ignoreAssumeValid: true as const,
     executableBit: await readExecutableBitTrust(ctx),
+    statCheck: await readStatCheck(ctx),
   };
   const clashScope = clashScopeOf(ctx, removed, scanner, byPath, currentIndex.indexMtime);
   const localChanges: FilePath[] = [];

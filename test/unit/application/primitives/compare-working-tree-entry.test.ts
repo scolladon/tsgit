@@ -2171,6 +2171,46 @@ describe('compareAndRefresh on an assume-valid entry the overwrite check judges'
     invalidateConfigCache(ctx);
   };
 
+  describe('Given an assume-unchanged entry whose ctime moved by a second, and core.trustCtime left true', () => {
+    describe('When compared for an overwrite with a scope whose stat policy ignores ctime', () => {
+      it("Then the scope's policy decides and the entry is not a change", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        const drifted = { ...entry, ctimeSeconds: entry.ctimeSeconds - 1 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, drifted, {
+          ...armed,
+          executableBit: 'trusted',
+          statCheck: { ctime: false, ownerAndInode: true },
+        });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+      });
+    });
+
+    describe('When compared for an overwrite with a scope whose stat policy counts ctime', () => {
+      it("Then the drift is a change and the entry is 'modified'", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        const drifted = { ...entry, ctimeSeconds: entry.ctimeSeconds - 1 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, drifted, {
+          ...armed,
+          executableBit: 'trusted',
+          statCheck: { ctime: true, ownerAndInode: true },
+        });
+
+        // Assert
+        expect(result.delta.status).toBe('modified');
+      });
+    });
+  });
+
   describe('Given an assume-valid entry whose stat matches but is racy and whose content changed in place', () => {
     describe('When comparing it as the overwrite check does', () => {
       it("Then it is 'modified' as the racy guard reads the content", async () => {

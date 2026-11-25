@@ -26,6 +26,7 @@ import { isSameKind } from '../../domain/diff/mode-kind.js';
 import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
+import type { StatCheck } from '../../domain/git-index/stat-check.js';
 import {
   type ExecutableBitTrust,
   FILE_MODE,
@@ -204,11 +205,16 @@ export interface ComparisonScope {
   readonly scanner?: LeadingPathScanner;
   /** core.fileMode, resolved once per scan; a comparison outside a scan reads it. */
   readonly executableBit?: ExecutableBitTrust;
+  /** core.trustCtime / core.checkStat, resolved once per scan; a comparison outside a scan reads it. */
+  readonly statCheck?: StatCheck;
   /** git's `CE_MATCH_IGNORE_VALID`: `verify_uptodate` judges an assume-valid entry by its stat like any other. */
   readonly ignoreAssumeValid?: true;
 }
 
-type ResolvedScope = ComparisonScope & { readonly executableBit: ExecutableBitTrust };
+type ResolvedScope = ComparisonScope & {
+  readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
+};
 
 /**
  * A comparison verdict plus, when the file is content-identical yet its stat
@@ -348,11 +354,17 @@ const belowSymlinkedDirectory = (
     .catch(() => true);
 
 const isResolved = (scope: ComparisonScope): scope is ResolvedScope =>
-  scope.executableBit !== undefined;
+  scope.executableBit !== undefined && scope.statCheck !== undefined;
 
-// A caller walking many entries resolves the trust once; only a bare scope pays the copy.
+// A caller walking many entries resolves the policy once; only a bare scope pays the copy.
 const resolveScope = async (ctx: Context, scope: ComparisonScope): Promise<ResolvedScope> =>
-  isResolved(scope) ? scope : { ...scope, executableBit: await readExecutableBitTrust(ctx) };
+  isResolved(scope)
+    ? scope
+    : {
+        ...scope,
+        executableBit: scope.executableBit ?? (await readExecutableBitTrust(ctx)),
+        statCheck: scope.statCheck ?? (await readStatCheck(ctx)),
+      };
 
 /**
  * git's `CE_VALID`: once the stat cache is armed an assume-valid entry is trusted over any
@@ -369,22 +381,17 @@ const withoutAssumeValid = (entry: IndexEntry): IndexEntry => ({
 /**
  * git's `verify_uptodate` on an assume-valid entry: refresh leaves its stat data stale, so
  * `ie_match_stat` calls any drift of the stat fields git compares a change without reading
- * the content. The config is read only for such an entry.
+ * the content.
  */
-export const isStaleAssumedEntry = async (
-  ctx: Context,
-  entry: IndexEntry,
-  stat: FileStat,
-): Promise<boolean> =>
-  entry.flags.assumeValid && !matchesStatFields(entry, stat, await readStatCheck(ctx));
+export const isStaleAssumedEntry = (entry: IndexEntry, stat: FileStat, check: StatCheck): boolean =>
+  entry.flags.assumeValid && !matchesStatFields(entry, stat, check);
 
-const staleAssumedStatDelta = async (
-  ctx: Context,
+const staleAssumedStatDelta = (
   entry: IndexEntry,
   stat: FileStat,
   scope: ResolvedScope,
-): Promise<WorkingTreeDelta | undefined> => {
-  if (!(await isStaleAssumedEntry(ctx, entry, stat))) return undefined;
+): WorkingTreeDelta | undefined => {
+  if (!isStaleAssumedEntry(entry, stat, scope.statCheck)) return undefined;
   const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
   return {
     status: isSameKind(worktreeMode, entry.mode) ? 'modified' : 'type-changed',
@@ -399,7 +406,7 @@ const compareJudgedByStat = async (
   stat: FileStat,
   scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> =>
-  (await staleAssumedStatDelta(ctx, entry, stat, scope)) ??
+  staleAssumedStatDelta(entry, stat, scope) ??
   (await compareFile(ctx, withoutAssumeValid(entry), absPath, stat, scope));
 
 const compareOccupant = (
@@ -482,10 +489,12 @@ export const compareWorkingTreeEntry = async (
 export const racyContentMatcher = (ctx: Context): RacyContentCheck => {
   const provider = lazily(() => buildCheckinAttributeProvider(ctx));
   const executableBit = lazily(() => readExecutableBitTrust(ctx));
+  const statCheck = lazily(() => readStatCheck(ctx));
   return async (entry, absPath, stat) => {
     const { status } = await compareFile(ctx, entry, absPath, stat, {
       ...scopeOf(await provider()),
       executableBit: await executableBit(),
+      statCheck: await statCheck(),
     });
     return !isWorkingTreeModified(status);
   };

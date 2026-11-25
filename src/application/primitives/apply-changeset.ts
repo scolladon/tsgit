@@ -28,6 +28,7 @@ import { TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
+import type { StatCheck } from '../../domain/git-index/stat-check.js';
 import {
   type ExecutableBitTrust,
   indexModeFromStat,
@@ -91,6 +92,7 @@ import {
 import { everySourceLoadable } from './object-store.js';
 import { readExecutableBitTrust } from './read-executable-bit-trust.js';
 import { readRawIndex } from './read-index.js';
+import { readStatCheck } from './read-stat-check.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
 export type IgnoredOccupants = 'overwrite' | 'protect';
@@ -141,12 +143,14 @@ interface DirtyProbe {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
 const buildDirtyProbe = async (ctx: Context): Promise<DirtyProbe> => ({
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
   executableBit: await readExecutableBitTrust(ctx),
+  statCheck: await readStatCheck(ctx),
 });
 
 // A trusted exec bit that no longer matches the entry's mode is a local change git
@@ -284,24 +288,23 @@ const survivorClash = async (
 // git's verify_uptodate ignores CE_VALID and refresh skips such an entry, so any drift of its
 // cached stat counts as a change before the content is looked at.
 const staleAssumedEntry = async (
-  ctx: Context,
   scope: ClashScope,
   path: FilePath,
   stat: FileStat,
+  check: StatCheck,
 ): Promise<boolean> => {
   const tracked = await scope.tracked(path);
-  return tracked !== undefined && (await isStaleAssumedEntry(ctx, tracked.entry, stat));
+  return tracked !== undefined && isStaleAssumedEntry(tracked.entry, stat, check);
 };
 
 const changedBeforeContent = async (
-  ctx: Context,
   probe: DirtyProbe,
   entry: ChangesetEntry,
   stat: FileStat,
   scope: ClashScope,
 ): Promise<boolean> =>
   modeChanged(probe, entry.previousMode, stat) ||
-  (await staleAssumedEntry(ctx, scope, entry.path, stat));
+  (await staleAssumedEntry(scope, entry.path, stat, probe.statCheck));
 
 const evaluateChangedPath = async (
   ctx: Context,
@@ -321,7 +324,7 @@ const evaluateChangedPath = async (
   if (verdict.kind !== 'compare-content') return verdictClash(verdict);
   const dirtyProbe = await probe();
   const localChanges: OccupantClash = { class: 'local-changes', path: entry.path };
-  if (await changedBeforeContent(ctx, dirtyProbe, entry, verdict.stat, scope)) return localChanges;
+  if (await changedBeforeContent(dirtyProbe, entry, verdict.stat, scope)) return localChanges;
   const absPath = joinPath(scope.workdir, entry.path);
   return (await blobMatches(ctx, dirtyProbe, entry.path, absPath, previousId))
     ? undefined
