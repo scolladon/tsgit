@@ -397,6 +397,15 @@ The bundle caps sit within ~100 B of the measurement.
 Raise the caps once, after review, on a clean build (`rm -rf dist .wireit`), in a `chore(size)`
 commit.
 
+Measured after review, on a clean build. The implementation alone stayed under every cap; the
+review fixes (the `mv` refresh, the verified sets, the bounded smudge) took it over.
+
+| Row | Measured | Old cap | New cap |
+|---|---|---|---|
+| Browser bundle (no-build), gzipped | 374.65 kB | 374.4 kB | 374.7 kB |
+| Full library, gzipped | 434.49 kB | 434.1 kB | 434.5 kB |
+| Tarball | 1 590 888 B | 1553 KiB | 1554 KiB |
+
 ### 9. Docs to update (documentation phase)
 
 - Remove ledger row 32.90 from `docs/known-divergences.md` ("resolved by 32.87").

@@ -555,7 +555,16 @@ done
 # the ignore and attribute sources — runtime code in every distribution form,
 # none removable without dropping the behaviour. The glob compiler's own table
 # fill and tokenizer, which the shared core replaces, paid part of it back.
-SIZE_CAP=$((1553 * 1024))
+# Raised 1553 -> 1554 KiB by whole-second stat matching: the measured pack landed
+# at 1 590 888 B, 616 B over the old cap, attributable to the stat-check policy
+# carried beside the executable-bit policy through every stat judge and scan,
+# git's racily-smudged test with its empty-blob lookup under both hash
+# algorithms, mv's refresh of each moved entry and its comparison scope, the
+# verified sets that add, mv and the tracked scan hand to the index write, and
+# the stat-data keys and bounded fan-out of the racy smudge — runtime code in
+# every distribution form, none removable without dropping the behaviour. The
+# nanosecond comparators the whole-second compare replaces paid part of it back.
+SIZE_CAP=$((1554 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
