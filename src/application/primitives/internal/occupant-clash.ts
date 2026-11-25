@@ -10,6 +10,7 @@ import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
+import { readStatCheck } from '../read-stat-check.js';
 import { createConcurrencyLimiter } from './concurrency-limiter.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { buildRepoIgnorePredicate } from './ignore-evaluator.js';
@@ -153,8 +154,9 @@ const classifyThroughLink = async (
   const tracked = await scope.tracked(path);
   if (tracked === undefined) return localChange(path);
   const executableBit = await readExecutableBitTrust(ctx);
+  const statCheck = await readStatCheck(ctx);
   const unchanged = await matchesCachedStat(
-    { ...tracked, executableBit },
+    { ...tracked, executableBit, statCheck },
     absPath,
     reached,
     racyContentMatcher(ctx),

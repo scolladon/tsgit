@@ -128,10 +128,11 @@ export interface CachedStat {
   readonly entry: IndexEntry;
   readonly indexMtime: IndexMtime | undefined;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
-/** A tracked path's cached stat before the core.fileMode policy is attached. */
-export type TrackedStat = Omit<CachedStat, 'executableBit'>;
+/** A tracked path's cached stat before the stat policies are attached. */
+export type TrackedStat = Omit<CachedStat, 'executableBit' | 'statCheck'>;
 
 /** Decides a racy, stat-matching entry by its content. */
 export type RacyContentCheck = (

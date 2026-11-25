@@ -489,7 +489,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -511,7 +516,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'ignored',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -531,7 +541,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -558,7 +573,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'ignored',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -580,7 +600,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -601,7 +626,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -625,7 +655,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: RACY_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -646,7 +681,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: undefined, executableBit: 'trusted' },
+          { entry: BASE_ENTRY, indexMtime: undefined, executableBit: 'trusted', statCheck: ALL },
           ABS_PATH,
           BASE_STAT,
           contentMatches,

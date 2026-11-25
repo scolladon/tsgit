@@ -5,12 +5,14 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
+import type { StatCheck } from '../../../domain/git-index/stat-check.js';
 import { type ExecutableBitTrust, FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { racyContentMatcher } from '../compare-working-tree-entry.js';
 import type { ChangesetEntry } from '../compute-changeset.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
+import { readStatCheck } from '../read-stat-check.js';
 import { boundedMapFor } from './concurrency.js';
 import type { RacyContentCheck } from './is-entry-stat-clean.js';
 import { lstatBeyondLink, matchesCachedStat, UNREACHABLE } from './is-entry-stat-clean.js';
@@ -22,10 +24,11 @@ import { createLeadingPathScanner } from './symlinked-leading-path.js';
 const entryByKey = (index: GitIndex): Map<IndexPathKey, IndexEntry> =>
   new Map(index.entries.map((e) => [indexPathKey(e), e] as const));
 
-// The racy-content check and the lazily read core.fileMode policy one scan shares.
+// The racy-content check and the lazily read stat policies one scan shares.
 interface StatJudge {
   readonly contentMatches: RacyContentCheck;
   readonly executableBit: () => Promise<ExecutableBitTrust>;
+  readonly statCheck: () => Promise<StatCheck>;
 }
 
 const isUpToDate = async (
@@ -39,8 +42,9 @@ const isUpToDate = async (
   if (stat === undefined || stat === UNREACHABLE) return false;
   if (cached.mode === FILE_MODE.GITLINK) return stat.isDirectory;
   const executableBit = await judge.executableBit();
+  const statCheck = await judge.statCheck();
   return matchesCachedStat(
-    { entry: cached, indexMtime, executableBit },
+    { entry: cached, indexMtime, executableBit, statCheck },
     absPath,
     stat,
     judge.contentMatches,
@@ -73,6 +77,7 @@ export const upgradeStaleNoops = async (
   const judge: StatJudge = {
     contentMatches: racyContentMatcher(ctx),
     executableBit: lazily(() => readExecutableBitTrust(ctx)),
+    statCheck: lazily(() => readStatCheck(ctx)),
   };
   const scanner = createLeadingPathScanner(ctx);
   const upToDate = new Set<FilePath>();
