@@ -44,3 +44,10 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 - **Rule:** ship it as a plain `fix(<scope>):`; keep `!` for D-3's case (a returning public method starts throwing) and for signature or type changes.
 - **Evidence:** ADR-1257
 - **Counter-cases:** none
+
+## D-7 — A perf gate on work git itself does is a bench pair against a same-process floor twin
+
+- **Trigger:** a faithfulness fix makes a hot path do work git does and main skipped (a hash per racy entry, an `lstat` per probe, a set test per rule), and the design asks which perf gate to add or proposes a ratio it has not measured.
+- **Rule:** add one bench row for the new work and a floor twin in the same process, made of the command's settled cost plus only the work no implementation can avoid; measure both on the fixture before the ratio is set; put the gate between the measured ratio and the ratio of the defect it guards; never gate against main.
+- **Evidence:** ADR-1267, ADR-1255, ADR-1247
+- **Counter-cases:** none
