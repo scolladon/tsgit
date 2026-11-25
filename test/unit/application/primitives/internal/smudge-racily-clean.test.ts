@@ -13,8 +13,9 @@ import {
   invalidateIndexCache,
   readIndex,
 } from '../../../../../src/application/primitives/read-index.js';
+import { pathTooLong } from '../../../../../src/domain/error.js';
 import { STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
-import type { IndexEntry } from '../../../../../src/domain/git-index/index-entry.js';
+import { type IndexEntry, withPath } from '../../../../../src/domain/git-index/index-entry.js';
 import { permissionDenied, TsgitError } from '../../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -25,6 +26,7 @@ const MS_PER_SECOND = 1000;
 const TICK_MS = 1_700_000_000_100;
 const NEXT_SECOND_MS = TICK_MS + MS_PER_SECOND;
 const TRACKED = 'f.txt' as FilePath;
+const MOVED = 'g.txt' as FilePath;
 const SAME_SIZE_REWRITE = 'm2\n';
 const STAGE_DELAY_MS = 200;
 const REWRITE_DELAY_MS = 300;
@@ -98,6 +100,66 @@ describe('smudgeRacilyClean', () => {
 
         // Assert
         expect(result).toEqual([{ ...entries[0], fileSize: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a racy entry carried to a new path whose file was rewritten with the same stat', () => {
+    describe('When the index is written', () => {
+      it('Then the moved entry is smudged to size 0', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        await ctx.fs.rename(workPath(ctx, TRACKED), workPath(ctx, MOVED));
+        const [asRead] = await entriesAsRead(ctx);
+        const moved = withPath(asRead as IndexEntry, { path: MOVED });
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [moved], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([{ ...moved, fileSize: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a racy carried-over entry whose working path cannot be stat-ed', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is left as is', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        const entries = await entriesAsRead(ctx);
+        const previous = await readPreviousIndex(ctx);
+        vi.spyOn(ctx.fs, 'lstatIfReachable').mockRejectedValue(pathTooLong(workPath(ctx, TRACKED)));
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, entries, previous);
+
+        // Assert
+        expect(result).toEqual(entries);
+      });
+    });
+  });
+
+  describe('Given a racy entry at a new path whose stat data the index as read never held', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is left as is', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        await ctx.fs.rename(workPath(ctx, TRACKED), workPath(ctx, MOVED));
+        const [asRead] = await entriesAsRead(ctx);
+        const restated = { ...withPath(asRead as IndexEntry, { path: MOVED }), id: OTHER_ID };
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [restated], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([restated]);
       });
     });
   });

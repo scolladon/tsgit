@@ -27,6 +27,7 @@ import { describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { mv } from '../../src/application/commands/mv.js';
 import { reset } from '../../src/application/commands/reset.js';
 import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
 import { status } from '../../src/application/commands/status.js';
@@ -42,6 +43,9 @@ const MS_PER_SECOND = 1_000;
 const NS_PER_SECOND = 1_000_000_000n;
 const GROUP_WRITABLE_MODE = 0o664;
 const SMUDGED_SIZE = 0;
+const STAGED_CONTENT = 'abc\n';
+const STAGED_SIZE = STAGED_CONTENT.length;
+const MOVED = 'moved';
 const UNSTAGED_MODIFIED_F = /^.M f$/;
 const LINK_TARGET = 'held';
 const WORK_FILE_MODE_MASK = 0o7777n;
@@ -117,7 +121,11 @@ const sameSecondSameSizeEdit = async (repo: string): Promise<void> => {
     await put(repo, 'f', 'xyz\n');
     const entry = entryStamp(repo, 'f', 'mtime');
     const index = await indexMtime(repo);
-    if (entry.seconds === index.seconds && entry.nanoseconds < index.nanoseconds) return;
+    const worked = await lstat(path.join(repo, 'f'), { bigint: true });
+    const editedInEntrySecond = worked.mtimeNs / NS_PER_SECOND === entry.seconds;
+    const stagedBeforeIndex =
+      entry.seconds === index.seconds && entry.nanoseconds < index.nanoseconds;
+    if (editedInEntrySecond && stagedBeforeIndex) return;
   }
   throw premiseNeverMet('same-second same-size edit');
 };
@@ -255,6 +263,22 @@ const ctxOf = (repo: string) => createNodeContext({ workDir: repo });
 const checkoutPath: Act = {
   git: (repo) => git(repo, 'checkout', '--', 'f'),
   tsgit: (repo) => checkout(ctxOf(repo), { paths: ['f'] }),
+};
+
+const moveFile: Act = {
+  git: (repo) => git(repo, 'mv', 'f', MOVED),
+  tsgit: (repo) => mv(ctxOf(repo), ['f'], MOVED),
+};
+
+const restoreMoved: Act = {
+  git: (repo) => git(repo, 'checkout', '--', MOVED),
+  tsgit: (repo) => checkout(ctxOf(repo), { paths: [MOVED] }),
+};
+
+const entryCarriesFileCtime = async (repo: string, file: string): Promise<boolean> => {
+  const worked = await lstat(path.join(repo, file), { bigint: true });
+  const recorded = entryStamp(repo, file, 'ctime');
+  return worked.ctimeNs === recorded.seconds * NS_PER_SECOND + recorded.nanoseconds;
 };
 
 const forcedSwitch: Act = {
@@ -719,6 +743,66 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             // Assert
             expect(await readFile(path.join(pair.peer, 'f'), 'utf8')).toBe('abc\n');
             expect(await readFile(path.join(pair.ours, 'f'), 'utf8')).toBe('abc\n');
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
+      describe.each([
+        ['core.trustCtime', 'false', SMUDGED_SIZE],
+        ['core.checkStat', 'minimal', SMUDGED_SIZE],
+        ['core.trustCtime', 'true', STAGED_SIZE],
+      ] as const)(
+        'When a file edited at the same size in the second it was staged is moved under %s %s',
+        (key, value, recordedSize) => {
+          it('Then both tools record the same size for the moved entry and restore the staged content', async () => {
+            // Arrange
+            const pair = await makePeerPair('whole-second-moved-edit');
+            try {
+              initBothRepos(pair.peer, pair.ours);
+              for (const repo of [pair.peer, pair.ours]) {
+                await seed(repo, ignorecase);
+                git(repo, 'config', key, value);
+                await staleSameSizeEdit(repo);
+              }
+
+              // Act
+              await actOnBoth(moveFile, pair.peer, pair.ours);
+              await toNextSecondStart();
+              const sizes = [debugSize(pair.peer, MOVED), debugSize(pair.ours, MOVED)];
+              await actOnBoth(restoreMoved, pair.peer, pair.ours);
+
+              // Assert
+              expect(sizes).toEqual([recordedSize, recordedSize]);
+              expect(await readFile(path.join(pair.peer, MOVED), 'utf8')).toBe(STAGED_CONTENT);
+              expect(await readFile(path.join(pair.ours, MOVED), 'utf8')).toBe(STAGED_CONTENT);
+            } finally {
+              await pair.dispose();
+            }
+          });
+        },
+      );
+
+      describe('When a settled, unchanged file is moved', () => {
+        it('Then both tools record the stat the rename left', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-moved-clean');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seed(repo, ignorecase);
+              await sleep(PAST_SECOND_MS);
+              git(repo, 'status', '--porcelain');
+              await sleep(PAST_SECOND_MS);
+            }
+
+            // Act
+            await actOnBoth(moveFile, pair.peer, pair.ours);
+
+            // Assert
+            expect(await entryCarriesFileCtime(pair.peer, MOVED)).toBe(true);
+            expect(await entryCarriesFileCtime(pair.ours, MOVED)).toBe(true);
           } finally {
             await pair.dispose();
           }

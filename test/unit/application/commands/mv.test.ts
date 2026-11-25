@@ -19,6 +19,9 @@ import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
 
+const MS_PER_SECOND = 1000;
+const STAGED_AT_MS = 1_700_000_000_000;
+
 const seedAndStage = async (workingTree: Readonly<Record<string, string>>): Promise<Context> => {
   const ctx = createMemoryContext();
   await seedRepo(ctx, { workingTree });
@@ -96,6 +99,81 @@ describe('mv', () => {
         expect(await readWork(ctx, 'b.txt')).toBe('modified-on-disk');
         const moved = await indexEntry(ctx, 'b.txt');
         expect(moved?.id).toBe(staged?.id);
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten at the same size in the second it was staged', () => {
+    describe('When mv renames it a second later', () => {
+      it('Then the moved entry is written with size 0, so no later stat can read it clean', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+
+          // Act
+          await mv(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          expect((await indexEntry(ctx, 'b.txt'))?.fileSize).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten with the same content a second after it was staged', () => {
+    describe('When mv renames it', () => {
+      it('Then the moved entry takes the stat of the file as it now stands', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'abc\n');
+          vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+
+          // Act
+          await mv(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          const moved = await indexEntry(ctx, 'b.txt');
+          expect(moved?.mtimeSeconds).toBe((STAGED_AT_MS + MS_PER_SECOND) / MS_PER_SECOND);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten with other content a second after it was staged', () => {
+    describe('When mv renames it', () => {
+      it('Then the moved entry keeps the stat it was staged with', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          const staged = await indexEntry(ctx, 'a.txt');
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'other content\n');
+          vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+
+          // Act
+          await mv(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          const moved = await indexEntry(ctx, 'b.txt');
+          expect(moved?.mtimeSeconds).toBe(staged?.mtimeSeconds);
+          expect(moved?.fileSize).toBe(staged?.fileSize);
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
   });

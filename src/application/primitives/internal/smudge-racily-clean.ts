@@ -1,10 +1,10 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index-entry.js';
-import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index-path-key.js';
 import type { StatCheck } from '../../../domain/git-index/stat-check.js';
 import { type ExecutableBitTrust, indexModeFromStat } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { compareAndRefresh, scopeOf } from '../compare-working-tree-entry.js';
 import { indexPath } from '../path-layout.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
@@ -53,22 +53,16 @@ export const readPreviousIndex = async (ctx: Context): Promise<GitIndex | undefi
   }
 };
 
-/** Stands in for git's `!ce_uptodate`: the entry is the index's own, unchanged since read. */
+/**
+ * Stands in for git's `!ce_uptodate`: the entry still carries stat data the index held when it
+ * was read, at its own path or at the path a rename moved it from.
+ */
 const carriedOver = (
   previous: GitIndex,
   racy: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const racyByPath = new Map<IndexPathKey, IndexEntry>(
-    racy.map((entry) => [indexPathKey(entry), entry]),
-  );
-  const unchanged: IndexEntry[] = [];
-  for (const entry of previous.entries) {
-    const candidate = racyByPath.get(indexPathKey(entry));
-    if (candidate !== undefined && statDataKey(candidate) === statDataKey(entry)) {
-      unchanged.push(candidate);
-    }
-  }
-  return unchanged;
+  const asRead = new Set(previous.entries.map(statDataKey));
+  return racy.filter((entry) => asRead.has(statDataKey(entry)));
 };
 
 /** The entries `keep` approves, each probed concurrently. */
@@ -80,6 +74,13 @@ const filterConcurrently = async (
   return entries.filter((_, i) => kept[i]);
 };
 
+/**
+ * git's smudge returns on any `lstat` failure, not only an absent path: a stat that cannot be
+ * taken proves nothing about the entry, and must not fail the index write.
+ */
+const statIfAny = (ctx: Context, absPath: string): Promise<FileStat | undefined> =>
+  lstatIfReachable(ctx.fs, absPath).catch(() => undefined);
+
 /** `ce_match_stat_basic` found no change: same kind, mode and content stat. */
 const statStillMatches = async (
   ctx: Context,
@@ -87,7 +88,7 @@ const statStillMatches = async (
   entry: IndexEntry,
   policy: Pick<RacilyClean, 'executableBit' | 'statCheck'>,
 ): Promise<boolean> => {
-  const stat = await lstatIfReachable(ctx.fs, joinPath(workDir, entry.path));
+  const stat = await statIfAny(ctx, joinPath(workDir, entry.path));
   return (
     stat !== undefined &&
     indexModeFromStat(stat, entry.mode, policy.executableBit) === entry.mode &&
