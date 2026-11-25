@@ -22,6 +22,8 @@ const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
 
 const arbSeconds = (): fc.Arbitrary<number> => fc.integer({ min: 1, max: 4_000_000_000 });
 const arbNanoseconds = (): fc.Arbitrary<number> => fc.integer({ min: 0, max: 999_999_999 });
+// The index second is drawn beside the entry's: nanoseconds can only matter when the two are equal.
+const arbSecondOffset = (): fc.Arbitrary<number> => fc.integer({ min: 0, max: 2 });
 // Size 0 on a non-empty blob reads as a smudged entry, never as a measured size.
 const arbMeasuredSize = (): fc.Arbitrary<number> => fc.integer({ min: 1, max: 0xff_ff_ff_ff });
 const arbU32 = (): fc.Arbitrary<number> => fc.integer({ min: 0, max: 0xff_ff_ff_ff });
@@ -379,17 +381,19 @@ describe('matchesStatData properties', () => {
 });
 
 describe('isRacyTimestamp properties', () => {
-  describe('Given an entry and an index mtime', () => {
+  describe('Given an entry and an index mtime within a second of it', () => {
     describe('When the nanoseconds of either side change', () => {
       it('Then isRacyTimestamp does not change', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(
             arbIndexEntry(false),
-            arbIndexMtime(),
+            arbSecondOffset(),
             arbNanoseconds(),
             arbNanoseconds(),
-            (entry, indexMtime, entryNs, indexNs) => {
+            arbNanoseconds(),
+            (entry, offset, startNs, entryNs, indexNs) => {
+              const indexMtime = { seconds: entry.mtimeSeconds + offset, nanoseconds: startNs };
               const changedEntry = { ...entry, mtimeNanoseconds: entryNs };
               const changedIndex = { ...indexMtime, nanoseconds: indexNs };
               expect(isRacyTimestamp(changedEntry, changedIndex)).toBe(

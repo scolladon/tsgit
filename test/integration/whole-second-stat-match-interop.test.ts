@@ -58,6 +58,10 @@ class FixturePremiseError extends Error {
 const premiseNeverMet = (shape: string): FixturePremiseError =>
   new FixturePremiseError(`${shape}: premise not met in ${MAX_FIXTURE_ATTEMPTS} attempts`);
 
+/** For a shape that makes one attempt: its waits make the premise certain, so a miss is a defect. */
+const premiseNotMet = (shape: string): FixturePremiseError =>
+  new FixturePremiseError(`${shape}: premise not met`);
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const toNextSecondStart = async (): Promise<void> => {
@@ -172,7 +176,13 @@ const sameSizeEditNewInode = async (repo: string): Promise<void> => {
   const after = await lstat(file, { bigint: true });
   const sameSecond = after.mtimeNs / NS_PER_SECOND === entryStamp(repo, 'f', 'mtime').seconds;
   if (after.ino !== before.ino && sameSecond) return;
-  throw premiseNeverMet('same-size edit on a new inode');
+  throw premiseNotMet('same-size edit on a new inode');
+};
+
+/** The new-inode edit with ctime told not to count: only the inode can show the change. */
+const newInodeWithCtimeIgnored = async (repo: string): Promise<void> => {
+  git(repo, 'config', 'core.trustCtime', 'false');
+  await sameSizeEditNewInode(repo);
 };
 
 /** Index written a second later by git itself, then a chmod a second after that: only the ctime second moved. */
@@ -183,7 +193,7 @@ const chmodSecondsLater = async (repo: string, file = 'f'): Promise<void> => {
   await chmod(path.join(repo, file), GROUP_WRITABLE_MODE);
   const worked = await lstat(path.join(repo, file), { bigint: true });
   if (worked.ctimeNs / NS_PER_SECOND > entryStamp(repo, file, 'ctime').seconds) return;
-  throw premiseNeverMet('chmod a second later');
+  throw premiseNotMet('chmod a second later');
 };
 
 /** A smudged entry whose file is emptied in place, then left behind by a later index write. */
@@ -459,7 +469,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       });
 
-      describe('When status runs under core.checkStat minimal after a same-size edit that changed only the inode', () => {
+      describe('When status runs under core.checkStat minimal after a same-size edit on a new inode', () => {
         it('Then both tools report the file clean', async () => {
           // Arrange
           const pair = await makePeerPair('whole-second-minimal-inode');
@@ -603,8 +613,36 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         });
       });
 
+      describe('When a file chmod-ed a second later is added again under core.trustCtime false', () => {
+        it('Then both tools keep its recorded stat', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-add-ignored-ctime');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seed(repo, ignorecase);
+              git(repo, 'config', 'core.trustCtime', 'false');
+              await chmodSecondsLater(repo);
+            }
+            const recorded = entryDebug(pair.peer, 'f');
+            const recordedByTsgit = entryDebug(pair.ours, 'f');
+
+            // Act
+            git(pair.peer, 'add', 'f');
+            await add(ctxOf(pair.ours), ['f']);
+
+            // Assert
+            expect(entryDebug(pair.peer, 'f')).toEqual(recorded);
+            expect(entryDebug(pair.ours, 'f')).toEqual(recordedByTsgit);
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
       describe.each([
-        ['a same-size edit that changed only the inode', sameSizeEditNewInode],
+        ['a same-size edit on a new inode', sameSizeEditNewInode],
+        ['a same-size edit on a new inode with ctime not trusted', newInodeWithCtimeIgnored],
         ['a same-size edit in the index second, one second later', staleSameSizeEdit],
         ['a file emptied in place while its entry is smudged', smudgedTruncation],
       ] as const)('When status runs after %s', (_label, shape) => {

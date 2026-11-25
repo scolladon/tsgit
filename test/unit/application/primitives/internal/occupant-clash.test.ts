@@ -691,7 +691,11 @@ describe('classifyOccupant', () => {
       it('Then it is clear, the cached stat settling it', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const lookup = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
+        // The stat is recorded from the rewritten bytes, so no later write can cross a second.
+        const lookup = await arrangeTracked(ctx, {
+          indexMtime: INDEX_WRITTEN_AFTER_ENTRY,
+          cachedFrom: new TextEncoder().encode('v2\n'),
+        });
         const tracked: TrackedLookup = async (target) => {
           const found = await lookup(target);
           if (found === undefined) return undefined;
@@ -700,7 +704,6 @@ describe('classifyOccupant', () => {
         };
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\ttrustCtime = false\n');
         invalidateConfigCache(ctx);
-        await ctx.fs.write(`${ctx.layout.workDir}/held/x`, new TextEncoder().encode('v2\n'));
 
         // Act
         const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));

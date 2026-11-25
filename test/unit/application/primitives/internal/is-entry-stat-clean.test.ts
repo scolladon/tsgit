@@ -49,6 +49,14 @@ const BASE_STAT: FileStat = {
   mtimeNs: 1_700_000_100_222_000_000n,
 };
 
+const MS_PER_SECOND = 1000;
+const NS_PER_MS = 1_000_000n;
+const U32_MODULUS = 2 ** 32;
+const LATE_IN_SECOND_NS = 999_000_000n;
+
+/** The same whole second as `ms`, at a nanosecond no base stamp uses. */
+const laterInSecond = (ms: number): bigint => BigInt(ms) * NS_PER_MS + LATE_IN_SECOND_NS;
+
 // Comfortably later than BASE_ENTRY.mtimeSeconds — never racy in the baseline.
 const BASE_INDEX_MTIME: IndexMtime = { seconds: 1_700_001_000, nanoseconds: 0 };
 
@@ -352,9 +360,10 @@ describe('isEntryStatClean', () => {
       it('Then it is clean only when the policy does not compare the drifted field', () => {
         // Arrange
         const stat = { ...BASE_STAT, ...drift } as FileStat;
+        const sut = isEntryStatClean;
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, check);
+        const result = sut(BASE_ENTRY, stat, BASE_INDEX_MTIME, check);
 
         // Assert
         expect(result).toBe(expected);
@@ -368,9 +377,10 @@ describe('isEntryStatClean', () => {
         // Arrange
         const entry: IndexEntry = { ...BASE_ENTRY, fileSize: 0 };
         const stat: FileStat = { ...BASE_STAT, size: 0 };
+        const sut = isEntryStatClean;
 
         // Act
-        const result = isEntryStatClean(entry, stat, BASE_INDEX_MTIME, ALL);
+        const result = sut(entry, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -423,20 +433,20 @@ describe('isRacyTimestamp', () => {
       });
     });
   });
-});
 
-describe('Given an index mtime of second 0', () => {
-  describe('When an entry of any second is checked', () => {
-    it('Then it is not racy', () => {
-      // Arrange
-      const entry = { ...BASE_ENTRY, mtimeSeconds: 0, mtimeNanoseconds: 0 };
-      const sut = isRacyTimestamp;
+  describe('Given an index mtime of second 0', () => {
+    describe('When an entry of any second is checked', () => {
+      it('Then it is not racy', () => {
+        // Arrange
+        const entry = { ...BASE_ENTRY, mtimeSeconds: 0, mtimeNanoseconds: 0 };
+        const sut = isRacyTimestamp;
 
-      // Act
-      const result = sut(entry, { seconds: 0, nanoseconds: 0 });
+        // Act
+        const result = sut(entry, { seconds: 0, nanoseconds: 0 });
 
-      // Assert
-      expect(result).toBe(false);
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 });
@@ -690,19 +700,24 @@ describe('matchesCachedStat', () => {
   });
 
   describe.each([
-    ['ctime nanoseconds that drifted', { ctimeNs: 1_700_000_000_999_000_000n }, ALL],
-    ['mtime nanoseconds that drifted', { mtimeNs: 1_700_000_100_999_000_000n }, ALL],
-    ['a ctime a second later under a policy ignoring it', { ctimeMs: 1_700_000_001_000 }, NO_CTIME],
-    ['an inode that drifted under a policy ignoring it', { ino: 43 }, MINIMAL],
+    ['ctime nanoseconds that drifted', { ctimeNs: laterInSecond(BASE_STAT.ctimeMs) }, ALL],
+    ['mtime nanoseconds that drifted', { mtimeNs: laterInSecond(BASE_STAT.mtimeMs) }, ALL],
+    [
+      'a ctime a second later under a policy ignoring it',
+      { ctimeMs: BASE_STAT.ctimeMs + MS_PER_SECOND },
+      NO_CTIME,
+    ],
+    ['an inode that drifted under a policy ignoring it', { ino: BASE_STAT.ino + 1 }, MINIMAL],
   ] as const)('Given a non-racy entry whose stat shows %s', (_label, drift, statCheck) => {
     describe('When judged', () => {
       it('Then it matches without consulting the content', async () => {
         // Arrange
         const contentMatches = vi.fn().mockResolvedValue(false);
         const stat = { ...BASE_STAT, ...drift } as FileStat;
+        const sut = matchesCachedStat;
 
         // Act
-        const result = await matchesCachedStat(
+        const result = await sut(
           { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted', statCheck },
           ABS_PATH,
           stat,
@@ -723,9 +738,10 @@ describe('matchesCachedStat', () => {
         const contentMatches = vi.fn().mockResolvedValue(true);
         const entry = { ...BASE_ENTRY, fileSize: 0 };
         const stat: FileStat = { ...BASE_STAT, size: 0 };
+        const sut = matchesCachedStat;
 
         // Act
-        const result = await matchesCachedStat(
+        const result = await sut(
           { entry, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted', statCheck: ALL },
           ABS_PATH,
           stat,
@@ -831,18 +847,28 @@ describe('matchesStatData', () => {
   describe.each([
     ['nothing drifted', {}, ALL, true],
     ['the nanoseconds of mtime and ctime', { mtimeNs: 1n, ctimeNs: 1n }, ALL, true],
-    ['mtime by a second', { mtimeMs: 1_700_000_101_000 }, MINIMAL, false],
-    ['ctime by a second', { ctimeMs: 1_700_000_001_000 }, ALL, false],
-    ['ctime by a second', { ctimeMs: 1_700_000_001_000 }, NO_CTIME, true],
-    ['uid', { uid: 502 }, ALL, false],
-    ['uid', { uid: 502 }, MINIMAL, true],
-    ['gid', { gid: 21 }, ALL, false],
-    ['gid', { gid: 21 }, MINIMAL, true],
-    ['inode', { ino: 43 }, ALL, false],
-    ['inode', { ino: 43 }, MINIMAL, true],
-    ['size', { size: 8 }, MINIMAL, false],
-    ['size beyond 32 bits that wraps to the recorded one', { size: 2 ** 32 + 7 }, ALL, true],
-    ['inode beyond 32 bits that wraps to the recorded one', { ino: 2 ** 32 + 42 }, ALL, true],
+    ['mtime by a second', { mtimeMs: BASE_STAT.mtimeMs + MS_PER_SECOND }, MINIMAL, false],
+    ['ctime by a second', { ctimeMs: BASE_STAT.ctimeMs + MS_PER_SECOND }, ALL, false],
+    ['ctime by a second', { ctimeMs: BASE_STAT.ctimeMs + MS_PER_SECOND }, NO_CTIME, true],
+    ['uid', { uid: BASE_STAT.uid + 1 }, ALL, false],
+    ['uid', { uid: BASE_STAT.uid + 1 }, MINIMAL, true],
+    ['gid', { gid: BASE_STAT.gid + 1 }, ALL, false],
+    ['gid', { gid: BASE_STAT.gid + 1 }, MINIMAL, true],
+    ['inode', { ino: BASE_STAT.ino + 1 }, ALL, false],
+    ['inode', { ino: BASE_STAT.ino + 1 }, MINIMAL, true],
+    ['size', { size: BASE_STAT.size + 1 }, MINIMAL, false],
+    [
+      'size beyond 32 bits that wraps to the recorded one',
+      { size: U32_MODULUS + BASE_STAT.size },
+      ALL,
+      true,
+    ],
+    [
+      'inode beyond 32 bits that wraps to the recorded one',
+      { ino: U32_MODULUS + BASE_STAT.ino },
+      ALL,
+      true,
+    ],
   ] as const)('Given a stat drifted in %s', (_label, drift, check, expected) => {
     describe('When matched against the entry', () => {
       it('Then it matches only when git compares no drifted field', () => {

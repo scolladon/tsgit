@@ -2211,6 +2211,23 @@ describe('compareWorkingTreeEntry under core.fileMode = false', () => {
       });
     });
   });
+
+  describe('Given the default config and a scope that carries a stat policy but no executable-bit policy', () => {
+    describe('When compareAndRefresh on an exec-bit-only change', () => {
+      it("Then the missing policy is read from the config and the delta is 'mode-changed'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        lstatReportsMode(ctx, 0o100755);
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, { statCheck: ALL_STAT_FIELDS });
+
+        // Assert
+        expect(result.delta.status).toBe('mode-changed');
+      });
+    });
+  });
 });
 
 describe('compareAndRefresh on an assume-valid entry the overwrite check judges', () => {
