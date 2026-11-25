@@ -81,9 +81,10 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   `MERGE_HAS_CONFLICTS`; the refreshed index stays on disk, and no object, ref or
   reflog entry is written.
 - **Push ends as `reset --hard HEAD` does.** After a save, the reset rewrites only
-  the files whose work-tree stat is not up to date, writes `ORIG_HEAD`, and, on an
-  attached HEAD, appends a `reset: moving to HEAD` entry to the HEAD reflog. There
-  is no pending-operation gate: a resolved merge, cherry-pick, revert or rebase does
+  the files whose work-tree stat is not up to date (compared in whole seconds, on
+  the fields `core.trustCtime` and `core.checkStat` let count), writes `ORIG_HEAD`,
+  and, on an attached HEAD, appends a `reset: moving to HEAD` entry to the HEAD
+  reflog. There is no pending-operation gate: a resolved merge, cherry-pick, revert or rebase does
   not refuse, and the push clears `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD`
   and keeps `REBASE_HEAD`. With `keepIndex`, `post-checkout` runs with the saved
   HEAD id twice and the file flag `0`.

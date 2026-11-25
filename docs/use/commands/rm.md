@@ -42,7 +42,7 @@ working file in every case; `force` overrides the valve entirely.
 
 ## Submodules
 
-Under `core.fileMode = false` (local config, or an active `config.worktree` over it) the work file's exec bit is untrusted: a file whose only difference from the index is its exec bit is not a local modification. A directory standing at a tracked non-gitlink path reads as removed, so it is no local modification either. A malformed `core.fileMode` refuses `CONFIG_BAD_BOOLEAN_VALUE`.
+Under `core.fileMode = false` (local config, or an active `config.worktree` over it) the work file's exec bit is untrusted: a file whose only difference from the index is its exec bit is not a local modification. A directory standing at a tracked non-gitlink path reads as removed, so it is no local modification either. A malformed `core.fileMode` refuses `CONFIG_BAD_BOOLEAN_VALUE`. The index's cached stat is compared in whole seconds, on the fields `core.trustCtime` and `core.checkStat` let count, as git's `ie_match_stat` does: a file whose stat matches is no local modification, unless its entry is racy and its content differs.
 
 `rm` prepares a submodule (a gitlink entry) in git's order before anything leaves the working tree:
 
