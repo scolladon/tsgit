@@ -649,6 +649,34 @@ Rounds 2 and 3 reviewed the fixes themselves.
   reached the three-round cap with a finding in round 3; that finding is fixed and measured
   above, and no reviewer read the last fix.
 
+## What validation changed
+
+One narrowed Stryker bucket over the 15 changed source files (215 mutants, 38 unit suites,
+concurrency 1), then every verdict that was not a plain kill checked by hand with the exact
+replacement in a throwaway copy.
+
+- **Timeouts.** 67 mutants timed out, all on lines that 600 to 1200 tests cover. By hand 66
+  fail between 1 and 319 tests within seconds. One passes: `isResolved` forced to false in
+  `compare-working-tree-entry.ts`, which only replaces a resolved scope by an equal copy. It is
+  equivalent and stays unmarked, because the same mutator has three killable mutants on that
+  line.
+- **A missing row.** `mv` compared a moved entry with a scope that could lose its attribute
+  provider unnoticed. A unit row now moves a file staged through `eol=crlf` and rewritten with
+  the same content: its entry takes the new stat, as git 2.56.1 does.
+- **A redundant guard.** `mv` returned early when nothing moved, only to avoid building the
+  comparison scope. The scope is now built lazily, for the first entry that is compared.
+- **An equivalent, marked.** Keying only the racy as-read entries in the smudge pass cannot
+  change its result: a key holds the mode and the mtime second, which are all the racy test
+  reads of an entry.
+- **A divergence, folded (ADR-1270).** A static mutant on `mv`'s empty-index constant led to a
+  probe of `mv -k` with a source git refuses. git writes no index when no entry moved and
+  creates none where none exists. tsgit wrote one on every run, and on this branch that write
+  smudged a racy entry. `mv` now commits the lock only when an entry moved. Two interop rows
+  under both `core.ignorecase` values and two unit rows pin it, each red before the fix.
+- **Not chased.** The read-count row of `materialize-tree-pruning.test.ts` fails in about one
+  run in three when vitest runs without file isolation, on `main` as on this branch. Deferred to
+  impact triage.
+
 ## Out of scope
 
 - Ledger row 32.89 (assume-unchanged merge): its racy half needs `builtin/merge.c` /
