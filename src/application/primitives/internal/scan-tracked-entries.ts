@@ -19,6 +19,8 @@ import { createLeadingPathScanner } from './symlinked-leading-path.js';
 export interface TrackedScan {
   readonly workingMap: Map<FilePath, WorkingTreeDelta>;
   readonly refreshed: ReadonlyArray<IndexEntry>;
+  /** The skip-worktree paths: git's refresh does not compare them and marks them up to date. */
+  readonly leftAlone: ReadonlySet<FilePath>;
 }
 
 interface ScannedEntry {
@@ -48,7 +50,9 @@ const scanEntry = async (
   return { path: escapedPathOf(entry), delta, refreshed };
 };
 
-const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
+const trackedScanOf = (
+  results: ReadonlyArray<ScannedEntry | undefined>,
+): Omit<TrackedScan, 'leftAlone'> => {
   const workingMap = new Map<FilePath, WorkingTreeDelta>();
   const refreshed: IndexEntry[] = [];
   for (const result of results) {
@@ -89,8 +93,11 @@ const scanWorkingTree = async (
   // A clean driver hears the paths in index order, however the reads race;
   // with no driver configured no clean runs or refuses, and the scan needs no order.
   const results = filterDriversConfigured ? await inIndexOrder(ctx, stage0, scan) : await scan();
-  return trackedScanOf(results);
+  return { ...trackedScanOf(results), leftAlone: leftAloneIn(stage0) };
 };
+
+const leftAloneIn = (stage0: ReadonlyArray<IndexEntry>): ReadonlySet<FilePath> =>
+  new Set(stage0.filter((entry) => entry.flags.skipWorktree).map(escapedPathOf));
 
 /**
  * One `compareAndRefresh` per stage-0, non-skip-worktree entry through the
@@ -108,8 +115,11 @@ export const scanTrackedEntries = async (
   return scanWorkingTree(ctx, stage0, onScanned, provider, index.indexMtime);
 };
 
-/** git's `CE_UPTODATE`: the scan found the path unchanged, by stat or by content. */
+/**
+ * git's `CE_UPTODATE`: the scan found the path unchanged, by stat or by content, or left it
+ * alone as a refresh leaves a skip-worktree entry.
+ */
 export const verifiedBy =
   (scan: TrackedScan): IsVerified =>
   (path) =>
-    scan.workingMap.get(path)?.status === 'unchanged';
+    scan.leftAlone.has(path) || scan.workingMap.get(path)?.status === 'unchanged';

@@ -179,6 +179,24 @@ const sameSizeEditNewInode = async (repo: string): Promise<void> => {
   throw premiseNotMet('same-size edit on a new inode');
 };
 
+/** `f` re-staged, flagged skip-worktree and rewritten at the same size, all in the index second. */
+const skipWorktreeSameSizeEdit = async (repo: string): Promise<void> => {
+  for (let attempt = 0; attempt < MAX_FIXTURE_ATTEMPTS; attempt += 1) {
+    await toNextSecondStart();
+    await put(repo, 'f', STAGED_CONTENT);
+    git(repo, 'add', 'f');
+    git(repo, 'update-index', '--skip-worktree', 'f');
+    await put(repo, 'f', 'xyz\n');
+    const entry = entryStamp(repo, 'f', 'mtime');
+    const index = await indexMtime(repo);
+    const worked = await lstat(path.join(repo, 'f'), { bigint: true });
+    const editedInEntrySecond = worked.mtimeNs / NS_PER_SECOND === entry.seconds;
+    if (editedInEntrySecond && entry.seconds === index.seconds) return;
+    git(repo, 'update-index', '--no-skip-worktree', 'f');
+  }
+  throw premiseNeverMet('skip-worktree same-size edit');
+};
+
 /** The new-inode edit with ctime told not to count: only the inode can show the change. */
 const newInodeWithCtimeIgnored = async (repo: string): Promise<void> => {
   git(repo, 'config', 'core.trustCtime', 'false');
@@ -289,6 +307,24 @@ const entryCarriesFileCtime = async (repo: string, file: string): Promise<boolea
   const worked = await lstat(path.join(repo, file), { bigint: true });
   const recorded = entryStamp(repo, file, 'ctime');
   return worked.ctimeNs === recorded.seconds * NS_PER_SECOND + recorded.nanoseconds;
+};
+
+/** An index write each tool makes on its own twin; the git side may wait on the file system. */
+interface IndexWrite {
+  readonly git: (repo: string) => Promise<void>;
+  readonly tsgit: (repo: string) => Promise<unknown>;
+}
+
+const refreshWithStatus: IndexWrite = {
+  git: async (repo) => {
+    git(repo, 'status', '--porcelain');
+  },
+  tsgit: (repo) => status(ctxOf(repo)),
+};
+
+const stageUnrelatedPath: IndexWrite = {
+  git: gitAddsUnrelatedPath,
+  tsgit: tsgitAddsUnrelatedPath,
 };
 
 const forcedSwitch: Act = {
@@ -846,6 +882,36 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           }
         });
       });
+
+      describe.each([
+        ['status refreshes the index', refreshWithStatus, STAGED_SIZE],
+        ['another path is added', stageUnrelatedPath, SMUDGED_SIZE],
+      ] as const)(
+        'When %s in the second a skip-worktree entry was rewritten at the same size',
+        (_label, write, recordedSize) => {
+          it('Then both tools record the same size for the skip-worktree entry', async () => {
+            // Arrange
+            const pair = await makePeerPair('whole-second-skip-worktree');
+            try {
+              initBothRepos(pair.peer, pair.ours);
+              for (const repo of [pair.peer, pair.ours]) {
+                await seed(repo, ignorecase);
+                await skipWorktreeSameSizeEdit(repo);
+              }
+
+              // Act
+              await write.git(pair.peer);
+              await write.tsgit(pair.ours);
+
+              // Assert
+              const sizes = [debugSize(pair.peer, 'f'), debugSize(pair.ours, 'f')];
+              expect(sizes).toEqual([recordedSize, recordedSize]);
+            } finally {
+              await pair.dispose();
+            }
+          });
+        },
+      );
 
       describe('When a switch changes a path beneath a symlinked directory whose file stat moved within its second', () => {
         it('Then both tools switch as git does', async () => {
