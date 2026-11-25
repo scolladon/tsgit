@@ -10,6 +10,7 @@ import { indexPath } from '../path-layout.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { readIndexAt } from '../read-index.js';
 import { readStatCheck } from '../read-stat-check.js';
+import { boundedMapFor } from './concurrency.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { type IndexMtime, isRacyTimestamp, matchesStatData } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -69,12 +70,16 @@ const carriedOver = (
   return racy.filter((entry) => asRead.has(statDataKey(entry)));
 };
 
-/** The entries `keep` approves, each probed concurrently. */
+/**
+ * The entries `keep` approves, probed through the I/O bound: after a checkout every entry can
+ * share the index's second, and an unbounded fan-out then opens every tracked file at once.
+ */
 const filterConcurrently = async (
+  ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
   keep: (entry: IndexEntry) => Promise<boolean>,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const kept = await Promise.all(entries.map(keep));
+  const kept = await boundedMapFor(ctx, 'ioBound', entries, keep);
   return entries.filter((_, i) => kept[i]);
 };
 
@@ -123,7 +128,7 @@ const racilyClean = async (
     executableBit: await readExecutableBitTrust(ctx),
     statCheck: await readStatCheck(ctx),
   };
-  const clean = await filterConcurrently(carriedOver(previous, racy, indexMtime), (entry) =>
+  const clean = await filterConcurrently(ctx, carriedOver(previous, racy, indexMtime), (entry) =>
     statStillMatches(ctx, workDir, entry, policy),
   );
   return { clean, ...policy };
@@ -155,6 +160,7 @@ export const smudgeRacilyClean = async (
     statCheck,
   };
   const modified = await filterConcurrently(
+    ctx,
     clean,
     async (entry) => (await compareAndRefresh(ctx, entry, scope)).delta.status === 'modified',
   );
