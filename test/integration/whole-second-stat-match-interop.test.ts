@@ -327,6 +327,13 @@ const stageUnrelatedPath: IndexWrite = {
   tsgit: tsgitAddsUnrelatedPath,
 };
 
+/** The clean-move row proves nothing on a file system whose rename keeps the ctime. */
+const requireRenameMovedCtime = async (repo: string, staged: Stamp): Promise<void> => {
+  const moved = await lstat(path.join(repo, MOVED), { bigint: true });
+  if (moved.ctimeNs !== staged.seconds * NS_PER_SECOND + staged.nanoseconds) return;
+  throw premiseNotMet('rename moved the ctime');
+};
+
 const forcedSwitch: Act = {
   git: (repo) => git(repo, 'checkout', '-q', '-f', 'other'),
   tsgit: (repo) => checkout(ctxOf(repo), { rev: 'other', force: true }),
@@ -858,6 +865,31 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         },
       );
 
+      describe('When a skip-worktree entry rewritten at the same size in the index second is moved under core.trustCtime false', () => {
+        it('Then both tools keep its recorded size', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-moved-skip-worktree');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seed(repo, ignorecase);
+              git(repo, 'config', 'core.trustCtime', 'false');
+              await skipWorktreeSameSizeEdit(repo);
+              await sleep(PAST_SECOND_MS);
+            }
+
+            // Act
+            await actOnBoth(moveFile, pair.peer, pair.ours);
+
+            // Assert
+            const sizes = [debugSize(pair.peer, MOVED), debugSize(pair.ours, MOVED)];
+            expect(sizes).toEqual([STAGED_SIZE, STAGED_SIZE]);
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
       describe('When a settled, unchanged file is moved', () => {
         it('Then both tools record the stat the rename left', async () => {
           // Arrange
@@ -870,11 +902,17 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
               git(repo, 'status', '--porcelain');
               await sleep(PAST_SECOND_MS);
             }
+            const staged = [
+              entryStamp(pair.peer, 'f', 'ctime'),
+              entryStamp(pair.ours, 'f', 'ctime'),
+            ];
 
             // Act
             await actOnBoth(moveFile, pair.peer, pair.ours);
 
             // Assert
+            await requireRenameMovedCtime(pair.peer, staged[0] as Stamp);
+            await requireRenameMovedCtime(pair.ours, staged[1] as Stamp);
             expect(await entryCarriesFileCtime(pair.peer, MOVED)).toBe(true);
             expect(await entryCarriesFileCtime(pair.ours, MOVED)).toBe(true);
           } finally {
@@ -887,7 +925,7 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         ['status refreshes the index', refreshWithStatus, STAGED_SIZE],
         ['another path is added', stageUnrelatedPath, SMUDGED_SIZE],
       ] as const)(
-        'When %s in the second a skip-worktree entry was rewritten at the same size',
+        'When %s after a skip-worktree entry was rewritten at the same size in the index second',
         (_label, write, recordedSize) => {
           it('Then both tools record the same size for the skip-worktree entry', async () => {
             // Arrange

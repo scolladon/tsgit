@@ -44,7 +44,11 @@ import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
-import { compareAndRefresh, scopeOf } from '../primitives/compare-working-tree-entry.js';
+import {
+  type ComparisonScope,
+  compareAndRefresh,
+  scopeOf,
+} from '../primitives/compare-working-tree-entry.js';
 import { readConfig } from '../primitives/config-read.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
@@ -345,9 +349,24 @@ const refreshScope = async (ctx: Context, indexMtime: GitIndex['indexMtime']) =>
 });
 
 /**
- * git's `rename_index_entry_at`: each moved entry is refreshed at its new path. An entry whose
- * content is unchanged takes the stat the rename left and is up to date; a modified one keeps
- * the stat it was read with, which leaves it to the racy smudge of the index write.
+ * A moved entry as git's refresh leaves it when it is up to date: a skip-worktree entry as it
+ * is, without a look at its file; an unchanged one with the stat the rename left. `undefined`
+ * when the content differs: the entry keeps the stat it was read with.
+ */
+const settleMoved = async (
+  ctx: Context,
+  to: IndexEntry,
+  scope: ComparisonScope,
+): Promise<IndexEntry | undefined> => {
+  if (to.flags.skipWorktree) return to;
+  const { delta, refreshed } = await compareAndRefresh(ctx, to, scope);
+  if (delta.status !== 'unchanged') return undefined;
+  return refreshed ?? to;
+};
+
+/**
+ * git's `rename_index_entry_at`: each moved entry is refreshed at its new path. The paths
+ * returned are up to date; any other is left to the racy smudge of the index write.
  */
 const refreshMoved = async (
   ctx: Context,
@@ -359,10 +378,10 @@ const refreshMoved = async (
   if (moved.length === 0) return upToDate;
   const scope = await refreshScope(ctx, indexMtime);
   for (const { to } of moved) {
-    const { delta, refreshed } = await compareAndRefresh(ctx, to, scope);
-    if (delta.status !== 'unchanged') continue;
+    const settled = await settleMoved(ctx, to, scope);
+    if (settled === undefined) continue;
     upToDate.add(to.path);
-    if (refreshed !== undefined) byPath.set(indexPathKey(to), refreshed);
+    byPath.set(indexPathKey(to), settled);
   }
   return upToDate;
 };

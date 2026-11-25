@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -36,6 +37,17 @@ const readWork = (ctx: Context, path: string): Promise<string> => ctx.fs.readUtf
 const indexEntry = async (ctx: Context, path: string) => {
   const index = await readIndex(ctx);
   return index.entries.find((entry) => entry.path === path);
+};
+
+/** Flags the staged entry skip-worktree, as `update-index --skip-worktree` does, and returns it. */
+const markSkipWorktree = async (ctx: Context, path: string): Promise<IndexEntry> => {
+  const { entries } = await readIndex(ctx);
+  const flagged = entries.map((entry) =>
+    entry.path === path ? { ...entry, flags: { ...entry.flags, skipWorktree: true } } : entry,
+  );
+  const lock = await acquireIndexLock(ctx);
+  await lock.commit(flagged, 'update');
+  return flagged.find((entry) => entry.path === path) as IndexEntry;
 };
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
@@ -113,12 +125,38 @@ describe('mv', () => {
           const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
           await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
           vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          const sut = mv;
 
           // Act
-          await mv(ctx, ['a.txt'], 'b.txt');
+          await sut(ctx, ['a.txt'], 'b.txt');
 
           // Assert
           expect((await indexEntry(ctx, 'b.txt'))?.fileSize).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a skip-worktree file rewritten at the same size in the second it was staged', () => {
+    describe('When mv renames it a second later', () => {
+      it('Then the moved entry keeps its recorded size, as a refresh leaves a skip-worktree entry alone', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          const staged = await markSkipWorktree(ctx, 'a.txt');
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          expect((await indexEntry(ctx, 'b.txt'))?.fileSize).toBe(staged.fileSize);
         } finally {
           vi.useRealTimers();
         }
@@ -137,9 +175,10 @@ describe('mv', () => {
           vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
           await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'abc\n');
           vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+          const sut = mv;
 
           // Act
-          await mv(ctx, ['a.txt'], 'b.txt');
+          await sut(ctx, ['a.txt'], 'b.txt');
 
           // Assert
           const moved = await indexEntry(ctx, 'b.txt');
@@ -163,9 +202,10 @@ describe('mv', () => {
           vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
           await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'other content\n');
           vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+          const sut = mv;
 
           // Act
-          await mv(ctx, ['a.txt'], 'b.txt');
+          await sut(ctx, ['a.txt'], 'b.txt');
 
           // Assert
           const moved = await indexEntry(ctx, 'b.txt');
