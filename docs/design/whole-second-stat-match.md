@@ -611,7 +611,34 @@ fix.
 - **Deferred to impact triage**, proven and outside this change: a switch that adds a case
   variant of a tracked file is refused under `core.ignorecase=true`; a forced checkout restores
   an edited assume-unchanged file where git keeps it once the index holds 1000 entries (git's
-  preload marks the entry up to date).
+  preload marks the entry up to date); `mv` moves a source outside the sparse-checkout cone
+  where git refuses it without `--sparse`.
+
+Rounds 2 and 3 reviewed the fixes themselves.
+
+- **Security, MEDIUM, in the `mv` fix.** A moved skip-worktree entry was compared, read
+  modified and was smudged under the two non-default policies. git's refresh returns early for a
+  skip-worktree entry. `mv` now counts it up to date without a look at its file. Round 3 found
+  nothing more.
+- **Perf, MEDIUM, in the smudge fix.** Keying the candidates on every entry of the index as
+  read cost about 45 ms of string joins per write on a 100k-entry index. Only the entries that
+  are racy against that index's mtime are keyed now: a carried-over entry has its former self's
+  mtime. Measured back within run spread of main.
+- **Perf, MEDIUM, older than this change and made reachable by it.** On an index whose every
+  entry is racy (100k files sharing the index second), `add` of one path never finished: the
+  smudge pass ran one unbounded `Promise.all` of `lstat`s, then one of content compares. On
+  main the nanosecond racy test left almost no entry racy after a checkout, so the pass had
+  little to do. It now fans out through the I/O bound. Same tree, one path added: git 3.6 to
+  11.9 s; tsgit over 240 s before (branch and main, both stopped at that cap, 2.2 GB in the
+  reviewer's run); 14.4, 16.7 and 15.8 s after, peak RSS 246 to 305 MiB. No bench row guards
+  it: at the bench's 5000 files the unbounded form overlaps the bounded one.
+- **Kept as is.** `mv` refreshes its moved entries one after another, as git does. A bounded
+  concurrent pass saved about 45 ms on a 5000-file directory move under `io: 'threadpool'` and
+  nothing measurable under the default mode; it would also need the clean-order protocol of the
+  status scan to keep a clean driver's request order. Deferred to impact triage.
+- **Convergence.** Code converged in round 1, tests in round 2, security in round 3. Perf
+  reached the three-round cap with a finding in round 3; that finding is fixed and measured
+  above, and no reviewer read the last fix.
 
 ## Out of scope
 
