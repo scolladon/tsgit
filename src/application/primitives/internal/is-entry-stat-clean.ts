@@ -108,18 +108,19 @@ export const matchesStatData = (entry: IndexEntry, stat: FileStat, check: StatCh
  * `ie_match_stat`-faithful stat-cache short-circuit: is `entry` provably
  * unchanged against the current working-tree `stat` without reading or
  * hashing the file's content? An assume-valid entry (`CE_VALID`) is
- * unconditionally clean; a racy entry (recorded mtime not provably older
- * than the index file's own mtime) always defers to read+hash; otherwise
- * the content-stat field set must match exactly.
+ * unconditionally clean; a racy entry (recorded mtime second not before the
+ * index file's own) always defers to read+hash; otherwise the stat data must
+ * match in whole seconds, on the fields `check` lets count.
  */
 export const isEntryStatClean = (
   entry: IndexEntry,
   stat: FileStat,
   indexMtime: IndexMtime,
+  check: StatCheck,
 ): boolean => {
   if (entry.flags.assumeValid) return true;
   if (isRacyTimestamp(entry, indexMtime)) return false;
-  return matchesContentStat(entry, stat);
+  return matchesStatData(entry, stat, check);
 };
 
 // A tracked path's index entry with the mtime of the index it came from (the racy-guard reference).

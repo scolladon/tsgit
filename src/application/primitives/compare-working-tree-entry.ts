@@ -42,7 +42,6 @@ import { withStatData } from './internal/index-entry-from-stat.js';
 import {
   type IndexMtime,
   isEntryStatClean,
-  matchesContentStat,
   matchesStatData,
   type RacyContentCheck,
 } from './internal/is-entry-stat-clean.js';
@@ -138,17 +137,17 @@ const statOnlyVerdict = (
   entry: IndexEntry,
   stat: FileStat,
   worktreeMode: FileMode,
-  indexMtime: IndexMtime | undefined,
+  scope: ResolvedScope,
 ): WorkingTreeDelta | undefined => {
   // A file↔symlink kind change is git's `T`, decided on mode alone — no hash
   // needed and the content is meaningless across kinds.
   if (!isSameKind(worktreeMode, entry.mode)) return { status: 'type-changed', worktreeMode };
-  if (indexMtime === undefined) return undefined;
+  if (scope.indexMtime === undefined) return undefined;
   // Stat-cache short-circuit (`ie_match_stat`): only armed when the caller
   // supplies the index file's own mtime (the racy-guard reference point).
   // Absent — every non-`status` consumer — the fast path never fires and
   // behaviour is exactly as before.
-  if (isEntryStatClean(entry, stat, indexMtime)) {
+  if (isEntryStatClean(entry, stat, scope.indexMtime, scope.statCheck)) {
     return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
   }
   // Size settles the verdict without a read on the armed, non-racy path — as
@@ -320,13 +319,13 @@ const compareGitlink = async (
  * and a matching gitlink — `refresh_cache_ent` returns it without marking it up to
  * date or filling its stat data.
  */
-const shouldRefresh = (entry: IndexEntry, stat: FileStat): boolean =>
+const shouldRefresh = (entry: IndexEntry, stat: FileStat, check: StatCheck): boolean =>
   entry.mode !== FILE_MODE.GITLINK &&
   entry.flags.stage === 0 &&
   !entry.flags.assumeValid &&
   !entry.flags.skipWorktree &&
   !entry.flags.intentToAdd &&
-  !matchesContentStat(entry, stat);
+  !matchesStatData(entry, stat, check);
 
 export const compareFile = async (
   ctx: Context,
@@ -336,7 +335,7 @@ export const compareFile = async (
   scope: ResolvedScope,
 ): Promise<WorkingTreeDelta> => {
   const worktreeMode = indexModeFromStat(stat, entry.mode, scope.executableBit);
-  const settled = statOnlyVerdict(entry, stat, worktreeMode, scope.indexMtime);
+  const settled = statOnlyVerdict(entry, stat, worktreeMode, scope);
   return settled ?? (await compareContent(ctx, entry, absPath, stat, worktreeMode, scope));
 };
 
@@ -442,7 +441,7 @@ export const compareAndRefresh = async (
   }
   const resolved = await resolveScope(ctx, scope);
   const delta = await compareOccupant(ctx, entry, absPath, stat, resolved);
-  if (delta.status === 'unchanged' && shouldRefresh(entry, stat)) {
+  if (delta.status === 'unchanged' && shouldRefresh(entry, stat, resolved.statCheck)) {
     return { delta, refreshed: withStatData(entry, stat) };
   }
   return { delta };

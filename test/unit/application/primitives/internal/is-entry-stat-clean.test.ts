@@ -52,12 +52,16 @@ const BASE_STAT: FileStat = {
 // Comfortably later than BASE_ENTRY.mtimeSeconds — never racy in the baseline.
 const BASE_INDEX_MTIME: IndexMtime = { seconds: 1_700_001_000, nanoseconds: 0 };
 
+const ALL: StatCheck = { ctime: true, ownerAndInode: true };
+const NO_CTIME: StatCheck = { ctime: false, ownerAndInode: true };
+const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
+
 describe('isEntryStatClean', () => {
   describe('Given a stat that matches the entry on every compared field, non-racy', () => {
     describe('When checked', () => {
       it('Then it is clean', () => {
         // Arrange + Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -76,7 +80,7 @@ describe('isEntryStatClean', () => {
         const mismatchedStat: FileStat = { ...BASE_STAT, size: 999_999, uid: 0, ino: 0 };
 
         // Act
-        const result = isEntryStatClean(entry, mismatchedStat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, mismatchedStat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -94,7 +98,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -112,7 +116,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -122,30 +126,30 @@ describe('isEntryStatClean', () => {
 
   describe('Given a differing nanosecond mtime while both sides carry ns precision', () => {
     describe('When checked', () => {
-      it('Then it is not clean', () => {
+      it('Then it is clean (git compares whole seconds only)', () => {
         // Arrange
         const stat: FileStat = { ...BASE_STAT, mtimeNs: (BASE_STAT.mtimeNs as bigint) + 1n };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(true);
       });
     });
   });
 
   describe('Given a differing nanosecond ctime while both sides carry ns precision', () => {
     describe('When checked', () => {
-      it('Then it is not clean', () => {
+      it('Then it is clean (git compares whole seconds only)', () => {
         // Arrange
         const stat: FileStat = { ...BASE_STAT, ctimeNs: (BASE_STAT.ctimeNs as bigint) + 1n };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(true);
       });
     });
   });
@@ -159,7 +163,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...withoutNs };
 
         // Act
-        const result = isEntryStatClean(entry, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -174,7 +178,7 @@ describe('isEntryStatClean', () => {
         const entry: IndexEntry = { ...BASE_ENTRY, ino: 2 ** 32 + BASE_ENTRY.ino };
 
         // Act
-        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -189,7 +193,7 @@ describe('isEntryStatClean', () => {
         const entry: IndexEntry = { ...BASE_ENTRY, fileSize: 2 ** 32 + BASE_ENTRY.fileSize };
 
         // Act
-        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -204,7 +208,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, dev: BASE_STAT.dev + 999 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -219,7 +223,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, mtimeMs: BASE_STAT.mtimeMs + 1000 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -234,7 +238,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, ctimeMs: BASE_STAT.ctimeMs + 1000 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -249,7 +253,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, uid: BASE_STAT.uid + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -264,7 +268,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, gid: BASE_STAT.gid + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -279,7 +283,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, ino: BASE_STAT.ino + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -297,7 +301,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -315,7 +319,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -330,7 +334,43 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, size: BASE_STAT.size + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    ['ctime a second later', { ctimeMs: BASE_STAT.ctimeMs + 1000 }, NO_CTIME, true],
+    ['ctime a second later', { ctimeMs: BASE_STAT.ctimeMs + 1000 }, ALL, false],
+    ['inode', { ino: BASE_STAT.ino + 1 }, MINIMAL, true],
+    ['inode', { ino: BASE_STAT.ino + 1 }, ALL, false],
+  ] as const)('Given a stat drifted in %s', (_label, drift, check, expected) => {
+    describe('When checked under the stat policy', () => {
+      it('Then it is clean only when the policy does not compare the drifted field', () => {
+        // Arrange
+        const stat = { ...BASE_STAT, ...drift } as FileStat;
+
+        // Act
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, check);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given an entry recorded with size 0 for a non-empty blob and a stat of size 0', () => {
+    describe('When checked and not racy', () => {
+      it('Then it is not clean (the size was smudged, not measured)', () => {
+        // Arrange
+        const entry: IndexEntry = { ...BASE_ENTRY, fileSize: 0 };
+        const stat: FileStat = { ...BASE_STAT, size: 0 };
+
+        // Act
+        const result = isEntryStatClean(entry, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -687,10 +727,6 @@ describe('lstatBeyondLink', () => {
 });
 
 describe('matchesStatData', () => {
-  const ALL: StatCheck = { ctime: true, ownerAndInode: true };
-  const NO_CTIME: StatCheck = { ctime: false, ownerAndInode: true };
-  const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
-
   describe.each([
     ['nothing drifted', {}, ALL, true],
     ['the nanoseconds of mtime and ctime', { mtimeNs: 1n, ctimeNs: 1n }, ALL, true],
