@@ -54,6 +54,7 @@ import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { lazily } from '../primitives/internal/lazily.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   beyondSymlink,
@@ -356,10 +357,10 @@ const refreshScope = async (ctx: Context, indexMtime: GitIndex['indexMtime']) =>
 const settleMoved = async (
   ctx: Context,
   to: IndexEntry,
-  scope: ComparisonScope,
+  scope: () => Promise<ComparisonScope>,
 ): Promise<IndexEntry | undefined> => {
   if (to.flags.skipWorktree) return to;
-  const { delta, refreshed } = await compareAndRefresh(ctx, to, scope);
+  const { delta, refreshed } = await compareAndRefresh(ctx, to, await scope());
   if (delta.status !== 'unchanged') return undefined;
   return refreshed ?? to;
 };
@@ -374,10 +375,9 @@ const refreshMoved = async (
   indexed: ReadonlyArray<ExecutedItem>,
 ): Promise<ReadonlySet<FilePath>> => {
   const upToDate = new Set<FilePath>();
-  const moved = indexed.flatMap(({ moves }) => moves);
-  if (moved.length === 0) return upToDate;
-  const scope = await refreshScope(ctx, indexMtime);
-  for (const { to } of moved) {
+  // Built for the first entry that is compared: a move that compares none reads no policy.
+  const scope = lazily(() => refreshScope(ctx, indexMtime));
+  for (const { to } of indexed.flatMap(({ moves }) => moves)) {
     const settled = await settleMoved(ctx, to, scope);
     if (settled === undefined) continue;
     upToDate.add(to.path);
