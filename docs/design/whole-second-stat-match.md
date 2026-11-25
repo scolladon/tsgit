@@ -522,7 +522,7 @@ runs `git config core.ignorecase <v>` before either tool reads it.
 |---|---|---|---|---|
 | A1r / A1s | S2 equal, racy (R2) / settled | `checkout_entry` | `checkout({ paths: ['f'] })` | same inode, mode 0664, both tools |
 | A2r | S2 equal, racy | `oneway_merge` (forced switch) | `checkout({ rev: 'other', force: true })` | same |
-| A3 | S2 equal, racy | `twoway_merge` keeps the entry (f identical in both commits) | `checkout({ rev: 'other' })` | same (regression guard) |
+| A3 | S2 equal, racy | `twoway_merge` keeps the entry (f identical in both commits) | `checkout({ rev: 'other' })` | same (consumer pin: the entry is kept without being judged) |
 | A4r | S2 equal, racy | `oneway_merge` (`reset --hard`) | `reset({ mode: 'hard', rev: 'HEAD' })` | same |
 | A5r / A5s | S2 equal | `refresh_cache_ent` | `status()` | clean; `ls-files --debug f` identical before/after, both tools |
 | A6s | S2 equal, settled | `add_to_index` keeps the alias | `add(['f'])` | `ls-files --debug f` identical to git's (stat kept) |
@@ -577,6 +577,41 @@ Run scoped Stryker on `is-entry-stat-clean.ts`, `compare-working-tree-entry.ts` 
 (`.claude/workflow/mutation.md`). Each `StatCheck` gate and each conjunct of `matchesStatData` /
 `isRacyTimestamp` needs its own isolated row: the zero guard, the gitlink guard, `<=` vs `<`,
 B3's two conjuncts.
+
+## What review changed
+
+Review round 1 (code, security, tests, perf), each finding pinned against git 2.56.1 before its
+fix.
+
+- **Security, HIGH, a regression of this change (ADR-1268).** Under `core.trustCtime=false` or
+  `core.checkStat=minimal`, `mv` after a same-size edit in the index's second hid the edit:
+  `status` reported the moved file clean and `checkout` kept the edited bytes. git's
+  `rename_index_entry_at` refreshes the moved entry and leaves a modified one to the racy
+  smudge. tsgit's `mv` only changed the path, and the smudge pass paired its candidates by
+  path. `mv` now refreshes each moved entry, and the smudge pass picks its candidates by the
+  stat data the index held when read. After `mv` of a clean file the entry also carries the
+  stat the rename left, as git's does. The same fix made the smudge pass leave alone an entry
+  whose path cannot be stat-ed, as git does: two `mv -k` rows past `PATH_MAX` reached that line.
+- **A second regression, found from a review hunch.** After `status`, a racy skip-worktree entry
+  rewritten at the same size was smudged to size 0 where git keeps its size: git's refresh marks
+  a skip-worktree entry up to date. The tracked scan now counts skip-worktree paths as
+  verified. After `add` of another path git does smudge that entry; main did not, this change
+  does.
+- **Perf, MEDIUM (ADR-1269).** `add .` in the racy window hashed each racily clean file twice.
+  The paths `add` just staged now count as verified, as git's `fill_stat_cache_info` marks them
+  up to date. Numbers in §6.
+- **Tests.** One unit row no longer depends on the wall clock. The same-size-edit shape checks
+  that the rewrite lands in the entry's second. New rows: an inode-only change under
+  `core.trustCtime=false` (the default-policy row also moved the ctime second), `add` under
+  that policy, and a scope carrying a stat policy without an executable-bit policy (a mutant
+  on that operand survived all 137 rows of its suite before it).
+- **Interop row A3** (unforced switch, `f` identical in both commits) is a consumer pin, not a
+  guard: git's two-way merge keeps the entry without judging it, so the row cannot fail on the
+  compare.
+- **Deferred to impact triage**, proven and outside this change: a switch that adds a case
+  variant of a tracked file is refused under `core.ignorecase=true`; a forced checkout restores
+  an edited assume-unchanged file where git keeps it once the index holds 1000 entries (git's
+  preload marks the entry up to date).
 
 ## Out of scope
 
