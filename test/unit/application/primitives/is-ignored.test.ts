@@ -16,6 +16,74 @@ const seedRepo = async (homeDir?: string) => {
 };
 
 describe('isIgnored', () => {
+  describe('Given core.ignorecase true and a root .gitignore holding *.LOG', () => {
+    describe('When isIgnored checks x.log', () => {
+      it('Then it is ignored by *.LOG', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tignorecase = true\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.LOG\n');
+
+        // Act
+        const [result] = await isIgnored(ctx, [{ path: path('x.log') }]);
+
+        // Assert
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.pattern).toBe('*.LOG');
+      });
+    });
+  });
+
+  describe.each([
+    ['info/exclude', 'a'],
+    ['global excludes', 'a'],
+    ['a nested .gitignore', 'sub/a'],
+  ])('Given core.ignorecase true and %s holding A', (source, checked) => {
+    describe(`When isIgnored checks ${checked}`, () => {
+      it('Then it is ignored', async () => {
+        // Arrange
+        const ctx = await seedRepo('/repo/home');
+        const excludes = source === 'global excludes' ? '\texcludesfile = ~/global\n' : '';
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[core]\n\tignorecase = true\n${excludes}`,
+        );
+        const files: Record<string, string> = {
+          'info/exclude': `${ctx.layout.gitDir}/info/exclude`,
+          'global excludes': '/repo/home/global',
+          'a nested .gitignore': `${ctx.layout.workDir}/sub/.gitignore`,
+        };
+        await ctx.fs.writeUtf8(files[source] as string, 'A\n');
+
+        // Act
+        const [result] = await isIgnored(ctx, [{ path: path(checked) }]);
+
+        // Assert
+        expect(result?.ignored).toBe(true);
+      });
+    });
+  });
+
+  describe.each([
+    ['core.ignorecase false', '[core]\n\tignorecase = false\n'],
+    ['core.ignorecase unset', ''],
+  ])('Given %s and a root .gitignore holding *.LOG', (_title, config) => {
+    describe('When isIgnored checks x.log', () => {
+      it('Then it is not ignored', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.LOG\n');
+
+        // Act
+        const [result] = await isIgnored(ctx, [{ path: path('x.log') }]);
+
+        // Assert
+        expect(result?.ignored).toBe(false);
+      });
+    });
+  });
+
   describe('Given a root .gitignore with *.log and a matching path', () => {
     describe('When isIgnored is called', () => {
       it('Then the result is ignored with the matching rule provenance', async () => {

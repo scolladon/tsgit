@@ -2,6 +2,8 @@
 subjects:
   - src/application/primitives/apply-merge-to-worktree.ts
   - src/application/primitives/internal/symlinked-leading-path.ts
+  - src/domain/pathspec/compile-glob.ts
+  - test/unit/**
 phases: [validation]
 kind: technique
 trigger: Stryker survivors sit inside a gate whose only purpose is to skip a slower path that yields the same result
@@ -9,10 +11,11 @@ evidence:
   - src/application/primitives/apply-merge-to-worktree.ts
   - src/application/primitives/internal/symlinked-leading-path.ts
   - test/unit/application/primitives/internal/symlinked-leading-path.test.ts
+  - src/domain/pathspec/compile-glob.ts:50-56
 source: { run: status-gitlink-parity, phase: validation, date: 2026-10-24 }
 status: active
 supersedes: []
-last-verified: 2026-10-24
+last-verified: 2026-11-24
 ---
 # 011 — An optimisation gate breeds equivalent survivors
 
@@ -46,3 +49,4 @@ Expect the review's PROBE records to predict these; verify them, do not trust th
 `src/application/primitives/apply-merge-to-worktree.ts` — `keepsStagedChanges` and `unchangedCount`, marked per line.
 `src/application/primitives/internal/symlinked-leading-path.ts` — the `generation` token and the marked cache-key lines.
 `test/unit/application/primitives/internal/symlinked-leading-path.test.ts` — the invalidation rows that kill the real mutants beside them.
+`src/domain/pathspec/compile-glob.ts:50-56` — the block above git's three fast paths: nineteen survivors there were first killed with a call-count suite, which was removed for this lesson.

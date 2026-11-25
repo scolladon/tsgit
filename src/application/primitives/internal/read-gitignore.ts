@@ -9,6 +9,8 @@ import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
 import { requireWorkTree } from './repo-state.js';
 
+type IgnoreParseOptions = { readonly caseFold?: boolean };
+
 /**
  * Load and parse the `.gitignore` file in a directory relative to the
  * working tree. `dir === ''` targets the repo root. Returns `undefined`
@@ -17,17 +19,21 @@ import { requireWorkTree } from './repo-state.js';
 export const readGitignore = async (
   ctx: Context,
   dir: FilePath | '',
+  options: IgnoreParseOptions = {},
 ): Promise<IgnoreRuleset | undefined> => {
   const path = joinPath(
     requireWorkTree(ctx, 'readGitignore'),
     dir === '' ? '.gitignore' : `${dir}/.gitignore`,
   );
-  return loadAndParse(ctx, path);
+  return loadAndParse(ctx, path, options);
 };
 
 /** Load `.git/info/exclude` (per-clone excludes that don't ship with the repo). */
-export const readInfoExclude = async (ctx: Context): Promise<IgnoreRuleset | undefined> =>
-  loadAndParse(ctx, `${commonGitDir(ctx)}/info/exclude`);
+export const readInfoExclude = async (
+  ctx: Context,
+  options: IgnoreParseOptions = {},
+): Promise<IgnoreRuleset | undefined> =>
+  loadAndParse(ctx, `${commonGitDir(ctx)}/info/exclude`, options);
 
 /**
  * Load the global excludes file pointed at by `core.excludesFile` in
@@ -37,16 +43,23 @@ export const readInfoExclude = async (ctx: Context): Promise<IgnoreRuleset | und
  *  (silent miss),
  * - or the file does not exist.
  */
-export const readGlobalExcludes = async (ctx: Context): Promise<IgnoreRuleset | undefined> => {
+export const readGlobalExcludes = async (
+  ctx: Context,
+  options: IgnoreParseOptions = {},
+): Promise<IgnoreRuleset | undefined> => {
   const config = await readConfig(ctx);
   const raw = config.core?.excludesFile;
   if (raw === undefined || raw === '') return undefined;
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
-  return loadAndParse(ctx, resolved);
+  return loadAndParse(ctx, resolved, options);
 };
 
-const loadAndParse = async (ctx: Context, path: string): Promise<IgnoreRuleset | undefined> => {
+const loadAndParse = async (
+  ctx: Context,
+  path: string,
+  options: IgnoreParseOptions,
+): Promise<IgnoreRuleset | undefined> => {
   const text = await loadCappedUtf8(ctx, path, MAX_GITIGNORE_BYTES, gitignoreFileTooLarge);
-  return text === undefined ? undefined : parseGitignore(text);
+  return text === undefined ? undefined : parseGitignore(text, options);
 };

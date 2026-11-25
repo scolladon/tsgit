@@ -37,3 +37,10 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 - **Rule:** fold it in the current change, per consumer of the seam, with an ADR and an interop pin per consumer; do not defer a proven divergence in an edited seam because it is off-subject.
 - **Evidence:** ADR-1234
 - **Counter-cases:** none
+
+## D-6 — A faithfulness fix that only changes verdicts or returned values is not marked breaking
+
+- **Trigger:** a faithfulness fix changes what a command returns or matches on existing repositories (a glob dialect, case folding, a returned field's value) without changing a signature or type and without turning a returning method into a throwing one, and the design asks whether the commit carries `!`.
+- **Rule:** ship it as a plain `fix(<scope>):`; keep `!` for D-3's case (a returning public method starts throwing) and for signature or type changes.
+- **Evidence:** ADR-1257
+- **Counter-cases:** none

@@ -1,7 +1,7 @@
 import { compileGlob, type GlobMatcher } from '../pathspec/index.js';
 
 export interface IgnoreRule {
-  /** Original input pattern (for diagnostics). */
+  /** The line as written, after git's trailing-space trim (escapes kept). */
   readonly pattern: string;
   /** True when the pattern starts with `!`. */
   readonly negated: boolean;
@@ -30,7 +30,7 @@ export interface TokenizedIgnoreLine {
   readonly anchored: boolean;
   /** True when the pattern ended with `/` (directory-only). */
   readonly directoryOnly: boolean;
-  /** Pattern body — negation, trailing `/`, leading `/` and escapes removed. */
+  /** Pattern body — negation, trailing `/` and leading `/` removed; escapes kept for the matcher. */
   readonly cleanPattern: string;
 }
 
@@ -59,11 +59,6 @@ const trailingSpaceStart = (line: string): number | undefined => {
 /** `slice(0, undefined)` keeps the whole line when there is nothing to trim. */
 export const stripTrailingSpaces = (line: string): string =>
   line.slice(0, trailingSpaceStart(line));
-
-const unescapePattern = (s: string): string => {
-  // Replace `\<char>` with `<char>` — preserves the literal char (e.g. `\#`, `\ `).
-  return s.replace(/\\(.)/g, '$1');
-};
 
 /**
  * Decompose a single `.gitignore`-syntax line into its semantic parts.
@@ -94,11 +89,14 @@ export const tokenizeIgnoreLine = (rawLine: string): TokenizedIgnoreLine | undef
     negated,
     anchored,
     directoryOnly,
-    cleanPattern: unescapePattern(stripped),
+    cleanPattern: stripped,
   };
 };
 
-export const parseGitignore = (text: string): IgnoreRuleset => {
+export const parseGitignore = (
+  text: string,
+  options: { readonly caseFold?: boolean } = {},
+): IgnoreRuleset => {
   const out: IgnoreRule[] = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
@@ -107,12 +105,12 @@ export const parseGitignore = (text: string): IgnoreRuleset => {
     if (tokenized === undefined) continue;
     const { negated, anchored, directoryOnly, cleanPattern } = tokenized;
     out.push({
-      pattern: unescapePattern(stripTrailingSpaces(rawLine)),
+      pattern: stripTrailingSpaces(rawLine),
       negated,
       directoryOnly,
       anchored,
       lineNumber: i + 1,
-      compiled: compileGlob(cleanPattern, { anchored }),
+      compiled: compileGlob(cleanPattern, { anchored, caseFold: options.caseFold === true }),
     });
   }
   return out;

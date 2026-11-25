@@ -61,6 +61,39 @@ describe('buildIgnoreEvaluator', () => {
     });
   });
 
+  describe('Given a built evaluator', () => {
+    describe('When loadDirRules loads sub', () => {
+      it('Then the config is not read again', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
+        // A cached config is revalidated by a stat, not re-read: every file
+        // system call on the config counts, whatever its kind.
+        let configTouches = 0;
+        const countingFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            const member: unknown = Reflect.get(target, prop, receiver);
+            if (typeof member !== 'function') return member;
+            return (...args: unknown[]) => {
+              if (typeof args[0] === 'string' && args[0].endsWith('/config')) configTouches += 1;
+              return Reflect.apply(member, target, args);
+            };
+          },
+        });
+        const evaluator = await buildIgnoreEvaluator({ ...ctx, fs: countingFs });
+        const touchesAtBuild = configTouches;
+        const sut = evaluator.loadDirRules;
+
+        // Act
+        await sut('sub' as FilePath);
+
+        // Assert
+        expect(touchesAtBuild).toBeGreaterThan(0);
+        expect(configTouches).toBe(touchesAtBuild);
+      });
+    });
+  });
+
   describe('Given the evaluator', () => {
     describe('When loadDirRules is invoked for the same directory twice', () => {
       it('Then the second call returns the cached ruleset (same value, no second read)', async () => {
@@ -124,6 +157,24 @@ describe('buildRepoIgnorePredicate', () => {
 
         // Act / Assert
         expect(await sut('foo.log' as FilePath, false)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given core.ignorecase true and a root *.log', () => {
+    describe('When buildRepoIgnorePredicate tests X.LOG', () => {
+      it('Then it is ignored', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tignorecase = true\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const ignored = await sut('X.LOG' as FilePath, false);
+
+        // Assert
+        expect(ignored).toBe(true);
       });
     });
   });

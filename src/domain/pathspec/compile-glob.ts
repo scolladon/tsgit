@@ -1,32 +1,34 @@
 // Glob compiler for the gitignore-family dialect: `parseGitignore` (.gitignore
 // rules), `parseGitattributes` and `compileSparseRule` (non-cone sparse).
-// Supports `*`, `?`, `**`, `**/` under git's WM_PATHNAME star rule:
 //
-// - `*` matches any run except `/` — i.e. one path segment.
-// - A run of two or more stars matches any run including `/` only when it is a
-//   whole path component (preceded by the pattern start or `/`, followed by the
-//   end or `/`); any other run (`a**b`, `d/**b`) is a single `*`. When
-//   followed by `/`, the `/` is absorbed so `**/` spans zero or more whole
-//   `<segment>/` runs.
-// - `?` matches exactly one non-`/` character.
+// The dialect is git's wildmatch with WM_PATHNAME: `*` matches a run of
+// non-`/` bytes, a whole-component `**` crosses `/`, `?` and `[…]` classes
+// match one non-`/` byte, and `\` escapes the byte after it. A pattern git
+// aborts on (an unterminated `[`, an unknown `[:name:]`, a trailing `\`)
+// matches nothing. Matching is byte-wise on the path's bytes, and
+// `caseFold` folds ASCII case as git's ignorecase does.
 //
-// A pattern compiles to a LINEAR, non-backtracking matcher: it is tokenised
-// once, then matched with a backward dynamic program that fills a boolean
-// table in `O(tokenCount × pathLength)`. No input — not even an adversarial
-// `a*a*…*b` — can make it super-linear. See docs/design/compile-glob-redos.md
-// and docs/adr/077-linear-glob-matcher.md.
-//
-// In this dialect `[…]` and `\` are matched verbatim: with no regex involved,
-// every non-glob character is a literal.
+// The pattern compiles once to wildmatch tokens, matched by a LINEAR,
+// non-backtracking program. Before it runs, git's three fast paths answer
+// what they can from the pattern text alone: a pure literal, a leading `*`
+// followed by plain text (ENDSWITH), and a literal prefix every match must
+// carry. See docs/design/compile-glob-redos.md and docs/adr/077-linear-glob-matcher.md.
 //
 // See docs/adr/040-extracted-compile-glob.md.
 
+import {
+  LEADING_DIRECTORIES,
+  matchWildmatch,
+  tokenizeWildmatch,
+  type WildmatchToken,
+} from '../glob/wildmatch.js';
+import { encode, encodeEscaped } from '../objects/encoding.js';
 import { asciiLower } from '../pretty/ascii.js';
 
 export interface CompileGlobOptions {
   /** When true, the match is anchored at the start of the path. */
   readonly anchored: boolean;
-  /** case-insensitive match as git's core.ignorecase does: ASCII letters compare case-insensitively; any other character stays exact. */
+  /** Fold ASCII case as git's core.ignorecase does: plain pattern bytes and the path compare case-insensitively; an escaped byte and a single set member compare as written, while a range and `[:upper:]` also admit the other ASCII case. */
   readonly caseFold?: boolean;
 }
 
@@ -35,191 +37,127 @@ export interface GlobMatcher {
   test(path: string): boolean;
 }
 
-// One scanned unit of a glob pattern.
-type GlobToken =
-  | { readonly kind: 'literal'; readonly char: string } // one verbatim char
-  | { readonly kind: 'single' } //  `?`  — one non-`/` char
-  | { readonly kind: 'star' } //    `*`  — a run of non-`/` chars
-  | { readonly kind: 'star-star' } // `**` (no trailing `/`) — a run of any char
-  | { readonly kind: 'star-slash' }; // `**/` — zero or more `<segment>/` runs
+/** `true`/`false` is final; `undefined` leaves the verdict to the wildmatch program. */
+type Shortcut = (text: string) => boolean | undefined;
 
-interface ScannedToken {
-  readonly token: GlobToken;
-  readonly next: number;
+const NEVER: GlobMatcher = { test: () => false };
+const UNDECIDED: Shortcut = () => undefined;
+const SEPARATOR = '/';
+const STAR = '*';
+const GLOB_SPECIAL = /[*?[\\]/;
+const NOT_FOUND = -1;
+
+// The fast paths below are git's (`dir.c`): a pure literal, a leading `*` over
+// plain text, and a plain prefix every match must carry. Each answers what the
+// wildmatch program would answer for the same text, or `undefined` to leave it
+// the verdict. Measuring the plain run shorter, never selecting a shortcut, or
+// having one answer `undefined` hands the path to the program: the cost
+// changes, never a verdict, and the ignore-match bench measures the cost. The
+// mutants that only do that are equivalent and deliberately not suppressed.
+
+// git's `simple_length`: how far the pattern is plain text.
+const simpleLength = (pattern: string): number => {
+  const special = pattern.search(GLOB_SPECIAL);
+  return special === NOT_FOUND ? pattern.length : special;
+};
+
+const literalShortcut = (literal: string, anchored: boolean): Shortcut =>
+  anchored
+    ? (text) => text === literal
+    : (text) => text === literal || text.endsWith(SEPARATOR + literal);
+
+const endsWithShortcut =
+  (suffix: string): Shortcut =>
+  (text) =>
+    text.endsWith(suffix);
+
+const prefixShortcut = (prefix: string, anchored: boolean): Shortcut => {
+  const inner = SEPARATOR + prefix;
+  return anchored
+    ? (text) => (text.startsWith(prefix) ? undefined : false)
+    : (text) => (text.startsWith(prefix) || text.includes(inner) ? undefined : false);
+};
+
+const isEndsWith = (pattern: string, anchored: boolean): boolean =>
+  !anchored && pattern[0] === STAR && simpleLength(pattern.slice(1)) === pattern.length - 1;
+
+const shortcutOf = (pattern: string, anchored: boolean, caseFold: boolean): Shortcut => {
+  const text = caseFold ? asciiLower(pattern) : pattern;
+  const plain = simpleLength(text);
+  if (plain === text.length) return literalShortcut(text, anchored);
+  if (isEndsWith(text, anchored)) return endsWithShortcut(text.slice(1));
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. with no plain text the prefix is empty, every path starts with it, and the prefix shortcut answers `undefined` as `UNDECIDED` does: taking this branch then costs one wasted test per path, never a verdict.
+  if (plain > 0) return prefixShortcut(text.slice(0, plain), anchored);
+  return UNDECIDED;
+};
+
+interface Remembered<V> {
+  readonly key: string;
+  readonly value: V;
 }
 
-// `(^|.*/)` — the unanchored prefix — is exactly `(.*/)?`, i.e. one `star-slash`.
-const PREFIX_TOKEN: GlobToken = { kind: 'star-slash' };
-
-const STAR = '*';
-const SEPARATOR = '/';
-const STAR_TOKEN: GlobToken = { kind: 'star' };
-
-const endOfStarRun = (pattern: string, start: number): number => {
-  let end = start;
-  while (pattern[end] === STAR) end += 1;
-  return end;
+// A rule set tests one path against every rule, and attribute rules alternate
+// between a path and its basename: the last two results of a pure function of
+// the path are kept, so its work is paid once per path, not once per rule.
+// Reusing a kept result returns what computing it again would, so no branch
+// below can change a verdict: recomputing on every call differs only in cost,
+// which the performance suite gates.
+const remembering = <V>(compute: (key: string) => V): ((key: string) => V) => {
+  let newer: Remembered<V> | undefined;
+  let older: Remembered<V> | undefined;
+  return (key) => {
+    if (newer?.key === key) return newer.value;
+    const hit = older;
+    older = newer;
+    newer = hit?.key === key ? hit : { key, value: compute(key) };
+    return newer.value;
+  };
 };
 
-const isWholeComponent = (pattern: string, start: number, end: number): boolean =>
-  (start === 0 || pattern[start - 1] === SEPARATOR) &&
-  (end === pattern.length || pattern[end] === SEPARATOR);
+const foldOnce = remembering(asciiLower);
+const encodeOnce = remembering(encodeEscaped);
 
-// git's wildmatch under WM_PATHNAME: the whole star run is one token, and only
-// a run of two or more forming a whole path component may cross a `/`.
-const scanPathnameStar = (pattern: string, i: number): ScannedToken => {
-  const end = endOfStarRun(pattern, i);
-  const spansDirectories = end - i > 1 && isWholeComponent(pattern, i, end);
-  if (!spansDirectories) return { token: STAR_TOKEN, next: end };
-  if (pattern[end] === SEPARATOR) return { token: { kind: 'star-slash' }, next: end + 1 };
-  return { token: { kind: 'star-star' }, next: end };
+type FixedToken = Extract<WildmatchToken, { readonly kind: 'byte' | 'set' }>;
+
+const isFixed = (token: WildmatchToken): token is FixedToken =>
+  token.kind === 'byte' || token.kind === 'set';
+
+// The tokens after the last star each consume exactly one byte, and a match
+// must reach the end of the path: they name its last bytes. The tail only
+// refuses early what the table fill would refuse: a shorter or weaker tail
+// changes the cost, never a verdict, and the performance suite gates the cost.
+const fixedTailOf = (tokens: ReadonlyArray<WildmatchToken>): ReadonlyArray<FixedToken> => {
+  let start = tokens.length;
+  while (start > 0 && isFixed(tokens[start - 1] as WildmatchToken)) start -= 1;
+  // Every token from `start` on passed `isFixed`; a rule keeps this array for
+  // as long as it lives, so it is cut at its exact size.
+  return tokens.slice(start) as ReadonlyArray<FixedToken>;
 };
 
-const scanToken = (pattern: string, i: number): ScannedToken => {
-  const ch = pattern[i] as string;
-  if (ch === STAR) return scanPathnameStar(pattern, i);
-  if (ch === '?') return { token: { kind: 'single' }, next: i + 1 };
-  return { token: { kind: 'literal', char: ch }, next: i + 1 };
-};
+const admits = (token: FixedToken, byte: number): boolean =>
+  token.kind === 'byte' ? token.value === byte : token.table[byte] === 1;
 
-const tokenize = (pattern: string): GlobToken[] => {
-  const tokens: GlobToken[] = [];
-  let i = 0;
-  while (i < pattern.length) {
-    const scanned = scanToken(pattern, i);
-    tokens.push(scanned.token);
-    i = scanned.next;
-  }
-  return tokens;
-};
-
-// The dynamic-program layers below are `Uint8Array` of 0/1 — `dp[j] === 1`
-// means "the tokens processed so far match `path[j..]`". Each `step*` derives
-// a new layer from `next`, the layer for the tokens that follow it.
-
-const stepLiteral = (char: string, path: string, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(path.length + 1);
-  // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length` where `path[j]` is `undefined`; `undefined === char` is false, so `cur[path.length]` keeps its correct 0.
-  for (let j = 0; j < path.length; j++) {
-    if (path[j] === char && next[j + 1] === 1) cur[j] = 1;
-  }
-  return cur;
-};
-
-const stepSingle = (path: string, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(path.length + 1);
-  // Stryker disable next-line EqualityOperator: equivalent — `j <= path.length` adds an iteration at `j = path.length`; `next[j + 1]` is then out of bounds (`undefined`), failing the `next[j + 1] === 1` operand, so `cur[path.length]` keeps its correct 0.
-  for (let j = 0; j < path.length; j++) {
-    if (path[j] !== '/' && next[j + 1] === 1) cur[j] = 1;
-  }
-  return cur;
-};
-
-// `*` — match zero or more non-`/` chars: stop here (`next[j]`) or consume
-// `path[j]` if it is not a `/` and continue within the same star (`cur[j+1]`).
-const stepStar = (path: string, next: Uint8Array): Uint8Array => {
-  const cur = new Uint8Array(path.length + 1);
-  cur[path.length] = next[path.length] === 1 ? 1 : 0;
-  // Stryker disable next-line ArithmeticOperator: equivalent — starting at `path.length + 1` adds two no-op iterations: the out-of-bounds write is dropped by the typed array, and `j = path.length` recomputes `cur[path.length]` to the value just assigned above.
-  for (let j = path.length - 1; j >= 0; j--) {
-    cur[j] = next[j] === 1 || (path[j] !== '/' && cur[j + 1] === 1) ? 1 : 0;
-  }
-  return cur;
-};
-
-// `**` — match zero or more of ANY char (slashes included). A whole-component
-// star run without a trailing `/` can only end the pattern, so the layer it
-// precedes is the base layer, which accepts the end of the path: every suffix
-// matches.
-const stepStarStar = (path: string): Uint8Array => new Uint8Array(path.length + 1).fill(1);
-
-// `**/` ≡ `(.*/)?` — match the empty string (`next[j]`) OR any consumed run
-// that ends on a `/`. `seg[j] === 1` is the latter: from `j`, some non-empty
-// run ends on a `/` and the following tokens match the remainder.
-const stepStarSlash = (path: string, next: Uint8Array): Uint8Array => {
-  const seg = new Uint8Array(path.length + 1);
-  // Stryker disable next-line ArithmeticOperator: equivalent — starting at `path.length + 1` adds two no-op iterations: the out-of-bounds write is dropped by the typed array, and `j = path.length` recomputes `seg[path.length]` to 0, the value it already holds.
-  for (let j = path.length - 1; j >= 0; j--) {
-    seg[j] = (path[j] === '/' && next[j + 1] === 1) || seg[j + 1] === 1 ? 1 : 0;
-  }
-  const cur = new Uint8Array(path.length + 1);
-  for (let j = 0; j <= path.length; j++) {
-    cur[j] = next[j] === 1 || seg[j] === 1 ? 1 : 0;
-  }
-  return cur;
-};
-
-const stepToken = (token: GlobToken, path: string, next: Uint8Array): Uint8Array => {
-  switch (token.kind) {
-    case 'literal':
-      return stepLiteral(token.char, path, next);
-    case 'single':
-      return stepSingle(path, next);
-    case 'star':
-      return stepStar(path, next);
-    case 'star-star':
-      return stepStarStar(path);
-    case 'star-slash':
-      return stepStarSlash(path, next);
-  }
-};
-
-// The base layer: with no tokens left, `path[j..]` must be exhausted.
-const baseLayer = (path: string): Uint8Array => {
-  const dp = new Uint8Array(path.length + 1);
-  dp[path.length] = 1;
-  return dp;
-};
-
-const matchTokens = (
-  tokens: ReadonlyArray<GlobToken>,
-  options: CompileGlobOptions,
-  path: string,
-): boolean => {
-  let dp = baseLayer(path);
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    dp = stepToken(tokens[i] as GlobToken, path, dp);
-  }
-  // Unanchored: a leading `(^|.*/)` ≡ `(.*/)?` ≡ one trailing `star-slash`
-  // step (it precedes every body token, so it is applied last).
-  if (!options.anchored) dp = stepToken(PREFIX_TOKEN, path, dp);
-  return dp[0] === 1;
-};
-
-// A pattern's leading run of literal tokens: every match must carry it, so a
-// path that cannot is refused before any layer is built. Git's wildmatch
-// refuses on its literal prefix the same way; the table fill is the part that
-// costs, and a rule set of many literal-led patterns pays it once per rule.
-const literalPrefixOf = (tokens: ReadonlyArray<GlobToken>): string => {
-  let run = '';
-  for (const token of tokens) {
-    if (token.kind !== 'literal') break;
-    run += token.char;
-  }
-  return run;
-};
-
-// An unanchored pattern is `(.*/)?` then the body: the prefix starts the path or follows a `/`.
-const carriesPrefix = (prefix: string, anchored: boolean, path: string): boolean =>
-  anchored ? path.startsWith(prefix) : path.startsWith(prefix) || path.includes(`/${prefix}`);
-
-const matchesLiteral = (literal: string, anchored: boolean, path: string): boolean =>
-  path === literal || (!anchored && path.endsWith(`/${literal}`));
-
-const matcherFor = (tokens: ReadonlyArray<GlobToken>, options: CompileGlobOptions) => {
-  const prefix = literalPrefixOf(tokens);
-  if (prefix.length === tokens.length) {
-    return (path: string): boolean => matchesLiteral(prefix, options.anchored, path);
-  }
-  return (path: string): boolean =>
-    carriesPrefix(prefix, options.anchored, path) && matchTokens(tokens, options, path);
+/** False when the path's last bytes cannot be the pattern's fixed tail: no table fill can match it. */
+const endsWithTail = (tail: ReadonlyArray<FixedToken>, bytes: Uint8Array): boolean => {
+  // A path shorter than the tail is read before its first byte: that is
+  // `undefined`, which no token admits.
+  const start = bytes.length - tail.length;
+  return tail.every((token, offset) => admits(token, bytes[start + offset] as number));
 };
 
 export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobMatcher => {
-  if (options.caseFold !== true) {
-    const test = matcherFor(tokenize(pattern), options);
-    return { test };
-  }
-  const test = matcherFor(tokenize(asciiLower(pattern)), options);
-  return { test: (path: string): boolean => test(asciiLower(path)) };
+  const caseFold = options.caseFold === true;
+  const tokens = tokenizeWildmatch(encode(pattern), { pathname: true, caseFold });
+  if (tokens === undefined) return NEVER;
+  const program = options.anchored ? tokens : [LEADING_DIRECTORIES, ...tokens];
+  const shortcut = shortcutOf(pattern, options.anchored, caseFold);
+  const tail = fixedTailOf(tokens);
+  const matchBytes = (bytes: Uint8Array): boolean =>
+    endsWithTail(tail, bytes) && matchWildmatch(program, bytes);
+  return {
+    test: (path) => {
+      const text = caseFold ? foldOnce(path) : path;
+      return shortcut(text) ?? matchBytes(encodeOnce(text));
+    },
+  };
 };

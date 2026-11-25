@@ -296,6 +296,15 @@ A well-formed repository, but a configuration, layout or argument shape few call
   tsgit mergeRun    -> idx M lib/f x3, H sub, S top; disk lib lib/f
   ```
 
+- **(isIgnored)** An ignore pattern holding bytes that are not valid UTF-8 never matches the path holding those bytes, and matches a path holding U+FFFD where git does not — pre-existing, pinned against git 2.56.1, both `core.ignorecase` values. `.gitignore` = `a\x80*`: `git check-ignore --no-index` reports `a\x80b` ignored (exit 0) and `a`, U+FFFD, `b` not ignored (exit 1). tsgit's `loadCappedUtf8` (`src/application/primitives/internal/read-capped-file.ts`) reads the file with `readUtf8`, so the pattern becomes `a`, U+FFFD, `*`, and `isIgnored` answers the opposite of git on both paths. Fixing it needs ignore files parsed and matched as bytes and a byte-path query, the same gap as the byte-path port 32.28.
+  ```
+  printf 'a\x80*\n' > .gitignore            (core.ignorecase true and false identical)
+  git check-ignore -q --no-index 'a\x80b'        -> exit 0
+  git check-ignore -q --no-index 'a<U+FFFD>b'    -> exit 1
+  tsgit isIgnored a\uDC80b / a<U+FFFD>b / axb    -> [false, true, false]   (base f77dbbaa: same)
+  ```
+  Not folded: out of scope — the file is decoded before the glob compiler sees a pattern.
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
@@ -312,6 +321,15 @@ Measured, on a command that is not on a common caller path.
   git fsck wall: 0.307s · tsgit fsck wall (incl. node + transpile): 2.403s
   ```
   Not folded: out of scope — a perf pass over fsck's ref passes, outside the broken-ref-chain correctness change.
+
+- **(compileGlob)** A very long ignore-family pattern against a long path costs tokens × path bytes, with no cap on either — measured at the wildmatch-bracket-class head: `?` followed by n `[ab]` sets, against a path of n + 1 `a`, takes 44 / 164 / 655 ms for n = 5 000 / 10 000 / 20 000 (three runs each, fourfold per doubling), and 30 ms per path at a 4096-byte path with a 4095-token pattern. git 2.56.1 `check-ignore --no-index` answers the 20 000 case in under a second. The cost is the bound ADR-077 accepts for the linear matcher (`src/domain/glob/wildmatch.ts`); it passes tens of milliseconds only with a pattern of tens of kB, which no common `.gitignore`, `.gitattributes` or sparse file holds. A cap on pattern length would bound it.
+  ```
+  compileGlob('?' + '[ab]'.repeat(n), { anchored: true }).test('a'.repeat(n + 1))
+  n=5000  ms=44   n=10000 ms=165  n=20000 ms=651   (3 runs: 43-45 / 163-165 / 651-662)
+  n=4095, path 4096 bytes -> ms=29.7, 29.7, 30.5
+  git check-ignore --no-index, same pattern and path, n=5000/10000/20000 -> exit 0, under 1 s each
+  ```
+  Not folded: out of scope — the bound predates this run and the matcher keeps it by design.
 
 ## Feature gaps
 

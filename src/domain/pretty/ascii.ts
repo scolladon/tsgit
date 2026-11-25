@@ -10,6 +10,14 @@ export const isAsciiSpace = (byte: number): boolean =>
 
 export const isAsciiDigit = (byte: number): boolean => byte >= DIGIT_ZERO && byte <= DIGIT_NINE;
 
+const NON_ASCII = /[\u0080-￿]/;
+const ASCII_UPPER = /[A-Z]/g;
+
 /** C-locale lowercasing: folds `A`-`Z` only, never a non-ASCII letter. */
 export const asciiLower = (text: string): string =>
-  text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  // Text that is ASCII throughout lowers natively to the same result, without a
+  // callback per letter; the letter-by-letter fold is kept for text holding a
+  // non-ASCII letter, which native lowering would fold too.
+  NON_ASCII.test(text)
+    ? text.replace(ASCII_UPPER, (letter) => letter.toLowerCase())
+    : text.toLowerCase();

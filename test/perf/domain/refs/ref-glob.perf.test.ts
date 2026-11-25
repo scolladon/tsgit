@@ -52,4 +52,24 @@ describe('compileRefGlob (performance)', () => {
       });
     });
   });
+
+  describe('Given a bracket set holding 100000 class openers', () => {
+    describe('When compiled', () => {
+      it('Then it compiles in under 1000 ms and matches its members', () => {
+        // Arrange
+        const pattern = `[${'[:'.repeat(100_000)}x]`;
+
+        // Act
+        const start = performance.now();
+        const sut = compileRefGlob(pattern);
+        const elapsedMs = performance.now() - start;
+
+        // Assert
+        expect(elapsedMs).toBeLessThan(1000);
+        expect(sut('x')).toBe(true);
+        expect(sut(':')).toBe(true);
+        expect(sut('y')).toBe(false);
+      });
+    });
+  });
 });

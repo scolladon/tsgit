@@ -27,6 +27,8 @@ interface IsIgnoredMatch {
 - `source` is populated only when `ignored === true` (matches `git check-ignore -v`'s output rule). A negated rule (`!keep.log`) makes the path NOT ignored and omits `source`.
 - `kind` distinguishes the three sources whose `basedir` is the empty string at the repo root: global excludes file, `.git/info/exclude`, and the repo-root `.gitignore`.
 - Per-directory `.gitignore` files are loaded lazily — only those on the ancestor chain of a queried path are read.
+- `source.pattern` is the rule line as written, after git's trailing-space trim, with `!`, `/` and `\` escapes kept, as `git check-ignore -v` prints it.
+- Patterns are git's wildmatch with `WM_PATHNAME` (`[…]` sets, `\` escapes, a byte-wise `?`), and matching honours `core.ignorecase` (ASCII case folding). A pattern git cannot parse matches nothing. In `.gitattributes`, a line whose pattern starts with `!` is ignored; write a literal leading `!` as `\!`.
 - `isDirectory` defaults to `false`; pass `true` to match directory-only rules like `build/`.
 
 ## Example

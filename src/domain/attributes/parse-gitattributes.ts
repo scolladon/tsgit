@@ -115,14 +115,26 @@ const derivePattern = (
   return { anchored, directoryOnly, body };
 };
 
-const buildRule = (pattern: string, rest: string, lineNumber: number): AttributeRule => {
+export interface ParseGitattributesOptions {
+  /** Fold ASCII case while matching, as git does under `core.ignorecase`. */
+  readonly caseFold?: boolean;
+}
+
+const NEGATIVE_PATTERN_PREFIX = '!';
+
+const buildRule = (
+  pattern: string,
+  rest: string,
+  lineNumber: number,
+  options: ParseGitattributesOptions,
+): AttributeRule => {
   const { anchored, directoryOnly, body } = derivePattern(pattern);
   return {
     pattern,
     anchored,
     directoryOnly,
     lineNumber,
-    compiled: compileGlob(body, { anchored }),
+    compiled: compileGlob(body, { anchored, caseFold: options.caseFold === true }),
     attributes: parseAttributeTokens(splitWhitespace(rest)),
   };
 };
@@ -135,7 +147,10 @@ const buildMacro = (rest: string): MacroDef | undefined => {
 };
 
 /** Parse `.gitattributes` text into pattern rules + macro definitions. */
-export const parseGitattributes = (text: string): ParsedAttributes => {
+export const parseGitattributes = (
+  text: string,
+  options: ParseGitattributesOptions = {},
+): ParsedAttributes => {
   const rules: AttributeRule[] = [];
   const macros: MacroDef[] = [];
   const lines = text.split('\n');
@@ -148,7 +163,9 @@ export const parseGitattributes = (text: string): ParsedAttributes => {
       continue;
     }
     const { pattern, rest } = readPattern(line);
-    rules.push(buildRule(pattern, rest, i + 1));
+    // git ignores a negative pattern line (after unquoting); `\!` stays a literal bang.
+    if (pattern.startsWith(NEGATIVE_PATTERN_PREFIX)) continue;
+    rules.push(buildRule(pattern, rest, i + 1, options));
   }
   return { rules, macros };
 };

@@ -13,6 +13,7 @@ export {
 export {
   type AttributeRule,
   type ParsedAttributes,
+  type ParseGitattributesOptions,
   parseGitattributes,
 } from './parse-gitattributes.js';
 export { type AttributeSource, resolveAttribute } from './resolve-attribute.js';

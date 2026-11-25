@@ -13,7 +13,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: review, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-11-12
+last-verified: 2026-11-24
 ---
 # 006 — Size caps at the headroom floor trip again on the review round
 
