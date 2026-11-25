@@ -28,7 +28,9 @@ import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { reset } from '../../src/application/commands/reset.js';
+import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
 import { status } from '../../src/application/commands/status.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import { GIT_AVAILABLE, git, initBothRepos, makePeerPair } from './interop-helpers.js';
 
 const SECOND_START_OFFSET_MS = 50;
@@ -121,19 +123,20 @@ const sameSecondSameSizeEdit = async (repo: string): Promise<void> => {
 };
 
 /** Content staged unchanged, then chmod-ed in the same second: only the ctime moves. */
-const sameSecondChmod = async (repo: string): Promise<void> => {
+const sameSecondChmod = async (repo: string, file = 'f'): Promise<void> => {
   for (let attempt = 0; attempt < MAX_FIXTURE_ATTEMPTS; attempt += 1) {
     await toNextSecondStart();
-    await put(repo, 'f', 'one\n');
-    git(repo, 'add', 'f');
+    await mkdir(path.dirname(path.join(repo, file)), { recursive: true });
+    await put(repo, file, 'one\n');
+    git(repo, 'add', file);
     await sleep(SHAPE_STEP_MS);
-    await chmod(path.join(repo, 'f'), GROUP_WRITABLE_MODE);
-    const worked = await lstat(path.join(repo, 'f'), { bigint: true });
-    const recorded = entryStamp(repo, 'f', 'ctime');
+    await chmod(path.join(repo, file), GROUP_WRITABLE_MODE);
+    const worked = await lstat(path.join(repo, file), { bigint: true });
+    const recorded = entryStamp(repo, file, 'ctime');
     const index = await indexMtime(repo);
     const sameCtimeSecond = worked.ctimeNs / NS_PER_SECOND === recorded.seconds;
     const ctimeMoved = worked.ctimeNs % NS_PER_SECOND !== recorded.nanoseconds;
-    const inIndexSecond = entryStamp(repo, 'f', 'mtime').seconds === index.seconds;
+    const inIndexSecond = entryStamp(repo, file, 'mtime').seconds === index.seconds;
     if (sameCtimeSecond && ctimeMoved && inIndexSecond) return;
   }
   throw premiseNeverMet('same-second chmod');
@@ -314,6 +317,42 @@ const chmodBeneathLink = async (repo: string): Promise<void> => {
     await rename(path.join(repo, LINK_TARGET), path.join(repo, 'd'));
   }
   throw premiseNeverMet('chmod beneath a symlinked directory');
+};
+
+/** `f` committed, then a branch `tgt` that holds `dir/x`, back on main. */
+const seedDirectoryTarget = async (repo: string, ignorecase: string): Promise<void> => {
+  git(repo, 'config', 'core.ignorecase', ignorecase);
+  git(repo, 'config', 'commit.gpgsign', 'false');
+  await put(repo, 'f', 'f\n');
+  git(repo, 'add', 'f');
+  git(repo, 'commit', '-q', '-m', 'base');
+  git(repo, 'checkout', '-q', '-b', 'tgt');
+  await mkdir(path.join(repo, 'dir'));
+  await put(repo, 'dir/x', 'x\n');
+  git(repo, 'add', 'dir/x');
+  git(repo, 'commit', '-q', '-m', 'tgt');
+  git(repo, 'checkout', '-q', 'main');
+};
+
+/** `a/f` and `b/h` committed on main. */
+const seedTwoDirectories = async (repo: string, ignorecase: string): Promise<void> => {
+  git(repo, 'config', 'core.ignorecase', ignorecase);
+  git(repo, 'config', 'commit.gpgsign', 'false');
+  await mkdir(path.join(repo, 'a'));
+  await mkdir(path.join(repo, 'b'));
+  await put(repo, 'a/f', 'one\n');
+  await put(repo, 'b/h', 'h\n');
+  git(repo, 'add', 'a/f', 'b/h');
+  git(repo, 'commit', '-q', '-m', 'base');
+};
+
+const tsgitSwitchError = async (repo: string, rev: string): Promise<TsgitError | undefined> => {
+  try {
+    await checkout(ctxOf(repo), { rev });
+    return undefined;
+  } catch (error) {
+    return error as TsgitError;
+  }
 };
 
 const seedBeneathLink = async (repo: string, ignorecase: string): Promise<void> => {
@@ -692,6 +731,62 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(gitOutcome).toEqual({ refused: false, head: 'other' });
             expect(tsgitOutcome).toEqual(gitOutcome);
             expect(await workTreeNames(pair.ours)).toEqual(await workTreeNames(pair.peer));
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
+      describe('When a switch needs a directory where a staged file stat-moved within its second', () => {
+        it('Then both tools switch under core.ignorecase true and refuse under false', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-icase-exists');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seedDirectoryTarget(repo, ignorecase);
+              await sameSecondChmod(repo, 'dir');
+            }
+
+            // Act
+            const gitOutcome = await switchOutcome(pair.peer, () =>
+              git(pair.peer, 'checkout', '-q', 'tgt'),
+            );
+            const tsgitError = await tsgitSwitchError(pair.ours, 'tgt');
+
+            // Assert
+            const refused = ignorecase === 'false';
+            expect(gitOutcome).toEqual({ refused, head: refused ? 'main' : 'tgt' });
+            expect(tsgitError?.data).toEqual(
+              refused
+                ? { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: [], untracked: ['dir'] }
+                : undefined,
+            );
+            expect(await workTreeNames(pair.ours)).toEqual(await workTreeNames(pair.peer));
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
+      describe('When a sparse checkout excludes a directory whose file stat-moved within its second', () => {
+        it('Then both tools remove the file', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-sparse-mover');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seedTwoDirectories(repo, ignorecase);
+              await sameSecondChmod(repo, 'a/f');
+            }
+
+            // Act
+            git(pair.peer, 'sparse-checkout', 'set', '--no-cone', '/b/');
+            await sparseCheckoutSet(ctxOf(pair.ours), { patterns: ['/b/'], cone: false });
+
+            // Assert
+            expect(await workTreeNames(pair.peer)).toEqual(['b']);
+            expect(await workTreeNames(pair.ours)).toEqual(['b']);
           } finally {
             await pair.dispose();
           }

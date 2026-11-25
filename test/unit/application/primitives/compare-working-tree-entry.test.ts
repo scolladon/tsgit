@@ -71,6 +71,8 @@ const seedSymlink = async (
   return { ctx, entry };
 };
 
+const ALL_STAT_FIELDS = { ctime: true, ownerAndInode: true } as const;
+
 const MOVED_HEAD = 'b'.repeat(40);
 
 const gitlinkOf = (entry: IndexEntry): IndexEntry => ({
@@ -1654,6 +1656,72 @@ describe('compareAndRefresh', () => {
         // Assert
         expect(result.delta.status).toBe('unchanged');
         expect(result.refreshed).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged file whose entry ctime moved within its second', () => {
+    describe('When comparing with a policy that counts ctime', () => {
+      it('Then the delta is unchanged and nothing is refreshed', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const moved = { ...entry, ctimeNanoseconds: entry.ctimeNanoseconds + 1 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, moved, { indexMtime, statCheck: ALL_STAT_FIELDS });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged file whose entry ctime is one second earlier', () => {
+    describe.each([
+      ['counts ctime', ALL_STAT_FIELDS, true],
+      ['ignores ctime', { ctime: false, ownerAndInode: true }, false],
+    ] as const)('When comparing with a policy that %s', (_label, statCheck, refreshes) => {
+      it(`Then the entry ${refreshes ? 'is' : 'is not'} refreshed`, async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const earlier = { ...entry, ctimeSeconds: entry.ctimeSeconds - 1 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, earlier, { indexMtime, statCheck });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed !== undefined).toBe(refreshes);
+      });
+    });
+  });
+
+  describe('Given an entry recorded with size 0 whose id is not the empty blob', () => {
+    describe('When the working file is empty and its stat matches', () => {
+      it('Then the content decides and the delta is modified', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), '');
+        const unsized = { ...entry, fileSize: 0 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, unsized, { indexMtime, statCheck: ALL_STAT_FIELDS });
+
+        // Assert
+        expect(result.delta.status).toBe('modified');
       });
     });
   });

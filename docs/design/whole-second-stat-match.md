@@ -357,8 +357,11 @@ re-smudge (size 0 stays 0), with one less content read. `racilyClean` filters wi
   with `utimes` before the add; before each measured call `.git/index` is set to T.000 with
   `utimes`, so every entry is racy again (each `status` in the window writes the index back and
   closes it). The settled half of the twin sets `.git/index` to T+5.
-- Measurement to record (implementation): the racy / twin ratio on the fixed code, three runs,
-  written into this section.
+- Measured (implementation, `test/bench/status-racy-window.bench.ts`, ten samples per row, ratio
+  = racy mean / floor-twin mean, gate 1.5): 122.73 ms / 305.52 ms = 0.402; 125.35 ms / 305.70 ms
+  = 0.410; 125.30 ms / 308.94 ms = 0.406. Quiet machine (load 2.6 on 11 cores, no foreign
+  vitest or stryker), macOS arm64 (Darwin 27.2), Node v22.22.3, git 2.56.1. The racy window
+  costs well under the floor of reading and hashing every file.
 - Benches that could move: `test/bench/status.bench.ts` (settled and stat-invalid shapes; its
   copy leaves the index's second on purpose, so no movement is expected),
   `status-dirty.bench.ts`, `status-sparse.bench.ts`, `checkout.bench.ts`, `add.bench.ts`. Judge

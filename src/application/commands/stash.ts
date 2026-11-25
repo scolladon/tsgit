@@ -36,6 +36,7 @@ import {
   keyOfPath,
   pathBytesOf,
 } from '../../domain/git-index/index-path-key.js';
+import type { StatCheck } from '../../domain/git-index/stat-check.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { compareBytes, encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
@@ -119,6 +120,7 @@ import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
+import { readStatCheck } from '../primitives/read-stat-check.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
 import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -214,6 +216,7 @@ interface ConversionScope {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
 interface HashedFile {
@@ -226,6 +229,7 @@ const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => (
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
   executableBit: await readExecutableBitTrust(ctx),
+  statCheck: await readStatCheck(ctx),
 });
 
 /** The blob bytes git stores for a work-tree file: symlink targets verbatim, files cleaned. */
@@ -311,6 +315,7 @@ interface SnapshotScope {
   readonly indexMtime: GitIndex['indexMtime'];
   readonly scanner: LeadingPathScanner;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
 const statReachable = (ctx: Context, path: FilePath): Promise<FileStat | undefined> =>
@@ -366,6 +371,7 @@ const classifyEntry = async (
   const comparisonScope = {
     ...scopeOf(scope.provider, scope.indexMtime, scope.scanner),
     executableBit: scope.executableBit,
+    statCheck: scope.statCheck,
   };
   if (indexed && (await isBeyondSymlink(entry, scope, comparisonScope))) {
     return { kind: 'indexed', entry, state: 'beyond-symlink' };
@@ -464,7 +470,7 @@ const keepLeadingGitlinks = (
 const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
-  { provider, executableBit }: ConversionScope,
+  { provider, executableBit, statCheck }: ConversionScope,
   head: EscapedFlatTree | undefined,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
   const scanner = createLeadingPathScanner(ctx);
@@ -474,6 +480,7 @@ const classifyTracked = async (
     indexMtime: index.indexMtime,
     scanner,
     executableBit,
+    statCheck,
   };
   const classify = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
