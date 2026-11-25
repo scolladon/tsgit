@@ -242,6 +242,8 @@ describe('verifiedBy', () => {
       it('Then the skip-worktree path is, as a refresh marks it up to date', async () => {
         // Arrange
         const ctx = await seedSettled();
+        at(5);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${B}`, 'changed!');
         at(7);
         const index = await freshIndex(ctx);
         const entries = index.entries.map((entry) =>
