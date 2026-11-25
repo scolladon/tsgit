@@ -782,7 +782,18 @@ const commitIfChanged = async (
   options: CommitOptions,
 ): Promise<void> => {
   if (!changesIndex(existingCount, entries, options)) return;
-  await lock.commit(entries, 'update', options);
+  await lock.commit(entries, 'update', { ...options, verified: restagedIn(options) });
+};
+
+/**
+ * git's `fill_stat_cache_info` marks an entry it just staged up to date: its stat and its
+ * object name were taken together, so the racy smudge does not read the file a second time.
+ */
+const restagedIn = ({
+  restagedPaths = [],
+}: CommitOptions): NonNullable<CommitOptions['verified']> => {
+  const restaged = new Set(restagedPaths.map(({ path }) => path));
+  return (path) => restaged.has(path);
 };
 
 /** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */

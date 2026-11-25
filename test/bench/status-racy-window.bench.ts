@@ -90,6 +90,17 @@ const settledScan: Scan = async ({ cwd, files, repo }) => {
   hashEveryFile(cwd, files);
 };
 
+const racyAdd: Scan = async ({ cwd, repo }) => {
+  await armIndex(cwd, SHARED_SECOND);
+  await repo.add(['.']);
+};
+
+const settledAdd: Scan = async ({ cwd, files, repo }) => {
+  await armIndex(cwd, SHARED_SECOND + SETTLED_OFFSET_SECONDS);
+  await repo.add(['.']);
+  hashEveryFile(cwd, files);
+};
+
 const racyWindowScenario = (given: string, whenThen: string, scan: Scan): void => {
   benchScenario(given, whenThen, async () => {
     const fixture = await buildFixture();
@@ -118,4 +129,14 @@ racyWindowScenario(
   'Given 5000 tracked files in a settled index',
   'When status() runs and every tracked file is read and hashed, Then measure tsgit alone',
   settledScan,
+);
+racyWindowScenario(
+  'Given 5000 tracked files whose mtimes share the index second',
+  'When add() restages them in the racy window, Then measure tsgit alone',
+  racyAdd,
+);
+racyWindowScenario(
+  'Given 5000 tracked files in a settled index',
+  'When add() runs and every tracked file is read and hashed, Then measure tsgit alone',
+  settledAdd,
 );

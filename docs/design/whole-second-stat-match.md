@@ -365,6 +365,14 @@ re-smudge (size 0 stays 0), with one less content read. `racilyClean` filters wi
   awaited one asynchronous read per file: it took 305 ms, more than the scan it floors, and read
   0.40 to 0.41, a ratio no defect could push past the gate. A second hash of every entry would
   now read about 1.8 (one more 90 ms pass over the 120 ms twin).
+- `add` in the racy window (review, ADR-1269): the same file holds a second pair, `add(['.'])`
+  with every entry racy against a settled `add(['.'])` plus the same read and hash per file.
+  Before the fix `add` hashed each racily clean file twice, once to restage it and once in the
+  smudge pass: 471.99 ms / 125.11 ms = 3.77. With the paths `add` just staged counted as
+  verified: 261.30 / 119.73 = 2.18, 304.13 / 129.19 = 2.35, 308.92 / 160.07 = 1.93 (load 3.9
+  to 5.5). Gate 3.0, between the two. git itself on the same tree: `git add .` 296 to 334 ms
+  and `git status` 134 to 143 ms per call, process start and timing wrapper of about 40 ms
+  included.
 - Benches that could move: `test/bench/status.bench.ts` (settled and stat-invalid shapes; its
   copy leaves the index's second on purpose, so no movement is expected),
   `status-dirty.bench.ts`, `status-sparse.bench.ts`, `checkout.bench.ts`, `add.bench.ts`. Judge
