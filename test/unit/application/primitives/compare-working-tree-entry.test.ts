@@ -718,7 +718,7 @@ describe('compareWorkingTreeDelta', () => {
   describe('Given a stat-clean file whose recorded mode differs from the working file, index mtime supplied', () => {
     describe('When comparing the delta', () => {
       it("Then returns 'mode-changed' without reading or hashing the content (stat-cache ternary distinguishes the mode mismatch)", async () => {
-        // Arrange — index mtime strictly after the entry's mtime ⇒ non-racy; matchesContentStat
+        // Arrange — index mtime strictly after the entry's mtime ⇒ non-racy; matchesStatData
         // deliberately excludes mode, so the stat cache reports clean even though this
         // entry's mode (100755) differs from the seeded working file's real mode (100644) —
         // only the caller's ternary is what must tell 'unchanged' from 'mode-changed' apart.

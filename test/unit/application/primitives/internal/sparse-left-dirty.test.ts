@@ -159,7 +159,7 @@ const statEntryOf = async (
   return entryOf(name, id, { ...recordedStatOf(stat), fileSize: fileSize ?? stat.size });
 };
 
-const OLDER_THAN_ANY_ENTRY = { seconds: 0, nanoseconds: 0 };
+const OLDER_THAN_ANY_ENTRY = { seconds: 1, nanoseconds: 0 };
 const NEWER_THAN_ANY_ENTRY = { seconds: 2 ** 31, nanoseconds: 0 };
 
 describe('notUpToDate stat short-circuit', () => {
@@ -192,6 +192,24 @@ describe('notUpToDate stat short-circuit', () => {
       const entry = await statEntryOf(ctx, 'a', id);
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tfilemode = false\n');
       withExecutableWorkFile(ctx);
+
+      // Act
+      const result = await sut(ctx, workDirOf(ctx), [entry], NEWER_THAN_ANY_ENTRY);
+
+      // Assert
+      expect([...result]).toEqual([]);
+    });
+  });
+
+  describe('Given core.trustCtime = false and an entry whose ctime moved by a second, When judged', () => {
+    it('Then the stat settles it and nothing is reported', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const id = await writeBlob(ctx, 'indexed');
+      await writeWork(ctx, 'a', 'edited');
+      const recorded = await statEntryOf(ctx, 'a', id);
+      const entry = { ...recorded, ctimeSeconds: recorded.ctimeSeconds + 1 };
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\ttrustCtime = false\n');
 
       // Act
       const result = await sut(ctx, workDirOf(ctx), [entry], NEWER_THAN_ANY_ENTRY);

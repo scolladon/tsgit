@@ -237,6 +237,42 @@ describe('upgradeStaleNoops', () => {
     });
   });
 
+  describe('Given an entry whose ctime moved within its second', () => {
+    describe('When it is judged', () => {
+      it('Then it stays a noop', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const seeded = await seed(ctx, 'a.txt', 'one\n');
+        const entry = { ...seeded, ctimeNanoseconds: seeded.ctimeNanoseconds + 1 };
+
+        // Act
+        const kinds = await judge(ctx, [entry], NON_RACY);
+
+        // Assert
+        expect(kinds).toEqual(['noop']);
+      });
+    });
+  });
+
+  describe('Given core.trustCtime = false and an entry whose ctime moved by a second', () => {
+    describe('When it is judged', () => {
+      it('Then it stays a noop', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const seeded = await seed(ctx, 'a.txt', 'one\n');
+        const entry = { ...seeded, ctimeSeconds: seeded.ctimeSeconds + 1 };
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\ttrustCtime = false\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const kinds = await judge(ctx, [entry], NON_RACY);
+
+        // Assert
+        expect(kinds).toEqual(['noop']);
+      });
+    });
+  });
+
   describe('Given an entry whose file differs only by a set exec bit, with core.filemode = false', () => {
     describe('When it is judged', () => {
       it('Then it stays a noop', async () => {

@@ -22,18 +22,19 @@ export interface IndexMtime {
   readonly nanoseconds: number;
 }
 
-const NS_PER_SECOND = 1_000_000_000n;
-
 /** Truncate to the index's on-disk 32-bit field width (`ce_stat_data`). */
 const truncate32 = (n: number): number => n >>> 0;
 
 /**
  * Git's `is_racy_timestamp` as built without nanosecond stat support: an entry modified in
  * the index file's own second or later is not provably older than the index, so an edit
- * could have landed after it without visibly changing the stat. A gitlink is never racy.
+ * could have landed after it without visibly changing the stat. A gitlink is never racy, and
+ * an index with no timestamp (second 0) judges nothing racy.
  */
 export const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): boolean =>
-  entry.mode !== FILE_MODE.GITLINK && indexMtime.seconds <= entry.mtimeSeconds;
+  entry.mode !== FILE_MODE.GITLINK &&
+  indexMtime.seconds !== 0 &&
+  indexMtime.seconds <= entry.mtimeSeconds;
 
 /**
  * Git's `has_racy_timestamp`: the index is racy when any entry (every stage counts) is
@@ -42,39 +43,11 @@ export const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): bool
 export const hasRacyTimestamp = (
   entries: ReadonlyArray<IndexEntry>,
   indexMtime: IndexMtime,
-): boolean =>
-  indexMtime.seconds !== 0 && entries.some((entry) => isRacyTimestamp(entry, indexMtime));
+): boolean => entries.some((entry) => isRacyTimestamp(entry, indexMtime));
 
 const MS_PER_SECOND = 1000;
 
 const wholeSecond = (ms: number): number => Math.floor(ms / MS_PER_SECOND);
-
-const matchesMtime = (entry: IndexEntry, stat: FileStat): boolean => {
-  if (entry.mtimeSeconds !== wholeSecond(stat.mtimeMs)) return false;
-  if (stat.mtimeNs === undefined) return true;
-  return entry.mtimeNanoseconds === Number(stat.mtimeNs % NS_PER_SECOND);
-};
-
-const matchesCtime = (entry: IndexEntry, stat: FileStat): boolean => {
-  if (entry.ctimeSeconds !== wholeSecond(stat.ctimeMs)) return false;
-  if (stat.ctimeNs === undefined) return true;
-  return entry.ctimeNanoseconds === Number(stat.ctimeNs % NS_PER_SECOND);
-};
-
-/**
- * `ce_match_stat_basic`'s content-stat field set: mtime, ctime, uid, gid,
- * ino, size. `dev` is deliberately excluded (git's default build has
- * `USE_STDEV` off); `mode` is deliberately excluded (the caller derives the
- * `unchanged`/`mode-changed` verdict from the mode comparison itself, so a
- * pure exec-bit change never forces a re-hash).
- */
-export const matchesContentStat = (entry: IndexEntry, stat: FileStat): boolean =>
-  matchesMtime(entry, stat) &&
-  matchesCtime(entry, stat) &&
-  entry.uid === stat.uid &&
-  entry.gid === stat.gid &&
-  truncate32(entry.ino) === truncate32(stat.ino) &&
-  truncate32(entry.fileSize) === truncate32(stat.size);
 
 const EMPTY_BLOB_OIDS: ReadonlySet<ObjectId> = new Set([
   emptyBlobOid(SHA1_CONFIG),
@@ -159,14 +132,14 @@ export const lstatBeyondLink = async (
 // git's `ie_match_stat`: the cached stat fields settle it, and a racy entry (its mtime not
 // older than the index file's) is settled by the content instead.
 export const matchesCachedStat = async (
-  { entry, indexMtime, executableBit }: CachedStat,
+  { entry, indexMtime, executableBit, statCheck }: CachedStat,
   absPath: string,
   stat: FileStat,
   contentMatches: RacyContentCheck,
 ): Promise<boolean> => {
   if (
     indexModeFromStat(stat, entry.mode, executableBit) !== entry.mode ||
-    !matchesContentStat(entry, stat)
+    !matchesStatData(entry, stat, statCheck)
   )
     return false;
   if (indexMtime !== undefined && !isRacyTimestamp(entry, indexMtime)) return true;

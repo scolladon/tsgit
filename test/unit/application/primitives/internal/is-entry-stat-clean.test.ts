@@ -425,6 +425,22 @@ describe('isRacyTimestamp', () => {
   });
 });
 
+describe('Given an index mtime of second 0', () => {
+  describe('When an entry of any second is checked', () => {
+    it('Then it is not racy', () => {
+      // Arrange
+      const entry = { ...BASE_ENTRY, mtimeSeconds: 0, mtimeNanoseconds: 0 };
+      const sut = isRacyTimestamp;
+
+      // Act
+      const result = sut(entry, { seconds: 0, nanoseconds: 0 });
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
 describe('hasRacyTimestamp', () => {
   const sameSecondIndexMtime: IndexMtime = { seconds: 946, nanoseconds: 85_000_000 };
 
@@ -669,6 +685,56 @@ describe('matchesCachedStat', () => {
         // Assert
         expect(result).toBe(verdict);
         expect(contentMatches).toHaveBeenCalledWith(BASE_ENTRY, ABS_PATH, BASE_STAT);
+      });
+    });
+  });
+
+  describe.each([
+    ['ctime nanoseconds that drifted', { ctimeNs: 1_700_000_000_999_000_000n }, ALL],
+    ['mtime nanoseconds that drifted', { mtimeNs: 1_700_000_100_999_000_000n }, ALL],
+    ['a ctime a second later under a policy ignoring it', { ctimeMs: 1_700_000_001_000 }, NO_CTIME],
+    ['an inode that drifted under a policy ignoring it', { ino: 43 }, MINIMAL],
+  ] as const)('Given a non-racy entry whose stat shows %s', (_label, drift, statCheck) => {
+    describe('When judged', () => {
+      it('Then it matches without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat = { ...BASE_STAT, ...drift } as FileStat;
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted', statCheck },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a non-racy entry of size 0 holding a non-empty blob', () => {
+    describe('When judged against a stat of size 0', () => {
+      it('Then it does not match without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(true);
+        const entry = { ...BASE_ENTRY, fileSize: 0 };
+        const stat: FileStat = { ...BASE_STAT, size: 0 };
+
+        // Act
+        const result = await matchesCachedStat(
+          { entry, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted', statCheck: ALL },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
       });
     });
   });

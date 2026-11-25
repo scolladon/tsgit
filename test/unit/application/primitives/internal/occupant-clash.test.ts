@@ -687,11 +687,34 @@ describe('classifyOccupant', () => {
       });
     });
 
+    describe('When core.trustCtime is false and the entry ctime moved by a second', () => {
+      it('Then it is clear, the cached stat settling it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const lookup = await arrangeTracked(ctx, { indexMtime: INDEX_WRITTEN_AFTER_ENTRY });
+        const tracked: TrackedLookup = async (target) => {
+          const found = await lookup(target);
+          if (found === undefined) return undefined;
+          const { entry } = found;
+          return { ...found, entry: { ...entry, ctimeSeconds: entry.ctimeSeconds + 1 } };
+        };
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\ttrustCtime = false\n');
+        invalidateConfigCache(ctx);
+        await ctx.fs.write(`${ctx.layout.workDir}/held/x`, new TextEncoder().encode('v2\n'));
+
+        // Act
+        const result = await classifyChange(ctx, 'update', REACHED, scopeOf(ctx, { tracked }));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+
     describe('When the entry is racy and the reached content equals the index blob', () => {
       it('Then it is clear', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const racy: IndexMtime = { seconds: 0, nanoseconds: 0 };
+        const racy: IndexMtime = { seconds: 1, nanoseconds: 0 };
         const tracked = await arrangeTracked(ctx, { indexMtime: racy });
 
         // Act
@@ -706,7 +729,7 @@ describe('classifyOccupant', () => {
       it('Then it is a local change at the entry path', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const racy: IndexMtime = { seconds: 0, nanoseconds: 0 };
+        const racy: IndexMtime = { seconds: 1, nanoseconds: 0 };
         const sameSize = new TextEncoder().encode('v2\n');
         const tracked = await arrangeTracked(ctx, { indexMtime: racy, cachedFrom: sameSize });
 
@@ -722,7 +745,7 @@ describe('classifyOccupant', () => {
       it('Then it is clear', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const racy: IndexMtime = { seconds: 0, nanoseconds: 0 };
+        const racy: IndexMtime = { seconds: 1, nanoseconds: 0 };
         const crlf = new TextEncoder().encode('v1\r\n');
         const tracked = await arrangeTracked(ctx, { indexMtime: racy, cachedFrom: crlf });
         await ctx.fs.write(

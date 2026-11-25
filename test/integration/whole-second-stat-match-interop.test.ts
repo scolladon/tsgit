@@ -9,11 +9,25 @@
  *   unique:         the racily-clean smudge of an index write judges stat data and racy entries by whole seconds as git does
  *   interopSurface: add
  */
-import { chmod, lstat, rename, truncate, utimes, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  symlink,
+  truncate,
+  unlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
+import { checkout } from '../../src/application/commands/checkout.js';
+import { reset } from '../../src/application/commands/reset.js';
 import { status } from '../../src/application/commands/status.js';
 import { GIT_AVAILABLE, git, initBothRepos, makePeerPair } from './interop-helpers.js';
 
@@ -27,6 +41,8 @@ const NS_PER_SECOND = 1_000_000_000n;
 const GROUP_WRITABLE_MODE = 0o664;
 const SMUDGED_SIZE = 0;
 const UNSTAGED_MODIFIED_F = /^.M f$/;
+const LINK_TARGET = 'held';
+const WORK_FILE_MODE_MASK = 0o7777n;
 const STAMP_PATTERN = /(?:ctime|mtime): (\d+):(\d+)/;
 
 class FixturePremiseError extends Error {
@@ -212,6 +228,106 @@ const gitAddsUnrelatedPath = async (repo: string): Promise<void> => {
 const tsgitAddsUnrelatedPath = async (repo: string): Promise<void> => {
   await put(repo, 'g', 'g\n');
   await add(createNodeContext({ workDir: repo }), ['g']);
+};
+
+interface WorkFile {
+  readonly inode: bigint;
+  readonly mode: bigint;
+  readonly ctimeNs: bigint;
+}
+
+const workFileOf = async (repo: string): Promise<WorkFile> => {
+  const { ino, mode, ctimeNs } = await lstat(path.join(repo, 'f'), { bigint: true });
+  return { inode: ino, mode: mode & WORK_FILE_MODE_MASK, ctimeNs };
+};
+
+/** One way of asking each tool to bring `f` in line with what it holds, with the git twin first. */
+interface Act {
+  readonly git: (repo: string) => void;
+  readonly tsgit: (repo: string) => Promise<unknown>;
+}
+
+const ctxOf = (repo: string) => createNodeContext({ workDir: repo });
+
+const checkoutPath: Act = {
+  git: (repo) => git(repo, 'checkout', '--', 'f'),
+  tsgit: (repo) => checkout(ctxOf(repo), { paths: ['f'] }),
+};
+
+const forcedSwitch: Act = {
+  git: (repo) => git(repo, 'checkout', '-q', '-f', 'other'),
+  tsgit: (repo) => checkout(ctxOf(repo), { rev: 'other', force: true }),
+};
+
+const plainSwitch: Act = {
+  git: (repo) => git(repo, 'checkout', '-q', 'other'),
+  tsgit: (repo) => checkout(ctxOf(repo), { rev: 'other' }),
+};
+
+const hardReset: Act = {
+  git: (repo) => git(repo, 'reset', '-q', '--hard', 'HEAD'),
+  tsgit: (repo) => reset(ctxOf(repo), { mode: 'hard', rev: 'HEAD' }),
+};
+
+const actOnBoth = async (act: Act, peer: string, ours: string): Promise<void> => {
+  act.git(peer);
+  await act.tsgit(ours);
+};
+
+interface Switch {
+  readonly refused: boolean;
+  readonly head: string;
+}
+
+const switchOutcome = async (repo: string, run: () => unknown): Promise<Switch> => {
+  let refused = false;
+  try {
+    await run();
+  } catch {
+    refused = true;
+  }
+  return { refused, head: git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim() };
+};
+
+const workTreeNames = async (repo: string): Promise<ReadonlyArray<string>> =>
+  (await readdir(repo)).filter((name) => name !== '.git').sort();
+
+/** A tracked file reached through a symlinked directory, its stat moved within its second. */
+const chmodBeneathLink = async (repo: string): Promise<void> => {
+  for (let attempt = 0; attempt < MAX_FIXTURE_ATTEMPTS; attempt += 1) {
+    await toNextSecondStart();
+    await put(repo, 'd/x', 'one\n');
+    git(repo, 'add', 'd/x');
+    await sleep(SHAPE_STEP_MS);
+    await rename(path.join(repo, 'd'), path.join(repo, LINK_TARGET));
+    await symlink(LINK_TARGET, path.join(repo, 'd'));
+    const reached = path.join(repo, LINK_TARGET, 'x');
+    await chmod(reached, GROUP_WRITABLE_MODE);
+    const worked = await lstat(reached, { bigint: true });
+    const recorded = entryStamp(repo, 'd/x', 'ctime');
+    const index = await indexMtime(repo);
+    const sameCtimeSecond = worked.ctimeNs / NS_PER_SECOND === recorded.seconds;
+    const ctimeMoved = worked.ctimeNs % NS_PER_SECOND !== recorded.nanoseconds;
+    const inIndexSecond = entryStamp(repo, 'd/x', 'mtime').seconds === index.seconds;
+    if (sameCtimeSecond && ctimeMoved && inIndexSecond) return;
+    await unlink(path.join(repo, 'd'));
+    await rename(path.join(repo, LINK_TARGET), path.join(repo, 'd'));
+  }
+  throw premiseNeverMet('chmod beneath a symlinked directory');
+};
+
+const seedBeneathLink = async (repo: string, ignorecase: string): Promise<void> => {
+  git(repo, 'config', 'core.ignorecase', ignorecase);
+  git(repo, 'config', 'commit.gpgsign', 'false');
+  await mkdir(path.join(repo, 'd'));
+  await put(repo, 'd/x', 'one\n');
+  git(repo, 'add', 'd/x');
+  git(repo, 'commit', '-q', '-m', 'base');
+  git(repo, 'branch', 'other');
+  git(repo, 'checkout', '-q', 'other');
+  await put(repo, 'd/x', 'two\n');
+  git(repo, 'commit', '-q', '-a', '-m', 'other');
+  git(repo, 'checkout', '-q', 'main');
 };
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
@@ -432,6 +548,150 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
             // Assert
             expect([gitModified, tsgitModified]).toEqual([true, true]);
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+      describe.each([
+        ['racy', 0n, checkoutPath],
+        ['settled', SETTLE_GAP_SECONDS, checkoutPath],
+        ['racy', 0n, forcedSwitch],
+        ['racy', 0n, hardReset],
+        ['racy', 0n, plainSwitch],
+      ] as const)(
+        'When a file stat-moved within its second meets an act with the index %s',
+        (_label, gap, act) => {
+          it('Then both tools leave the file in place', async () => {
+            // Arrange
+            const pair = await makePeerPair('whole-second-stays');
+            try {
+              initBothRepos(pair.peer, pair.ours);
+              for (const repo of [pair.peer, pair.ours]) {
+                await seed(repo, ignorecase);
+                await sameSecondChmod(repo);
+                await armIndexTime(repo, entryStamp(repo, 'f', 'mtime').seconds + gap);
+              }
+              const before = await workFileOf(pair.peer);
+              const beforeByTsgit = await workFileOf(pair.ours);
+
+              // Act
+              await actOnBoth(act, pair.peer, pair.ours);
+
+              // Assert
+              expect(await workFileOf(pair.peer)).toEqual(before);
+              expect(await workFileOf(pair.ours)).toEqual(beforeByTsgit);
+              expect(before.mode).toBe(BigInt(GROUP_WRITABLE_MODE));
+            } finally {
+              await pair.dispose();
+            }
+          });
+        },
+      );
+
+      describe.each([
+        ['core.trustCtime', 'false'],
+        ['core.checkStat', 'minimal'],
+      ] as const)(
+        'When checkout restores a file chmod-ed a second later under %s %s',
+        (key, value) => {
+          it('Then both tools leave the file in place', async () => {
+            // Arrange
+            const pair = await makePeerPair('whole-second-restore-ignored-ctime');
+            try {
+              initBothRepos(pair.peer, pair.ours);
+              for (const repo of [pair.peer, pair.ours]) {
+                await seed(repo, ignorecase);
+                git(repo, 'config', key, value);
+                await chmodSecondsLater(repo);
+              }
+              const before = await workFileOf(pair.peer);
+              const beforeByTsgit = await workFileOf(pair.ours);
+
+              // Act
+              await actOnBoth(checkoutPath, pair.peer, pair.ours);
+
+              // Assert
+              expect(await workFileOf(pair.peer)).toEqual(before);
+              expect(await workFileOf(pair.ours)).toEqual(beforeByTsgit);
+              expect(before.mode).toBe(BigInt(GROUP_WRITABLE_MODE));
+            } finally {
+              await pair.dispose();
+            }
+          });
+        },
+      );
+
+      describe('When checkout restores a file chmod-ed a second later under the default policy', () => {
+        it('Then both tools rewrite the file', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-restore-default-ctime');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seed(repo, ignorecase);
+              await chmodSecondsLater(repo);
+            }
+            const before = await workFileOf(pair.peer);
+            const beforeByTsgit = await workFileOf(pair.ours);
+
+            // Act
+            await actOnBoth(checkoutPath, pair.peer, pair.ours);
+
+            // Assert
+            expect((await workFileOf(pair.peer)).ctimeNs).toBeGreaterThan(before.ctimeNs);
+            expect((await workFileOf(pair.ours)).ctimeNs).toBeGreaterThan(beforeByTsgit.ctimeNs);
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
+      describe.each([
+        ['a same-size edit in the index second, one second later', staleSameSizeEdit],
+        ['a file emptied in place while its entry is smudged', smudgedTruncation],
+      ] as const)('When checkout restores a file after %s', (_label, shape) => {
+        it('Then both tools restore the staged content', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-restore-edited');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seed(repo, ignorecase);
+              await shape(repo);
+            }
+
+            // Act
+            await actOnBoth(checkoutPath, pair.peer, pair.ours);
+
+            // Assert
+            expect(await readFile(path.join(pair.peer, 'f'), 'utf8')).toBe('abc\n');
+            expect(await readFile(path.join(pair.ours, 'f'), 'utf8')).toBe('abc\n');
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
+      describe('When a switch changes a path beneath a symlinked directory whose file stat moved within its second', () => {
+        it('Then both tools switch as git does', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-beneath-link');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seedBeneathLink(repo, ignorecase);
+              await chmodBeneathLink(repo);
+            }
+
+            // Act
+            const gitOutcome = await switchOutcome(pair.peer, () => plainSwitch.git(pair.peer));
+            const tsgitOutcome = await switchOutcome(pair.ours, () => plainSwitch.tsgit(pair.ours));
+
+            // Assert
+            expect(gitOutcome).toEqual({ refused: false, head: 'other' });
+            expect(tsgitOutcome).toEqual(gitOutcome);
+            expect(await workTreeNames(pair.ours)).toEqual(await workTreeNames(pair.peer));
           } finally {
             await pair.dispose();
           }
