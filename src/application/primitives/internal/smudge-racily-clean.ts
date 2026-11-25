@@ -65,6 +65,7 @@ const carriedOver = (
   racy: ReadonlyArray<IndexEntry>,
   indexMtime: IndexMtime,
 ): ReadonlyArray<IndexEntry> => {
+  // Stryker disable next-line MethodExpression: equivalent — a key holds the mode and the mtime second, all the racy test reads of an entry, so an as-read entry sharing a racy entry's key is racy too
   const racyAsRead = previous.entries.filter((entry) => isRacyTimestamp(entry, indexMtime));
   const asRead = new Set(racyAsRead.map(statDataKey));
   return racy.filter((entry) => asRead.has(statDataKey(entry)));
