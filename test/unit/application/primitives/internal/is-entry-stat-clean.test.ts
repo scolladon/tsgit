@@ -4,9 +4,10 @@ import {
   hasRacyTimestamp,
   type IndexMtime,
   isEntryStatClean,
+  isRacyTimestamp,
   lstatBeyondLink,
   matchesCachedStat,
-  matchesStatFields,
+  matchesStatData,
   UNREACHABLE,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -288,7 +289,7 @@ describe('isEntryStatClean', () => {
 
   describe('Given an entry whose recorded second equals the index mtime second but whose nanosecond strictly precedes it', () => {
     describe('When checked against a matching stat', () => {
-      it('Then it is clean (not racy: the second-equal fallthrough compares nanoseconds, not the whole-second boundary)', () => {
+      it('Then it is not clean (git compares whole seconds, never nanoseconds)', () => {
         // Arrange
         const indexMtime: IndexMtime = {
           seconds: BASE_ENTRY.mtimeSeconds,
@@ -299,7 +300,7 @@ describe('isEntryStatClean', () => {
         const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
 
         // Assert
-        expect(result).toBe(true);
+        expect(result).toBe(false);
       });
     });
   });
@@ -330,6 +331,52 @@ describe('isEntryStatClean', () => {
 
         // Act
         const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('isRacyTimestamp', () => {
+  const INDEX_SECOND = 946;
+
+  describe.each([
+    ['the same second with nanoseconds before the index', INDEX_SECOND, 1, 85_000_000, true],
+    ['the same second with nanoseconds 0 against 999999999', INDEX_SECOND, 0, 999_999_999, true],
+    ['a second below the index second', INDEX_SECOND - 1, 999_999_999, 0, false],
+    ['a second above the index second', INDEX_SECOND + 1, 0, 999_999_999, true],
+  ] as const)('Given an entry modified in %s', (_label, seconds, entryNs, indexNs, expected) => {
+    describe('When judged against the index mtime', () => {
+      it('Then it is racy only when the index second is not after its second', () => {
+        // Arrange
+        const entry = { ...BASE_ENTRY, mtimeSeconds: seconds, mtimeNanoseconds: entryNs };
+        const sut = isRacyTimestamp;
+
+        // Act
+        const result = sut(entry, { seconds: INDEX_SECOND, nanoseconds: indexNs });
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry in the index second', () => {
+    describe('When judged against the index mtime', () => {
+      it('Then it is not racy', () => {
+        // Arrange
+        const entry = {
+          ...BASE_ENTRY,
+          mode: FILE_MODE.GITLINK,
+          mtimeSeconds: INDEX_SECOND,
+          mtimeNanoseconds: 0,
+        };
+        const sut = isRacyTimestamp;
+
+        // Act
+        const result = sut(entry, { seconds: INDEX_SECOND, nanoseconds: 0 });
 
         // Assert
         expect(result).toBe(false);
@@ -639,7 +686,7 @@ describe('lstatBeyondLink', () => {
   });
 });
 
-describe('matchesStatFields', () => {
+describe('matchesStatData', () => {
   const ALL: StatCheck = { ctime: true, ownerAndInode: true };
   const NO_CTIME: StatCheck = { ctime: false, ownerAndInode: true };
   const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
@@ -664,10 +711,35 @@ describe('matchesStatFields', () => {
       it('Then it matches only when git compares no drifted field', () => {
         // Arrange
         const stat = { ...BASE_STAT, ...drift } as FileStat;
-        const sut = matchesStatFields;
+        const sut = matchesStatData;
 
         // Act
         const result = sut(BASE_ENTRY, stat, check);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  const SHA1_EMPTY_BLOB = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391';
+  const SHA256_EMPTY_BLOB = '473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813';
+
+  describe.each([
+    ['a non-empty blob smudged to size 0', 'a'.repeat(40), 0, false],
+    ['the SHA-1 empty blob', SHA1_EMPTY_BLOB, 0, true],
+    ['the SHA-256 empty blob', SHA256_EMPTY_BLOB, 0, true],
+    ['a non-empty blob of a real size', 'a'.repeat(40), 7, true],
+  ] as const)('Given an entry of size 0 or 7 holding %s', (_label, id, size, expected) => {
+    describe('When matched against a stat of the same size', () => {
+      it('Then it matches unless the entry is racily smudged', () => {
+        // Arrange
+        const entry = { ...BASE_ENTRY, id: id as ObjectId, fileSize: size };
+        const stat = { ...BASE_STAT, size };
+        const sut = matchesStatData;
+
+        // Act
+        const result = sut(entry, stat, ALL);
 
         // Assert
         expect(result).toBe(expected);

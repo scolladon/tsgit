@@ -1,19 +1,17 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index-entry.js';
 import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index-path-key.js';
-import {
-  type ExecutableBitTrust,
-  FILE_MODE,
-  indexModeFromStat,
-} from '../../../domain/objects/file-mode.js';
+import type { StatCheck } from '../../../domain/git-index/stat-check.js';
+import { type ExecutableBitTrust, indexModeFromStat } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { compareAndRefresh, scopeOf } from '../compare-working-tree-entry.js';
 import { indexPath } from '../path-layout.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { readIndexAt } from '../read-index.js';
+import { readStatCheck } from '../read-stat-check.js';
 import { lstatIfReachable } from './fs-probes.js';
-import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
+import { type IndexMtime, isRacyTimestamp, matchesStatData } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
@@ -23,10 +21,6 @@ const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
 export type IsVerified = (path: FilePath) => boolean;
 
 export const NOTHING_VERIFIED: IsVerified = () => false;
-
-/** `is_racy_timestamp`: a gitlink is never racy. */
-const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): boolean =>
-  entry.mode !== FILE_MODE.GITLINK && isRacy(entry, indexMtime);
 
 /** Everything `ce_stat_data` and the object name hold, as one comparable value. */
 const statDataKey = (entry: IndexEntry): string =>
@@ -91,19 +85,20 @@ const statStillMatches = async (
   ctx: Context,
   workDir: string,
   entry: IndexEntry,
-  executableBit: ExecutableBitTrust,
+  policy: Pick<RacilyClean, 'executableBit' | 'statCheck'>,
 ): Promise<boolean> => {
   const stat = await lstatIfReachable(ctx.fs, joinPath(workDir, entry.path));
   return (
     stat !== undefined &&
-    indexModeFromStat(stat, entry.mode, executableBit) === entry.mode &&
-    matchesContentStat(entry, stat)
+    indexModeFromStat(stat, entry.mode, policy.executableBit) === entry.mode &&
+    matchesStatData(entry, stat, policy.statCheck)
   );
 };
 
 interface RacilyClean {
   readonly clean: ReadonlyArray<IndexEntry>;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
 /** The racy carried-over entries whose stat still matches their working file. */
@@ -119,11 +114,14 @@ const racilyClean = async (
     (entry) => isRacyTimestamp(entry, indexMtime) && !verified(entry.path),
   );
   if (racy.length === 0) return undefined;
-  const executableBit = await readExecutableBitTrust(ctx);
+  const policy = {
+    executableBit: await readExecutableBitTrust(ctx),
+    statCheck: await readStatCheck(ctx),
+  };
   const clean = await filterConcurrently(carriedOver(previous, racy), (entry) =>
-    statStillMatches(ctx, workDir, entry, executableBit),
+    statStillMatches(ctx, workDir, entry, policy),
   );
-  return { clean, executableBit };
+  return { clean, ...policy };
 };
 
 /**
@@ -143,10 +141,14 @@ export const smudgeRacilyClean = async (
   if (workDir === undefined || previous?.indexMtime === undefined) return entries;
   const found = await racilyClean(ctx, workDir, entries, previous, previous.indexMtime, verified);
   if (found === undefined || found.clean.length === 0) return entries;
-  const { clean, executableBit } = found;
+  const { clean, executableBit, statCheck } = found;
   const provider = await buildCheckinAttributeProvider(ctx);
   // One single-flight leading-path memo for the concurrent pass: a shared directory is lstat-ed once.
-  const scope = { ...scopeOf(provider, undefined, createLeadingPathScanner(ctx)), executableBit };
+  const scope = {
+    ...scopeOf(provider, undefined, createLeadingPathScanner(ctx)),
+    executableBit,
+    statCheck,
+  };
   const modified = await filterConcurrently(
     clean,
     async (entry) => (await compareAndRefresh(ctx, entry, scope)).delta.status === 'modified',

@@ -43,7 +43,7 @@ import {
   type IndexMtime,
   isEntryStatClean,
   matchesContentStat,
-  matchesStatFields,
+  matchesStatData,
   type RacyContentCheck,
 } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
@@ -384,7 +384,7 @@ const withoutAssumeValid = (entry: IndexEntry): IndexEntry => ({
  * the content.
  */
 export const isStaleAssumedEntry = (entry: IndexEntry, stat: FileStat, check: StatCheck): boolean =>
-  entry.flags.assumeValid && !matchesStatFields(entry, stat, check);
+  entry.flags.assumeValid && !matchesStatData(entry, stat, check);
 
 const staleAssumedStatDelta = (
   entry: IndexEntry,
