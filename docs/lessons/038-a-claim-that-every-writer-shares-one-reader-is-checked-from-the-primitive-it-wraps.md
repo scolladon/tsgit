@@ -13,7 +13,7 @@ evidence:
 source: { run: sparse-checkout-worktree-config, phase: implementation, date: 2026-11-13 }
 status: active
 supersedes: []
-last-verified: 2026-11-16
+last-verified: 2026-11-25
 ---
 # 038 — A claim that every writer shares one reader is checked from the primitive it wraps
 

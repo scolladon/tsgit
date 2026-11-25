@@ -1,6 +1,7 @@
 ---
 subjects:
   - test/perf/**
+  - test/bench/**
 phases: [implementation, review]
 kind: technique
 trigger: writing a perf row for a new bound and reaching for an elapsed-time budget in milliseconds
@@ -10,7 +11,7 @@ evidence:
 source: { run: wildmatch-bracket-class, phase: review, date: 2026-11-24 }
 status: active
 supersedes: []
-last-verified: 2026-11-24
+last-verified: 2026-11-25
 ---
 # 056 — A new perf row gates a ratio measured in the same process
 
@@ -40,3 +41,10 @@ Run the row three times under load before trusting it.
 
 `test/perf/domain/pathspec/compile-glob.perf.test.ts:214` — the megabyte-line row, compile time against table fill.
 `test/perf/domain/pathspec/compile-glob.perf.test.ts:141-212` — the fold and encode rows, written as a share of the per-rule work they replace.
+
+Refreshed 2026-11-25: `test/bench/status-racy-window.bench.ts` — the first floor twin awaited one
+asynchronous read per file and was slower than the scan it floors: the pair read 0.40 against a
+gate of 1.5, a gate no defect could trip. The ratio of the defect was never measured, which is
+the third rule above. A later pair for the bounded smudge pass was dropped for the same rule: the
+bounded pass read 1.42 to 1.61 and the unbounded one 1.57 to 2.33 at 5000 files, so no gate
+separates them.

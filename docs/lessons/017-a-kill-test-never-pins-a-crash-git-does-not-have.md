@@ -12,7 +12,7 @@ evidence:
 source: { run: forced-checkout-displace-occupant, phase: validation, date: 2026-10-25 }
 status: active
 supersedes: []
-last-verified: 2026-10-26
+last-verified: 2026-11-25
 ---
 # 017 — A kill test never pins a crash git does not have
 

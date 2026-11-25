@@ -10,7 +10,7 @@ evidence:
 source: { run: long-pathspec-refusals, phase: review, date: 2026-11-16 }
 status: active
 supersedes: []
-last-verified: 2026-11-16
+last-verified: 2026-11-25
 ---
 # 040 — A guard that a fold did not widen is run against the widened fold
 

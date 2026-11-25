@@ -10,7 +10,7 @@ evidence:
 source: { run: checkout-branch-on-unborn-head, phase: validation, date: 2026-11-17 }
 status: active
 supersedes: []
-last-verified: 2026-11-17
+last-verified: 2026-11-25
 ---
 # 043 — A rule layered over an existing pass re-checks what the pass still contributes
 

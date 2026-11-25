@@ -15,7 +15,7 @@ evidence:
 source: { run: sequencer-sparse-cone-writes, phase: review, date: 2026-11-19 }
 status: active
 supersedes: []
-last-verified: 2026-11-20
+last-verified: 2026-11-25
 ---
 # 046 — A judge that stands in for verify_uptodate pins each ie_match_stat branch
 

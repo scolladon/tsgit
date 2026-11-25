@@ -10,7 +10,7 @@ evidence:
 source: { run: mv-directory-one-rename, phase: review, date: 2026-11-19 }
 status: active
 supersedes: []
-last-verified: 2026-11-19
+last-verified: 2026-11-25
 ---
 # 048 — A guard removed as redundant is re-checked after later folds
 

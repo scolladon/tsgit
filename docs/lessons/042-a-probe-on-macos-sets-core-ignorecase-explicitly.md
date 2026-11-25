@@ -12,7 +12,7 @@ evidence:
 source: { run: checkout-branch-on-unborn-head, phase: decisions, date: 2026-11-17 }
 status: active
 supersedes: []
-last-verified: 2026-11-18
+last-verified: 2026-11-25
 ---
 # 042 — A probe on macOS sets core.ignorecase explicitly
 
