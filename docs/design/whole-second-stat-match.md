@@ -672,7 +672,10 @@ replacement in a throwaway copy.
   probe of `mv -k` with a source git refuses. git writes no index when no entry moved and
   creates none where none exists. tsgit wrote one on every run, and on this branch that write
   smudged a racy entry. `mv` now commits the lock only when an entry moved. Two interop rows
-  under both `core.ignorecase` values and two unit rows pin it, each red before the fix.
+  under both `core.ignorecase` values and two unit rows pin it, each red before the fix. The
+  other commands that can change nothing were probed the same way and match git: `add` of an
+  unchanged path and `reset --soft` leave the index untouched, `checkout` of another path and
+  `reset --mixed` rewrite it and smudge the racy entry.
 - **Not chased.** The read-count row of `materialize-tree-pruning.test.ts` fails in about one
   run in three when vitest runs without file isolation, on `main` as on this branch. Deferred to
   impact triage.
