@@ -31,6 +31,7 @@ const seedAndStage = async (workingTree: Readonly<Record<string, string>>): Prom
 };
 
 const work = (ctx: Context, path: string): string => `${ctx.layout.workDir}/${path}`;
+const indexFile = (ctx: Context): string => `${ctx.layout.gitDir}/index`;
 const exists = (ctx: Context, path: string): Promise<boolean> => ctx.fs.exists(work(ctx, path));
 const readWork = (ctx: Context, path: string): Promise<string> => ctx.fs.readUtf8(work(ctx, path));
 
@@ -135,6 +136,54 @@ describe('mv', () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten at the same size in the second it was staged, and an untracked source', () => {
+    describe('When mv skips the untracked source a second later', () => {
+      it('Then the index is left as it was, as no entry moved', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
+          await ctx.fs.writeUtf8(work(ctx, 'untracked.txt'), 'new\n');
+          const written = await ctx.fs.read(indexFile(ctx));
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          const result = await sut(ctx, ['untracked.txt'], 'b.txt', { skipErrors: true });
+
+          // Assert
+          expect(result.skipped).toEqual([
+            { source: 'untracked.txt', reason: 'source-not-tracked' },
+          ]);
+          expect(await ctx.fs.read(indexFile(ctx))).toEqual(written);
+          expect(await ctx.fs.exists(`${indexFile(ctx)}.lock`)).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a repository without an index and an untracked source', () => {
+    describe('When mv skips the source', () => {
+      it('Then no index is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'untracked.txt': 'new\n' } });
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['untracked.txt'], 'b.txt', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([{ source: 'untracked.txt', reason: 'source-not-tracked' }]);
+        expect(await ctx.fs.exists(indexFile(ctx))).toBe(false);
       });
     });
   });

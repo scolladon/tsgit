@@ -46,6 +46,7 @@ const SMUDGED_SIZE = 0;
 const STAGED_CONTENT = 'abc\n';
 const STAGED_SIZE = STAGED_CONTENT.length;
 const MOVED = 'moved';
+const UNTRACKED = 'untracked';
 const UNSTAGED_MODIFIED_F = /^.M f$/;
 const LINK_TARGET = 'held';
 const WORK_FILE_MODE_MASK = 0o7777n;
@@ -297,6 +298,18 @@ const moveFile: Act = {
   git: (repo) => git(repo, 'mv', 'f', MOVED),
   tsgit: (repo) => mv(ctxOf(repo), ['f'], MOVED),
 };
+
+/** A move git refuses and `-k` skips: nothing reaches the index. */
+const skipUntracked: Act = {
+  git: (repo) => git(repo, 'mv', '-k', UNTRACKED, MOVED),
+  tsgit: (repo) => mv(ctxOf(repo), [UNTRACKED], MOVED, { skipErrors: true }),
+};
+
+const hasIndex = (repo: string): Promise<boolean> =>
+  lstat(path.join(repo, '.git', 'index')).then(
+    () => true,
+    () => false,
+  );
 
 const restoreMoved: Act = {
   git: (repo) => git(repo, 'checkout', '--', MOVED),
@@ -864,6 +877,56 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
           });
         },
       );
+
+      describe('When mv skips its only source, an untracked file, after a same-size edit in the staging second', () => {
+        it('Then neither tool writes the index and the edited entry keeps its recorded size', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-nothing-moved');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              await seed(repo, ignorecase);
+              await sameSecondSameSizeEdit(repo);
+              await put(repo, UNTRACKED, 'untracked\n');
+            }
+            const written = [await indexMtime(pair.peer), await indexMtime(pair.ours)];
+            await sleep(PAST_SECOND_MS);
+
+            // Act
+            await actOnBoth(skipUntracked, pair.peer, pair.ours);
+
+            // Assert
+            const after = [await indexMtime(pair.peer), await indexMtime(pair.ours)];
+            const sizes = [debugSize(pair.peer, 'f'), debugSize(pair.ours, 'f')];
+            expect(after).toEqual(written);
+            expect(sizes).toEqual([STAGED_SIZE, STAGED_SIZE]);
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
+
+      describe('When mv skips its only source, an untracked file, in a repository without an index', () => {
+        it('Then neither tool creates one', async () => {
+          // Arrange
+          const pair = await makePeerPair('whole-second-no-index');
+          try {
+            initBothRepos(pair.peer, pair.ours);
+            for (const repo of [pair.peer, pair.ours]) {
+              git(repo, 'config', 'core.ignorecase', ignorecase);
+              await put(repo, UNTRACKED, 'untracked\n');
+            }
+
+            // Act
+            await actOnBoth(skipUntracked, pair.peer, pair.ours);
+
+            // Assert
+            expect([await hasIndex(pair.peer), await hasIndex(pair.ours)]).toEqual([false, false]);
+          } finally {
+            await pair.dispose();
+          }
+        });
+      });
 
       describe('When a skip-worktree entry rewritten at the same size in the index second is moved under core.trustCtime false', () => {
         it('Then both tools keep its recorded size', async () => {

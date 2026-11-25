@@ -240,12 +240,16 @@ const executePlan = async (
   const repathed = planned.map((item) => repathItem(pathRules, item));
   const executed = await renameEach(ctx, repathed, opts);
   const indexed = executed.filter(movesIndex);
-  applyToIndex(byPath, indexed);
-  const upToDate = await refreshMoved(ctx, index, indexed);
+  const moves = indexed.flatMap((item) => item.moves);
+  applyToIndex(byPath, moves);
+  const upToDate = await refreshMoved(ctx, index, moves);
   await removeAbandonedSources(ctx, byPath, executed);
-  await lock.commit(Array.from(byPath.values()), 'update', {
-    verified: (path) => upToDate.has(path),
-  });
+  // git's `SKIP_IF_UNCHANGED`: the index is written only when an entry moved.
+  if (moves.length > 0) {
+    await lock.commit(Array.from(byPath.values()), 'update', {
+      verified: (path) => upToDate.has(path),
+    });
+  }
   return {
     moved: plannedMoves(indexed.map(({ item }) => item)),
     skipped: [...skipped, ...renameSkipsOf(executed)],
@@ -372,12 +376,12 @@ const settleMoved = async (
 const refreshMoved = async (
   ctx: Context,
   { byPath, indexMtime }: IndexAsRead,
-  indexed: ReadonlyArray<ExecutedItem>,
+  moves: ReadonlyArray<IndexMove>,
 ): Promise<ReadonlySet<FilePath>> => {
   const upToDate = new Set<FilePath>();
   // Built for the first entry that is compared: a move that compares none reads no policy.
   const scope = lazily(() => refreshScope(ctx, indexMtime));
-  for (const { to } of indexed.flatMap(({ moves }) => moves)) {
+  for (const { to } of moves) {
     const settled = await settleMoved(ctx, to, scope);
     if (settled === undefined) continue;
     upToDate.add(to.path);
@@ -675,9 +679,8 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
 
 const applyToIndex = (
   byPath: Map<IndexPathKey, IndexEntry>,
-  indexed: ReadonlyArray<ExecutedItem>,
+  moves: ReadonlyArray<IndexMove>,
 ): void => {
-  const moves = indexed.flatMap((executed) => executed.moves);
   for (const { from } of moves) byPath.delete(indexPathKey(from));
   const remaining = Array.from(byPath.values());
   for (const { to } of moves) {
