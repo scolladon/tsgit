@@ -144,9 +144,7 @@ const statOnlyVerdict = (
   if (!isSameKind(worktreeMode, entry.mode)) return { status: 'type-changed', worktreeMode };
   if (scope.indexMtime === undefined) return undefined;
   // Stat-cache short-circuit (`ie_match_stat`): only armed when the caller
-  // supplies the index file's own mtime (the racy-guard reference point).
-  // Absent — every non-`status` consumer — the fast path never fires and
-  // behaviour is exactly as before.
+  // supplies the index file's own mtime, the racy guard's reference point.
   if (isEntryStatClean(entry, stat, scope.indexMtime, scope.statCheck)) {
     return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
   }

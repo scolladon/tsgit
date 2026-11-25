@@ -67,8 +67,8 @@ const ownerAndInodeMatch = (entry: IndexEntry, stat: FileStat): boolean =>
 
 /**
  * git's `match_stat_data` as built without nanosecond stat support — whole seconds, and only
- * the fields `check` lets count — plus the racily-smudged test of `ie_match_stat`. Same-second
- * drift is no drift here: the racy guard settles that by content.
+ * the fields `check` lets count — plus the racily-smudged test `ce_match_stat_basic` ends with.
+ * Same-second drift is no drift here: the racy guard settles that by content.
  */
 export const matchesStatData = (entry: IndexEntry, stat: FileStat, check: StatCheck): boolean =>
   entry.mtimeSeconds === wholeSecond(stat.mtimeMs) &&
