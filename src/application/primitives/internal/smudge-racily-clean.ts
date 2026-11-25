@@ -55,13 +55,17 @@ export const readPreviousIndex = async (ctx: Context): Promise<GitIndex | undefi
 
 /**
  * Stands in for git's `!ce_uptodate`: the entry still carries stat data the index held when it
- * was read, at its own path or at the path a rename moved it from.
+ * was read, at its own path or at the path a rename moved it from. Only the racy entries of
+ * that index are keyed: a carried-over entry has its former self's mtime, so that one was racy
+ * too, and a large index with a few racy entries costs a few keys.
  */
 const carriedOver = (
   previous: GitIndex,
   racy: ReadonlyArray<IndexEntry>,
+  indexMtime: IndexMtime,
 ): ReadonlyArray<IndexEntry> => {
-  const asRead = new Set(previous.entries.map(statDataKey));
+  const racyAsRead = previous.entries.filter((entry) => isRacyTimestamp(entry, indexMtime));
+  const asRead = new Set(racyAsRead.map(statDataKey));
   return racy.filter((entry) => asRead.has(statDataKey(entry)));
 };
 
@@ -119,7 +123,7 @@ const racilyClean = async (
     executableBit: await readExecutableBitTrust(ctx),
     statCheck: await readStatCheck(ctx),
   };
-  const clean = await filterConcurrently(carriedOver(previous, racy), (entry) =>
+  const clean = await filterConcurrently(carriedOver(previous, racy, indexMtime), (entry) =>
     statStillMatches(ctx, workDir, entry, policy),
   );
   return { clean, ...policy };
