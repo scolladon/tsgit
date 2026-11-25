@@ -1,6 +1,5 @@
 ---
 subjects:
-  - src/domain/objects/object-id.ts
   - src/application/primitives/internal/is-entry-stat-clean.ts
 ---
 # 1266 — The empty blob is matched under either hash algorithm
@@ -26,6 +25,9 @@ the empty blob of the repository's hash algorithm. The compare is synchronous an
 **Adopted-as-recommended (no user judgment)** — no trade-off: an id has its algorithm's length,
 so it can equal one constant only, and the two options answer the same on every repository.
 Option 1.
+
+The test stays private to the compare module, over `emptyBlobOid` for both algorithms.
+`object-id.ts` is re-exported by the package entry, and this fix adds no public symbol.
 
 Refused: option 2 adds a second policy to every holder of ADR-1265 for the same answer.
 

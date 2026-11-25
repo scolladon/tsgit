@@ -185,7 +185,7 @@ ledger.
 | same | `CachedStat { entry; indexMtime; executableBit }`, `TrackedStat = Omit<CachedStat, 'executableBit'>`, `matchesCachedStat(cached, absPath, stat, contentMatches)` | `CachedStat` gains `statCheck: StatCheck`; `TrackedStat` omits it too |
 | `src/domain/git-index/stat-check.ts` | `StatCheck { ctime; ownerAndInode }` | unchanged |
 | `src/application/primitives/read-stat-check.ts` | `readStatCheck(ctx): Promise<StatCheck>` | unchanged; called once per scan (DC-A) |
-| `src/domain/objects/object-id.ts` | `emptyBlobOid(config: HashConfig)`, `EMPTY_BLOB_OID_SHA1`, `EMPTY_BLOB_OID_SHA256` | + `isEmptyBlobOid(id: ObjectId): boolean` (DC-B) |
+| `src/domain/objects/object-id.ts` | `emptyBlobOid(config: HashConfig)`, `EMPTY_BLOB_OID_SHA1`, `EMPTY_BLOB_OID_SHA256` | unchanged. `isEmptyBlobOid(id: ObjectId): boolean` (DC-B) is private to `is-entry-stat-clean.ts` and reads `emptyBlobOid` for both algorithms: this module is re-exported by the package entry, and R8 adds no public symbol |
 | `src/application/primitives/compare-working-tree-entry.ts` | `statOnlyVerdict(entry, stat, worktreeMode, indexMtime)`, `shouldRefresh(entry, stat)`, `ComparisonScope`, `ResolvedScope`, `isResolved`, `resolveScope`, `isStaleAssumedEntry(ctx, entry, stat)`, `staleAssumedStatDelta`, `compareFile`, `compareAndRefresh`, `racyContentMatcher` | `ResolvedScope` gains `statCheck`. `resolveScope` fills each missing one. `statOnlyVerdict`, `shouldRefresh`, `isStaleAssumedEntry` take the scope's `statCheck`. Public `compareWorkingTreeDelta` / `compareWorkingTreeEntry` keep their signatures |
 | `src/application/primitives/internal/smudge-racily-clean.ts` | `isRacyTimestamp` (local), `statStillMatches(ctx, workDir, entry, executableBit)`, `racilyClean`, `RacilyClean` | local racy helper deleted (imports the shared one). `statStillMatches` uses `matchesStatData` with a `StatCheck` read once in `racilyClean` beside `executableBit`. `statDataKey` stays: it compares entry to entry, not stat to file |
 | `src/application/primitives/internal/stale-entries.ts` | `StatJudge { contentMatches; executableBit }`, `isUpToDate`, `upgradeStaleNoops` | `StatJudge` gains a lazy `statCheck` (A1, A2, A4) |
@@ -194,7 +194,7 @@ ledger.
 | `src/application/primitives/materialize-tree.ts` | `obstructionMayGo(…, executableBit)`, `clearedObstructions` | gains a lazy `statCheck` beside `executableBit` |
 | `src/application/commands/add.ts` | `ConversionScope { provider; settings; executableBit; exclusion }`, `buildConversionScope`, `restagesAsIs(previous, fresh, indexMtime, executableBit)` | `ConversionScope` gains `statCheck`. `restagesAsIs` takes the scope's two policies as one argument (no fifth positional) |
 | `src/application/primitives/internal/scan-tracked-entries.ts` | `scanEntry(…, executableBit)`, `scanWorkingTree` | reads `statCheck` once per scan, passes it in the scope |
-| callers that build a `ResolvedScope` with `executableBit` | `commands/rm.ts`, `commands/stash.ts` (two scopes), `commands/internal/clean-work-tree.ts`, `primitives/apply-changeset.ts`, `primitives/find-would-overwrite.ts`, `commands/status.ts` | add `statCheck` where they add `executableBit` (DC-A) |
+| callers that build a `ResolvedScope` with `executableBit` | `commands/rm.ts`, `commands/stash.ts` (two scopes), `commands/internal/clean-work-tree.ts`, `primitives/apply-changeset.ts`, `primitives/find-would-overwrite.ts` | add `statCheck` where they add `executableBit` (DC-A). `commands/status.ts` builds no comparison scope: its scan's scope comes from `scan-tracked-entries.ts` |
 | `src/application/commands/status.ts` | `updateIndexIfAble` | unchanged (`hasRacyTimestamp`) |
 | `src/application/primitives/internal/index-entry-from-stat.ts` | `withStatData`, `nanosecondsOf` | unchanged: the index keeps recording nanoseconds, as `fill_stat_data` does |
 | `src/ports/file-system.ts` | `FileStat.mtimeNs`, `ctimeNs` | unchanged: still read by `withStatData`, `read-index.ts`, `head-file.ts`, the snapshot resolvers |
@@ -456,7 +456,7 @@ commit.
   - with `StatCheck` all false, it is invariant under ctime, uid, gid and ino;
   - `isRacyTimestamp` depends only on whole seconds.
   Keep the existing `hasRacyTimestamp` properties.
-- `test/unit/domain/objects/object-id.test.ts`: `isEmptyBlobOid` for both constants and one
+- `isEmptyBlobOid` is private: the B3 rows of `matchesStatData` cover both constants and one
   non-empty id.
 - `compare-working-tree-entry.test.ts`:
   - A-shape at unit level: a same-second ctime nanosecond drift settles by content and returns
@@ -543,8 +543,8 @@ Gate: racy ≤ 1.5 × floor twin. Record the ratio on the fixed code, three runs
 
 ### Mutation
 
-Run scoped Stryker on `is-entry-stat-clean.ts`, `compare-working-tree-entry.ts`,
-`smudge-racily-clean.ts` and `object-id.ts` with their eponymous suites
+Run scoped Stryker on `is-entry-stat-clean.ts`, `compare-working-tree-entry.ts` and
+`smudge-racily-clean.ts` with their eponymous suites
 (`.claude/workflow/mutation.md`). Each `StatCheck` gate and each conjunct of `matchesStatData` /
 `isRacyTimestamp` needs its own isolated row: the zero guard, the gitlink guard, `<=` vs `<`,
 B3's two conjuncts.
