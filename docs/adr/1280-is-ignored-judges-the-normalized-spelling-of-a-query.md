@@ -30,12 +30,18 @@ and `/anchored`; `link` is a symbolic link to `real/`, which holds `.gitignore`:
 | `../out/secret`, `sub/../../x` | exit 128, `is outside repository` | `PERMISSION_DENIED` from the adapter |
 | `../x` then `link/secret` | outside repository | `PERMISSION_DENIED` |
 | `link/secret` then `../x` | beyond a symbolic link | the same |
+| an empty path, alone or beside any other argument | exit 128, `empty string is not a valid pathspec` | answered |
+| `/top.log` (absolute, outside the work tree) | exit 128, `is outside repository` | answered as typed |
+| `<work tree>/top.log` (absolute, inside it) | answered as `top.log` | answered as typed |
+| `.`, `sub/..` with a root rule `/*` | not ignored | `.` ignored by `/*` |
+| `.`, `sub/..` with a root rule `*` | `.gitignore:1:*` | ignored by `*` |
 
 ## Options considered
 
-1. **Parse each query as git parses the argument: normalize it, refuse one that climbs above
-   the root with `PATHSPEC_OUTSIDE_REPO`, scan and match the normalized path, and report the
-   path as asked** (recommended).
+1. **Parse each query as git parses the argument: refuse an empty one with `EMPTY_PATHSPEC`,
+   normalize it, refuse one that climbs above the root or is absolute with
+   `PATHSPEC_OUTSIDE_REPO`, scan and match the normalized path, and report the path as asked**
+   (recommended).
 2. Normalize for the symbolic-link scan only and keep matching the path as typed.
 3. Refuse every query that is not already normalized.
 
@@ -49,12 +55,25 @@ file behind the link. DOCTRINE(D-3): a path that climbs above the root now throw
 breaking. DOCTRINE(D-6): the changed verdicts and sources alone would not be. Option 1.
 
 `normalizePathCopy` is git's `normalize_path_copy`: empty and `.` components drop, `..`
-removes the component before it, a trailing separator stays. A query that normalizes to the
-empty path is judged as that path and is not ignored by the rules pinned here.
+removes the component before it, a trailing separator stays.
+
+An empty path refuses the whole call before any other query is looked at, as git's
+`parse_pathspec` checks every argument for emptiness first.
+
+A query that normalizes to the empty path (`.`, `sub/..`) names the work tree itself. git's
+`match_pathname` needs a path beneath the rule file's directory, so a rule holding a slash
+never matches it; a rule without one is matched by basename and can. `matchInStackVerbose`
+applies that to the empty path only: a path ending at a nested rule file's directory (`a/`
+against `a/.gitignore`) still matches that file's rules, as in git.
+
+**One divergence, deliberate.** An absolute query is refused whether or not it lies inside the
+work tree. git answers one that lies inside. A `FilePath` is work-tree-relative, and the
+library's path rule (`validateWorkingTreePath`) refuses a leading `/` wherever it validates
+one; answering needs the caller's own spelling of the work tree resolved against the real one.
+Before this ruling the path was matched as typed: under a root rule `/*` it answered "not
+ignored" where git ignores the path. The row is recorded in `docs/known-divergences.md`.
 
 Refused: option 3 refuses paths git answers.
-
-Not decided here: an absolute query path. No row pins it.
 
 ## Consequences
 
@@ -67,3 +86,5 @@ Not decided here: an absolute query path. No row pins it.
 
 - A query that climbs above the root changes its error from the adapter's `PERMISSION_DENIED`
   to `PATHSPEC_OUTSIDE_REPO`.
+- An empty query and an absolute query, which were answered, now throw.
+- An absolute query inside the work tree is refused where git answers it.
