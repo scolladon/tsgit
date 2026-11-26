@@ -70,15 +70,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   devDependency; its `usePlaywrightValidDescribeCallback` rule reads tsgit's own `describe`
   command (`describe(ctx, commitId, { … })`) as a test block, so that one rule is `off` in
   `biome.json` — not a code suppression.
-  **`@types/node` is skipped**: DefinitelyTyped publishes one stream per Node major and
-  points the `latest` dist-tag at the LTS line, which is `22.20.2`, while this repo tracks
-  the TypeScript-aligned `ts6.0` tag at `26.5.1` — correct for TypeScript 6.x and Node 26.
-  `npm outdated` compares the installed version against `latest`, so a repo on the 26.x
-  stream prints a row permanently: no bump can clear it, and matching `latest` would mean
-  downgrading four majors below the runtime. Same class as `@cloudflare/workers-types` — a
-  publisher's tag choice, not a freshness signal. The row appeared between 2026-09-07 (CI
-  `deps` green at 26.4.1) and 2026-09-09 with no change on our side. Remove the skip if `latest` ever
-  tracks the newest major again.
+  `@types/node` was skipped while DefinitelyTyped pointed the `latest` dist-tag at the LTS
+  line (`22.20.2`) and this repo tracked the 26.x stream: `npm outdated` compares the
+  installed version against `latest`, so no bump could clear the row. By 2026-11-25 `latest`
+  was back on 26.x (`26.6.10`, then `26.6.11`), and a `22.20.7` published in between did not
+  move it, so the skip is lifted and the pin follows `latest` again. Re-skip only if `latest`
+  leaves the newest major: the row then names a version four majors below the runtime.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,
