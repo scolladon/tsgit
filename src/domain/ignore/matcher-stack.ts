@@ -77,3 +77,33 @@ export const matchInStackVerbose = (
   }
   return result;
 };
+
+/** Each proper leading directory of `path`, root-first: `a/b/c` → `['a', 'a/b']`. */
+export const leadingDirectoriesOf = (path: FilePath): ReadonlyArray<FilePath> =>
+  path
+    .split('/')
+    .slice(0, -1)
+    .map((_, depth, segments) => segments.slice(0, depth + 1).join('/') as FilePath);
+
+/** git's prep_exclude test of one directory: the positive match that excludes it, if any. */
+export const directoryExclusion = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath,
+): VerboseMatch | undefined => {
+  const match = matchInStackVerbose(stack, directory, true);
+  return match.verdict === 'ignored' ? match : undefined;
+};
+
+/** git's last_matching_pattern: the first excluded leading directory decides, else the full path. */
+export const matchBeneathLeadingDirectories = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
+  exclusionOf: (directory: FilePath) => VerboseMatch | undefined,
+): VerboseMatch => {
+  for (const directory of leadingDirectoriesOf(path)) {
+    const exclusion = exclusionOf(directory);
+    if (exclusion !== undefined) return exclusion;
+  }
+  return matchInStackVerbose(stack, path, isDir);
+};

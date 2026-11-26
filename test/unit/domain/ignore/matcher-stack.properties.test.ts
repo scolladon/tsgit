@@ -2,10 +2,22 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import { matches } from '../../../../src/domain/ignore/match.js';
-import { type IgnoreLevel, matchInStack } from '../../../../src/domain/ignore/matcher-stack.js';
+import {
+  directoryExclusion,
+  type IgnoreLevel,
+  matchBeneathLeadingDirectories,
+  matchInStack,
+  matchInStackVerbose,
+} from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import { FilePath } from '../../../../src/domain/objects/index.js';
 import { arbCandidatePath, arbLiteralPattern } from '../pathspec/arbitraries.js';
+import {
+  arbExcludedDirectoryCase,
+  arbLevelsBeyondDirectory,
+  arbStackWithoutExcludedLeadingDirectory,
+  levelOf,
+} from './arbitraries.js';
 
 const arbRuleLine = fc
   .tuple(fc.boolean(), arbLiteralPattern(), fc.boolean())
@@ -103,6 +115,156 @@ describe('matcher-stack properties', () => {
               const result = matchInStack(stack, outOfScope, isDir);
 
               expect(result).toBe('unset');
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('matchBeneathLeadingDirectories properties', () => {
+  const beneath = (stack: ReadonlyArray<IgnoreLevel>, path: FilePath, isDir: boolean) =>
+    matchBeneathLeadingDirectories(stack, path, isDir, (directory) =>
+      directoryExclusion(stack, directory),
+    );
+
+  describe('Given a path whose leading directory is excluded by a root rule', () => {
+    describe('When the path is matched beneath its leading directories', () => {
+      it('Then it is ignored by that rule whatever follows it', () => {
+        // Arrange
+        let ignoredRuns = 0;
+        let runs = 0;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbExcludedDirectoryCase(), (generated) => {
+            const result = beneath(generated.stack, generated.path, generated.isDir);
+            runs += 1;
+            if (result.verdict === 'ignored') ignoredRuns += 1;
+            expect(result.verdict).toBe('ignored');
+            expect(result.level).toBe(generated.stack[0]);
+            expect(result.ruleIndex).toBe(generated.excludingIndex);
+          }),
+          { numRuns: 100 },
+        );
+        expect(ignoredRuns).toBe(runs);
+      });
+    });
+  });
+
+  describe('Given a stack in which no leading directory of the path is excluded', () => {
+    describe('When the path is matched beneath its leading directories', () => {
+      it('Then the result is the plain stack match of the full path', () => {
+        // Arrange + Act + Assert — the oracle answers ignored in 24% of runs
+        // (those are discarded; the rest exercise the full-path fallthrough).
+        fc.assert(
+          fc.property(arbStackWithoutExcludedLeadingDirectory(), ({ stack, path, isDir }) => {
+            const prefixes = path.split('/').slice(0, -1);
+            fc.pre(
+              prefixes.every(
+                (_, depth) =>
+                  matchInStackVerbose(
+                    stack,
+                    prefixes.slice(0, depth + 1).join('/') as FilePath,
+                    true,
+                  ).verdict !== 'ignored',
+              ),
+            );
+
+            const result = beneath(stack, path, isDir);
+
+            expect(result).toEqual(matchInStackVerbose(stack, path, isDir));
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an excluded leading directory and levels beneath it or unrelated to it', () => {
+    describe('When the path is matched beneath its leading directories', () => {
+      it('Then those levels never change the answer', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbExcludedDirectoryCase().chain((generated) =>
+              arbLevelsBeyondDirectory(generated.dirPath).map((levels) => ({ generated, levels })),
+            ),
+            ({ generated, levels }) => {
+              const { stack, path, isDir } = generated;
+
+              const result = beneath([...stack, ...levels], path, isDir);
+              const expected = beneath(stack, path, isDir);
+
+              expect(result.verdict).toBe(expected.verdict);
+              expect(result.level).toBe(stack[0]);
+              expect(result.ruleIndex).toBe(expected.ruleIndex);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given levels ordered ancestor-before-descendant in any permutation', () => {
+    describe('When any list of paths is matched beneath its leading directories', () => {
+      const BASEDIRS = ['a', 'a/b', 'c', 'c/d'];
+      const PREFIXES = ['', ...BASEDIRS];
+      const MAX_QUERIES = 5;
+      const MAX_QUERY_SEGMENTS = 3;
+      const summarise = (stack: ReadonlyArray<IgnoreLevel>, path: FilePath, isDir: boolean) => {
+        const result = beneath(stack, path, isDir);
+        return {
+          verdict: result.verdict,
+          ruleIndex: result.ruleIndex,
+          basedir: result.level?.basedir,
+        };
+      };
+      const depthOf = (basedir: string): number => basedir.split('/').length;
+
+      it('Then the sibling order of levels does not change any answer', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbRuleLines,
+            fc.tuple(arbRuleLines, arbRuleLines, arbRuleLines, arbRuleLines),
+            fc.shuffledSubarray([0, 1, 2, 3], { minLength: 4, maxLength: 4 }),
+            fc
+              .array(
+                fc.tuple(
+                  fc.constantFrom(...PREFIXES),
+                  fc.array(arbLiteralPattern(), { minLength: 1, maxLength: MAX_QUERY_SEGMENTS }),
+                  fc.boolean(),
+                ),
+                { minLength: 1, maxLength: MAX_QUERIES },
+              )
+              .chain((queries) =>
+                fc.shuffledSubarray(queries, {
+                  minLength: queries.length,
+                  maxLength: queries.length,
+                }),
+              ),
+            (rootRules, perLevel, order, queries) => {
+              const levels = BASEDIRS.map((basedir, index) =>
+                levelOf(basedir, perLevel[index] as string[]),
+              );
+              const base = [levelOf('', rootRules), ...levels];
+              const permuted = [
+                levelOf('', rootRules),
+                ...order
+                  .map((index) => levels[index] as IgnoreLevel)
+                  .sort((left, right) => depthOf(left.basedir) - depthOf(right.basedir)),
+              ];
+
+              for (const [prefix, segments, isDir] of queries) {
+                const path = [prefix, ...segments]
+                  .filter((part) => part !== '')
+                  .join('/') as FilePath;
+                expect(summarise(permuted, path, isDir)).toEqual(summarise(base, path, isDir));
+              }
             },
           ),
           { numRuns: 100 },
