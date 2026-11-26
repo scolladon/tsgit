@@ -575,6 +575,118 @@ The caps are raised once, after review, on a clean build (`rm -rf dist .wireit`)
 - `docs/BACKLOG.md`: tick 32.92, correct its "only the public per-path primitive" sentence, and
   update the Release order table.
 
+### 10. What implementation measured, and what it changed (ADR-1278)
+
+§1 and §2 above describe the session as first landed. The measurements below replaced its
+shape; the rule, the requirements and every matrix are unchanged.
+
+**Plan deviations already landed.** The three domain functions are exported from
+`matcher-stack.ts` only, not from the `domain/ignore` barrel, because that barrel is a typedoc
+entry point and R8 forbids a new public symbol. The memo lookup is written with `??`, and the
+empty-ruleset guard carries no suppression comment (§4 planned both otherwise). The
+`merge.abort` and `rebase.skip` pins use a path the stopped operation had removed cleanly:
+git refuses to restore it over an untracked occupant with no rule (exit 128) and restores it
+under `ab/`, under `ab/` then `!ab/c`, and under `ab/c`, both `core.ignorecase` values, run
+twice.
+
+**Bench pair on the session as first landed** (§6; Apple M3 Pro, Node 22.22.3, git 2.56.1,
+load 5.7 to 6.0; means in ms; the third column is a session that tests the leading directories
+of every file again, measured and not committed):
+
+| run | session row | floor twin | re-testing session | fix ratio | defect ratio |
+|---|---|---|---|---|---|
+| 1 | 39.3 | 19.2 | 82.6 | 2.05 | 4.32 |
+| 2 | 42.0 | 19.0 | 91.2 | 2.21 | 4.81 |
+| 3 | 40.6 | 20.0 | 91.8 | 2.02 | 4.58 |
+
+**Command benches, main against the branch** (`bench:ab`, best of three alternated rounds):
+
+| bench | main | branch | delta |
+|---|---|---|---|
+| `status`, 20 000 files, settled | 96.5 ms | 100.5 ms | +4.2 % |
+| `status`, 20 000 files, stat-invalid | 565.7 ms | 558.6 ms | −1.2 % |
+| `status`, 200 files, settled | 1.30 ms | 1.26 ms | −3.2 % |
+| `status-dirty` | 0.65 ms | 0.64 ms | −1.6 % |
+| `add`, nine rows | | | −3.2 % to +3.8 % |
+| `stash` push and pop | 41.3 ms | 34.9 ms | −15.6 % |
+
+`checkout` flagged three forced rows in that run (+11.1 %, +10.7 %, +54.4 %). On a five-round
+repeat the two 500-directory rows read −2.4 % and −0.9 %. The third, a forced checkout of
+`HEAD` on the 200-file tree, has rounds at about 3 ms and rounds at about 7 ms on main and on
+the branch alike. A forced checkout runs no pre-flight, so it never builds the predicate.
+
+**The predicate alone**, three variants in one process over the bench's 20 220 entries, median
+of 41 rounds, three runs, load 5, same count of ignored entries from all three:
+
+| tree | main's predicate | session as first landed | one outcome per chain |
+|---|---|---|---|
+| entries two levels deep | 24.3 to 26.7 ms | 33.3 to 37.5 ms (1.37 to 1.41 × main) | 21.1 to 23.1 ms (0.87 × main) |
+| entries five levels deep | 33.5 to 38.9 ms | 52.5 to 63.2 ms (1.57 to 1.63 × main) | 23.4 to 26.8 ms (0.69 × main) |
+
+The first session paid a string build, two lookups and an `await` per leading directory of
+every entry. git pays the leading directories once per directory: `prep_exclude` keeps its
+stack for the directory it is in.
+
+**The change.** In `src/domain/ignore/matcher-stack.ts`, replacing `leadingDirectoriesOf` and
+`matchBeneathLeadingDirectories` (`directoryExclusion` stays):
+
+```ts
+/** The directory holding `path`, or `''` for a root-level path. */
+export const parentDirectoryOf = (path: FilePath): FilePath | '' =>
+  path.slice(0, Math.max(path.lastIndexOf('/'), 0)) as FilePath | '';
+
+/** git's prep_exclude step: an excluded chain above decides, else the directory's own test. */
+export const chainExclusion = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath,
+  above: VerboseMatch | undefined,
+): VerboseMatch | undefined => above ?? directoryExclusion(stack, directory);
+
+/** git's last_matching_pattern: the exclusion of the leading chain decides, else the full path. */
+export const matchBeneathChain = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
+  chain: VerboseMatch | undefined,
+): VerboseMatch => chain ?? matchInStackVerbose(stack, path, isDir);
+```
+
+In `ignore-evaluator.ts` the session keeps one promise per directory, the outcome of its
+chain, and no second map:
+
+```ts
+const resolveChain = async (state, directory) => {
+  const above = await chainOf(state, parentDirectoryOf(directory));   // ancestors first
+  const exclusion = chainExclusion(state.stack, directory, above);
+  if (exclusion === undefined) await pushDirRules(state, directory);  // an excluded chain reads nothing
+  return exclusion;
+};
+const chainOf = (state, directory) =>
+  state.chains.get(directory) ?? rememberChain(state, directory);
+// chains starts as new Map([['', Promise.resolve(undefined)]]): the root has no exclusion
+// match: matchBeneathChain(stack, path, isDirectory, await chainOf(state, parentDirectoryOf(path)))
+```
+
+**Why every verdict is the same.** A directory's chain outcome is the first excluded
+directory among it and its leading directories, root-first, by induction on depth: the
+parent's outcome when there is one, else the directory's own test. The parent's promise
+settles after the parent's rules are pushed, so the directory is tested against the levels of
+every directory above it, as before. An excluded chain pushes nothing and reads nothing at or
+beneath its first excluded directory (R4). A path's verdict is its parent's chain outcome,
+else its full-path match: the same value `matchBeneathLeadingDirectories` returned.
+Order independence (R5) holds for the same reason as in §2: an outcome depends on the
+repository, not on which query asked first.
+
+**Mutants.** The settle loop and its early return are gone. `exclusion === undefined` keeps
+its two killers (the oversized `.gitignore` at the excluded directory, and any nested-rule
+row). The root's seeded entry removes the only special case: without it the root's chain asks
+for itself before it is stored, and every row fails on a stack overflow. Each `??` loses a
+whole class of rows when it becomes `&&`. `Math.max` turned into `Math.min` makes every path
+root-level. `rules.length > 0` stays as §4 has it.
+
+**Gate.** The bench pair is measured again on the new session. The defect its gate guards is
+now the session it replaces, at 2.02 to 2.21 times the twin.
+
 ## Decision candidates
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
