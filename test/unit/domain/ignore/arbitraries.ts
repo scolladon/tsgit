@@ -1,6 +1,12 @@
 import fc from 'fast-check';
 
-import type { IgnoreLevel } from '../../../../src/domain/ignore/matcher-stack.js';
+import {
+  chainExclusion,
+  type IgnoreLevel,
+  matchBeneathChain,
+  parentDirectoryOf,
+  type VerboseMatch,
+} from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { arbGlobPattern, arbLiteralPattern } from '../pathspec/arbitraries.js';
@@ -185,3 +191,19 @@ export const arbStackWithoutExcludedLeadingDirectory = (): fc.Arbitrary<StackCas
       path: segments.join('/') as FilePath,
       isDir,
     }));
+
+/** The first excluded directory on `directory`'s chain over a fully loaded stack. */
+export const chainOver = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath | '',
+): VerboseMatch | undefined =>
+  directory === ''
+    ? undefined
+    : chainExclusion(stack, directory, chainOver(stack, parentDirectoryOf(directory)));
+
+/** The whole leading-directory rule over a fully loaded stack. */
+export const judgeBeneathChain = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
+): VerboseMatch => matchBeneathChain(stack, path, isDir, chainOver(stack, parentDirectoryOf(path)));

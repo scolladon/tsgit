@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chainExclusion,
   directoryExclusion,
   type IgnoreLevel,
-  leadingDirectoriesOf,
-  matchBeneathLeadingDirectories,
+  matchBeneathChain,
   matchInStack,
   matchInStackVerbose,
+  parentDirectoryOf,
 } from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import { judgeBeneathChain } from './arbitraries.js';
 
 const level = (basedir: '' | string, source: string): IgnoreLevel => ({
   basedir: basedir as IgnoreLevel['basedir'],
@@ -220,22 +222,22 @@ describe('matchInStackVerbose', () => {
   });
 });
 
-describe('leadingDirectoriesOf', () => {
+describe('parentDirectoryOf', () => {
   describe.each([
-    { filePath: 'a', segments: 1, expected: [] },
-    { filePath: 'a/b', segments: 2, expected: ['a'] },
-    { filePath: 'a/b/c', segments: 3, expected: ['a', 'a/b'] },
-  ])('Given a path of $segments segments', ({ filePath, expected }) => {
-    describe('When its leading directories are listed', () => {
-      it('Then they are the proper prefixes, root-first', () => {
+    { filePath: 'a', expected: '' },
+    { filePath: 'a/b', expected: 'a' },
+    { filePath: 'a/b/c', expected: 'a/b' },
+  ])('Given the path $filePath', ({ filePath, expected }) => {
+    describe('When its parent directory is asked', () => {
+      it('Then it is the path without its last segment, empty at the root', () => {
         // Arrange
-        const sut = leadingDirectoriesOf;
+        const sut = parentDirectoryOf;
 
         // Act
         const result = sut(path(filePath));
 
         // Assert
-        expect(result).toEqual(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -325,7 +327,149 @@ describe('directoryExclusion', () => {
   });
 });
 
-describe('matchBeneathLeadingDirectories', () => {
+describe('chainExclusion', () => {
+  describe('Given an excluded chain above and a directory no rule excludes', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the chain above is kept by identity', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const root = level('', 'zz/');
+        const stack = [root];
+        const above = { verdict: 'ignored', level: root, ruleIndex: 0 } as const;
+
+        // Act
+        const result = sut(stack, path('ab'), above);
+
+        // Assert
+        expect(result).toBe(above);
+      });
+    });
+  });
+
+  describe('Given an excluded chain above and a directory another rule excludes', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the first exclusion wins by identity', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const root = level('', 'zz/\nab/');
+        const stack = [root];
+        const above = { verdict: 'ignored', level: root, ruleIndex: 0 } as const;
+
+        // Act
+        const result = sut(stack, path('ab'), above);
+
+        // Assert
+        expect(result).toBe(above);
+      });
+    });
+  });
+
+  describe('Given no chain above and a root level excluding the directory', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the directory exclusion starts the chain', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const stack = [level('', 'ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'), undefined);
+
+        // Assert
+        expect(result?.verdict).toBe('ignored');
+        expect(result?.level).toBe(stack[0]);
+        expect(result?.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given no chain above and a root level excluding then re-including the directory', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the chain stays open', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const stack = [level('', 'ab/\n!ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'), undefined);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('matchBeneathChain', () => {
+  describe('Given an excluded chain and a negation beneath it', () => {
+    describe('When a path beneath the chain is matched', () => {
+      it('Then the chain decides by identity', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+        const root = level('', 'ab/\n!ab/c');
+        const stack = [root];
+        const chain = { verdict: 'ignored', level: root, ruleIndex: 0 } as const;
+
+        // Act
+        const result = sut(stack, path('ab/c'), false, chain);
+
+        // Assert
+        expect(result).toBe(chain);
+      });
+    });
+  });
+
+  describe('Given no chain and a root rule matching the file', () => {
+    describe('When the path is matched', () => {
+      it('Then the full path is ignored by that rule', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+        const stack = [level('', '*.log')];
+
+        // Act
+        const result = sut(stack, path('x.log'), false, undefined);
+
+        // Assert
+        expect(result.verdict).toBe('ignored');
+        expect(result.level).toBe(stack[0]);
+        expect(result.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given no chain and a negation re-including a file', () => {
+    describe('When the path is matched', () => {
+      it('Then the file is unignored by the negation', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+        const stack = [level('', 'ab/*\n!ab/c')];
+
+        // Act
+        const result = sut(stack, path('ab/c'), false, undefined);
+
+        // Assert
+        expect(result.verdict).toBe('unignored');
+        expect(result.ruleIndex).toBe(1);
+      });
+    });
+  });
+
+  describe('Given no chain and no rule', () => {
+    describe('When the path is matched', () => {
+      it('Then the verdict is unset', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+
+        // Act
+        const result = sut([], path('ab/c'), false, undefined);
+
+        // Assert
+        expect(result.verdict).toBe('unset');
+      });
+    });
+  });
+});
+
+describe('the whole leading-directory rule over a loaded stack', () => {
   const ROOT = 0;
   const SECOND = 1;
   const rootOnly = (source: string): ReadonlyArray<IgnoreLevel> => [level('', source)];
@@ -497,15 +641,13 @@ describe('matchBeneathLeadingDirectories', () => {
   ];
 
   describe.each(rows)('Given $label', ({ stack, query, isDir, verdict, levelIndex, ruleIndex }) => {
-    describe('When the path is matched beneath its leading directories', () => {
+    describe('When the path is judged beneath its leading directories', () => {
       it('Then the verdict, level and rule are those of the deciding match', () => {
         // Arrange
-        const sut = matchBeneathLeadingDirectories;
+        const sut = judgeBeneathChain;
 
         // Act
-        const result = sut(stack, path(query), isDir, (directory) =>
-          directoryExclusion(stack, directory),
-        );
+        const result = sut(stack, path(query), isDir);
 
         // Assert
         expect(result.verdict).toBe(verdict);

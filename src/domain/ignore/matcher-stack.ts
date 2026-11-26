@@ -78,12 +78,9 @@ export const matchInStackVerbose = (
   return result;
 };
 
-/** Each proper leading directory of `path`, root-first: `a/b/c` → `['a', 'a/b']`. */
-export const leadingDirectoriesOf = (path: FilePath): ReadonlyArray<FilePath> =>
-  path
-    .split('/')
-    .slice(0, -1)
-    .map((_, depth, segments) => segments.slice(0, depth + 1).join('/') as FilePath);
+/** The directory holding `path`, or `''` for a root-level path. */
+export const parentDirectoryOf = (path: FilePath): FilePath | '' =>
+  path.slice(0, Math.max(path.lastIndexOf('/'), 0)) as FilePath | '';
 
 /** git's prep_exclude test of one directory: the positive match that excludes it, if any. */
 export const directoryExclusion = (
@@ -94,16 +91,17 @@ export const directoryExclusion = (
   return match.verdict === 'ignored' ? match : undefined;
 };
 
-/** git's last_matching_pattern: the first excluded leading directory decides, else the full path. */
-export const matchBeneathLeadingDirectories = (
+/** git's prep_exclude step: an excluded chain above decides, else the directory's own test. */
+export const chainExclusion = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath,
+  above: VerboseMatch | undefined,
+): VerboseMatch | undefined => above ?? directoryExclusion(stack, directory);
+
+/** git's last_matching_pattern: the exclusion of the leading chain decides, else the full path. */
+export const matchBeneathChain = (
   stack: ReadonlyArray<IgnoreLevel>,
   path: FilePath,
   isDir: boolean,
-  exclusionOf: (directory: FilePath) => VerboseMatch | undefined,
-): VerboseMatch => {
-  for (const directory of leadingDirectoriesOf(path)) {
-    const exclusion = exclusionOf(directory);
-    if (exclusion !== undefined) return exclusion;
-  }
-  return matchInStackVerbose(stack, path, isDir);
-};
+  chain: VerboseMatch | undefined,
+): VerboseMatch => chain ?? matchInStackVerbose(stack, path, isDir);

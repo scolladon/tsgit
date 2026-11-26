@@ -691,6 +691,32 @@ describe('isIgnored', () => {
     });
   });
 
+  describe('Given a rule excluding ab and oversized .gitignore files at every depth beneath it', () => {
+    describe('When isIgnored is asked about a path four directories deep', () => {
+      it('Then the excluded directory decides and no deeper file is read', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        for (const directory of ['ab/x', 'ab/x/y', 'ab/x/y/z']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${directory}/.gitignore`, TOO_LARGE);
+        }
+        const sut = isIgnored;
+
+        // Act
+        const [result] = await sut(ctx, [{ path: path('ab/x/y/z/w') }]);
+
+        // Assert
+        expect(result?.ignored).toBe(true);
+        expect(result?.source).toEqual({
+          kind: 'gitignore',
+          basedir: '',
+          line: 1,
+          pattern: 'ab/',
+        });
+      });
+    });
+  });
+
   describe('Given a .gitignore inside a directory that no rule excludes and that is over the size limit', () => {
     describe('When isIgnored is asked about a path beneath it', () => {
       it('Then it throws GITIGNORE_FILE_TOO_LARGE with the file and its size', async () => {

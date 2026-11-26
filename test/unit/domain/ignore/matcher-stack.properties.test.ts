@@ -3,9 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { matches } from '../../../../src/domain/ignore/match.js';
 import {
-  directoryExclusion,
   type IgnoreLevel,
-  matchBeneathLeadingDirectories,
   matchInStack,
   matchInStackVerbose,
 } from '../../../../src/domain/ignore/matcher-stack.js';
@@ -16,6 +14,7 @@ import {
   arbExcludedDirectoryCase,
   arbLevelsBeyondDirectory,
   arbStackWithoutExcludedLeadingDirectory,
+  judgeBeneathChain,
   levelOf,
 } from './arbitraries.js';
 
@@ -124,12 +123,7 @@ describe('matcher-stack properties', () => {
   });
 });
 
-describe('matchBeneathLeadingDirectories properties', () => {
-  const beneath = (stack: ReadonlyArray<IgnoreLevel>, path: FilePath, isDir: boolean) =>
-    matchBeneathLeadingDirectories(stack, path, isDir, (directory) =>
-      directoryExclusion(stack, directory),
-    );
-
+describe('judgeBeneathChain properties', () => {
   describe('Given a path whose leading directory is excluded by a root rule', () => {
     describe('When the path is matched beneath its leading directories', () => {
       it('Then it is ignored by that rule whatever follows it', () => {
@@ -140,7 +134,7 @@ describe('matchBeneathLeadingDirectories properties', () => {
         // Act + Assert
         fc.assert(
           fc.property(arbExcludedDirectoryCase(), (generated) => {
-            const result = beneath(generated.stack, generated.path, generated.isDir);
+            const result = judgeBeneathChain(generated.stack, generated.path, generated.isDir);
             runs += 1;
             if (result.verdict === 'ignored') ignoredRuns += 1;
             expect(result.verdict).toBe('ignored');
@@ -173,7 +167,7 @@ describe('matchBeneathLeadingDirectories properties', () => {
               ),
             );
 
-            const result = beneath(stack, path, isDir);
+            const result = judgeBeneathChain(stack, path, isDir);
 
             expect(result).toEqual(matchInStackVerbose(stack, path, isDir));
           }),
@@ -195,8 +189,8 @@ describe('matchBeneathLeadingDirectories properties', () => {
             ({ generated, levels }) => {
               const { stack, path, isDir } = generated;
 
-              const result = beneath([...stack, ...levels], path, isDir);
-              const expected = beneath(stack, path, isDir);
+              const result = judgeBeneathChain([...stack, ...levels], path, isDir);
+              const expected = judgeBeneathChain(stack, path, isDir);
 
               expect(result.verdict).toBe(expected.verdict);
               expect(result.level).toBe(stack[0]);
@@ -216,7 +210,7 @@ describe('matchBeneathLeadingDirectories properties', () => {
       const MAX_QUERIES = 5;
       const MAX_QUERY_SEGMENTS = 3;
       const summarise = (stack: ReadonlyArray<IgnoreLevel>, path: FilePath, isDir: boolean) => {
-        const result = beneath(stack, path, isDir);
+        const result = judgeBeneathChain(stack, path, isDir);
         return {
           verdict: result.verdict,
           ruleIndex: result.ruleIndex,
