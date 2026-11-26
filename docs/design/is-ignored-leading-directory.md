@@ -813,6 +813,41 @@ names the refused path), and the error's `.data` (`code`, `path`). Interop, both
 `core.ignorecase` values, git's exit code and message as the expectation: the outside link, the
 inside link, a link with no `.gitignore` behind it, and the link queried as itself.
 
+**What the review of the fold changed (ADR-1279 amended, ADR-1280).** Two reviewers read the
+fold commit and proved four things against git 2.56.1:
+
+| finding | git | the fold as first written |
+|---|---|---|
+| a `..` after a missing or regular-file prefix (`missing/../link/secret`) | refuses: beyond a symbolic link | answered through the link |
+| `link/../top.log` | answers on `top.log` | refused |
+| a path beneath an excluded directory at mode 000 (`locked/sub/x`) | `.gitignore:1:locked/` | `PERMISSION_DENIED` from the scan's `lstat` |
+| an oversized `info/exclude` or `core.excludesFile` with a symlinked query | dies on the exclude file | `PATHSPEC_BEYOND_SYMLINK` |
+
+git's order, from the source: `builtin/check-ignore.c` calls `setup_standard_excludes`
+(`core.excludesFile`, then `info/exclude`; an unusable one dies) before `check_ignore` parses
+the arguments; `init_pathspec_item` (`pathspec.c`) normalizes each argument with `prefix_path`,
+dies on one outside the repository, then on one beyond a symbolic link; `symlinks.c:145-150`
+reads any failed `lstat` as "not a link"; the root `.gitignore` is read by `prep_exclude` on
+the first match.
+
+`isIgnored` now follows that order:
+
+```
+abort check → empty list returns
+readStandardExcludes        config, core.excludesFile, info/exclude
+parseQueries                per query, in order: normalize → PATHSPEC_OUTSIDE_REPO
+                            → scan the normalized path → PATHSPEC_BEYOND_SYMLINK
+createIgnoreSession(standard)   root .gitignore, then the per-directory chain
+match the normalized path; report the path as asked
+```
+
+`readStandardExcludes` is split out of `buildIgnoreEvaluator`, which takes its result as an
+optional argument; `createIgnoreSession` passes it through. The walk callers and the per-path
+probe call both without it and are unchanged. A denied `lstat` is read as "not a link" in
+`isIgnored` only. Rows: 11 spellings judged on the normalized path, the refusals beyond a
+link and outside the repository, both argument orders, the three oversized files, and the
+mode-000 directory (POSIX-only), each against git under both `core.ignorecase` values.
+
 ## Decision candidates
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
