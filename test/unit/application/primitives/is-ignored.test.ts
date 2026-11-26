@@ -630,6 +630,8 @@ describe('isIgnored', () => {
   };
 
   const TOO_LARGE = 'x'.repeat(MAX_GITIGNORE_BYTES + 1);
+  // Deep enough that one call-stack frame per directory overflows.
+  const DEEP_DIRECTORY_COUNT = 20_000;
 
   describe.each(['false', 'true'])('Given core.ignorecase is %s', (ignoreCase) => {
     describe('When isIgnored is asked about a path beneath its rule files', () => {
@@ -712,6 +714,30 @@ describe('isIgnored', () => {
           basedir: '',
           line: 1,
           pattern: 'ab/',
+        });
+      });
+    });
+  });
+
+  describe('Given a rule excluding the first directory of a path thousands of directories deep', () => {
+    describe('When isIgnored is asked about that path before any of its directories', () => {
+      it('Then the excluded directory decides without exhausting the call stack', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'a/\n');
+        const deepPath = path(`${'a/'.repeat(DEEP_DIRECTORY_COUNT)}f`);
+        const sut = isIgnored;
+
+        // Act
+        const [result] = await sut(ctx, [{ path: deepPath }]);
+
+        // Assert
+        expect(result?.ignored).toBe(true);
+        expect(result?.source).toEqual({
+          kind: 'gitignore',
+          basedir: '',
+          line: 1,
+          pattern: 'a/',
         });
       });
     });

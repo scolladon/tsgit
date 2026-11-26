@@ -68,21 +68,43 @@ const pushDirRules = async (state: SessionState, directory: FilePath): Promise<v
   if (rules.length > 0) state.stack.push({ basedir: directory, rules, kind: 'gitignore' });
 };
 
-const resolveChain = async (state: SessionState, directory: FilePath): ChainOutcome => {
-  const above = await chainOf(state, parentDirectoryOf(directory));
-  const exclusion = chainExclusion(state.stack, directory, above);
+const resolveChain = async (
+  state: SessionState,
+  directory: FilePath,
+  above: ChainOutcome,
+): ChainOutcome => {
+  const exclusion = chainExclusion(state.stack, directory, await above);
   if (exclusion === undefined) await pushDirRules(state, directory);
   return exclusion;
 };
 
-const rememberChain = (state: SessionState, directory: FilePath): ChainOutcome => {
-  const chain = resolveChain(state, directory);
+const rememberChain = (
+  state: SessionState,
+  directory: FilePath,
+  above: ChainOutcome,
+): ChainOutcome => {
+  const chain = resolveChain(state, directory, above);
   state.chains.set(directory, chain);
   return chain;
 };
 
+// Walks up to the nearest directory whose chain is known, then settles the missing ones
+// root-first. A loop, not a recursion: a path may hold more directories than the call stack
+// holds frames. The root's chain is always known, so the walk ends before it.
+const settleChain = (state: SessionState, directory: FilePath): ChainOutcome => {
+  const missing: FilePath[] = [];
+  let at: FilePath | '' = directory;
+  let known = state.chains.get(at);
+  while (known === undefined) {
+    missing.push(at as FilePath);
+    at = parentDirectoryOf(at as FilePath);
+    known = state.chains.get(at);
+  }
+  return missing.reduceRight((above, next) => rememberChain(state, next, above), known);
+};
+
 const chainOf = (state: SessionState, directory: FilePath | ''): ChainOutcome =>
-  state.chains.get(directory) ?? rememberChain(state, directory as FilePath);
+  state.chains.get(directory) ?? settleChain(state, directory as FilePath);
 
 export const createIgnoreSession = async (ctx: Context): Promise<IgnoreSession> => {
   const evaluator = await buildIgnoreEvaluator(ctx);
