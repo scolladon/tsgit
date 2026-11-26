@@ -55,7 +55,7 @@ const arbWord = (alphabet: string, maxLength: number): fc.Arbitrary<string> =>
 export const arbGitignoreRules = (): fc.Arbitrary<ReadonlyArray<string>> =>
   fc.array(arbGitignorePattern(), { minLength: 0, maxLength: MAX_ANCESTOR_RULES });
 
-export const levelOf = (basedir: string, rawRules: ReadonlyArray<string>): IgnoreLevel => ({
+const levelOf = (basedir: string, rawRules: ReadonlyArray<string>): IgnoreLevel => ({
   basedir: basedir as IgnoreLevel['basedir'],
   rules: parseGitignore(rawRules.join('\n')),
 });
