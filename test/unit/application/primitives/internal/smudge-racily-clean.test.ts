@@ -13,8 +13,9 @@ import {
   invalidateIndexCache,
   readIndex,
 } from '../../../../../src/application/primitives/read-index.js';
+import { pathTooLong } from '../../../../../src/domain/error.js';
 import { STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
-import type { IndexEntry } from '../../../../../src/domain/git-index/index-entry.js';
+import { type IndexEntry, withPath } from '../../../../../src/domain/git-index/index-entry.js';
 import { permissionDenied, TsgitError } from '../../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -25,7 +26,10 @@ const MS_PER_SECOND = 1000;
 const TICK_MS = 1_700_000_000_100;
 const NEXT_SECOND_MS = TICK_MS + MS_PER_SECOND;
 const TRACKED = 'f.txt' as FilePath;
+const MOVED = 'g.txt' as FilePath;
 const SAME_SIZE_REWRITE = 'm2\n';
+const STAGE_DELAY_MS = 200;
+const REWRITE_DELAY_MS = 300;
 const OTHER_ID = 'b'.repeat(40) as ObjectId;
 
 const workPath = (ctx: Context, path: string): string => `${ctx.layout.workDir}/${path}`;
@@ -73,6 +77,133 @@ describe('smudgeRacilyClean', () => {
 
         // Assert
         expect(result).toEqual([{ ...entries[0], fileSize: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a carried-over entry staged earlier in the index second whose file was rewritten later in that second with the same size', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is smudged to size 0', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await write(ctx, TRACKED, 'm1\n');
+        vi.setSystemTime(TICK_MS + STAGE_DELAY_MS);
+        await add(ctx, [TRACKED]);
+        vi.setSystemTime(TICK_MS + STAGE_DELAY_MS + REWRITE_DELAY_MS);
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        const entries = await entriesAsRead(ctx);
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([{ ...entries[0], fileSize: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a racy entry carried to a new path whose file was rewritten with the same stat', () => {
+    describe('When the index is written', () => {
+      it('Then the moved entry is smudged to size 0', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        await ctx.fs.rename(workPath(ctx, TRACKED), workPath(ctx, MOVED));
+        const [asRead] = await entriesAsRead(ctx);
+        const moved = withPath(asRead as IndexEntry, { path: MOVED });
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [moved], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([{ ...moved, fileSize: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a racy carried-over entry whose working path cannot be stat-ed', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is left as is', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        const entries = await entriesAsRead(ctx);
+        const previous = await readPreviousIndex(ctx);
+        vi.spyOn(ctx.fs, 'lstatIfReachable').mockRejectedValue(pathTooLong(workPath(ctx, TRACKED)));
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, entries, previous);
+
+        // Assert
+        expect(result).toEqual(entries);
+      });
+    });
+  });
+
+  describe('Given a racy entry at a new path whose stat data the index as read never held', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is left as is', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        await ctx.fs.rename(workPath(ctx, TRACKED), workPath(ctx, MOVED));
+        const [asRead] = await entriesAsRead(ctx);
+        const restated = { ...withPath(asRead as IndexEntry, { path: MOVED }), id: OTHER_ID };
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [restated], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([restated]);
+      });
+    });
+  });
+
+  describe('Given core.checkStat = minimal and a racy carried-over entry whose recorded inode differs from its rewritten file', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is still smudged', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        const [asRead] = await entriesAsRead(ctx);
+        const moved = { ...(asRead as IndexEntry), ino: (asRead as IndexEntry).ino + 1 };
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([moved], 'update');
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcheckStat = minimal\n');
+        invalidateConfigCache(ctx);
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [moved], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([{ ...moved, fileSize: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a carried-over entry already smudged to size 0 and an empty working file', () => {
+    describe('When the index is written', () => {
+      it('Then it is left as is', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        const [asRead] = await entriesAsRead(ctx);
+        const smudged = { ...(asRead as IndexEntry), fileSize: 0 };
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([smudged], 'update');
+        await write(ctx, TRACKED, '');
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [smudged], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([smudged]);
       });
     });
   });

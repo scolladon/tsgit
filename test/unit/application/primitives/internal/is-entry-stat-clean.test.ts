@@ -4,9 +4,10 @@ import {
   hasRacyTimestamp,
   type IndexMtime,
   isEntryStatClean,
+  isRacyTimestamp,
   lstatBeyondLink,
   matchesCachedStat,
-  matchesStatFields,
+  matchesStatData,
   UNREACHABLE,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -48,15 +49,27 @@ const BASE_STAT: FileStat = {
   mtimeNs: 1_700_000_100_222_000_000n,
 };
 
+const MS_PER_SECOND = 1000;
+const NS_PER_MS = 1_000_000n;
+const U32_MODULUS = 2 ** 32;
+const LATE_IN_SECOND_NS = 999_000_000n;
+
+/** The same whole second as `ms`, at a nanosecond no base stamp uses. */
+const laterInSecond = (ms: number): bigint => BigInt(ms) * NS_PER_MS + LATE_IN_SECOND_NS;
+
 // Comfortably later than BASE_ENTRY.mtimeSeconds — never racy in the baseline.
 const BASE_INDEX_MTIME: IndexMtime = { seconds: 1_700_001_000, nanoseconds: 0 };
+
+const ALL: StatCheck = { ctime: true, ownerAndInode: true };
+const NO_CTIME: StatCheck = { ctime: false, ownerAndInode: true };
+const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
 
 describe('isEntryStatClean', () => {
   describe('Given a stat that matches the entry on every compared field, non-racy', () => {
     describe('When checked', () => {
       it('Then it is clean', () => {
         // Arrange + Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -75,7 +88,7 @@ describe('isEntryStatClean', () => {
         const mismatchedStat: FileStat = { ...BASE_STAT, size: 999_999, uid: 0, ino: 0 };
 
         // Act
-        const result = isEntryStatClean(entry, mismatchedStat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, mismatchedStat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -93,7 +106,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -111,7 +124,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, racyIndexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -121,30 +134,30 @@ describe('isEntryStatClean', () => {
 
   describe('Given a differing nanosecond mtime while both sides carry ns precision', () => {
     describe('When checked', () => {
-      it('Then it is not clean', () => {
+      it('Then it is clean (git compares whole seconds only)', () => {
         // Arrange
         const stat: FileStat = { ...BASE_STAT, mtimeNs: (BASE_STAT.mtimeNs as bigint) + 1n };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(true);
       });
     });
   });
 
   describe('Given a differing nanosecond ctime while both sides carry ns precision', () => {
     describe('When checked', () => {
-      it('Then it is not clean', () => {
+      it('Then it is clean (git compares whole seconds only)', () => {
         // Arrange
         const stat: FileStat = { ...BASE_STAT, ctimeNs: (BASE_STAT.ctimeNs as bigint) + 1n };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(true);
       });
     });
   });
@@ -158,7 +171,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...withoutNs };
 
         // Act
-        const result = isEntryStatClean(entry, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -173,7 +186,7 @@ describe('isEntryStatClean', () => {
         const entry: IndexEntry = { ...BASE_ENTRY, ino: 2 ** 32 + BASE_ENTRY.ino };
 
         // Act
-        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -188,7 +201,7 @@ describe('isEntryStatClean', () => {
         const entry: IndexEntry = { ...BASE_ENTRY, fileSize: 2 ** 32 + BASE_ENTRY.fileSize };
 
         // Act
-        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(entry, BASE_STAT, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -203,7 +216,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, dev: BASE_STAT.dev + 999 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(true);
@@ -218,7 +231,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, mtimeMs: BASE_STAT.mtimeMs + 1000 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -233,7 +246,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, ctimeMs: BASE_STAT.ctimeMs + 1000 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -248,7 +261,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, uid: BASE_STAT.uid + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -263,7 +276,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, gid: BASE_STAT.gid + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -278,7 +291,7 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, ino: BASE_STAT.ino + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -288,7 +301,7 @@ describe('isEntryStatClean', () => {
 
   describe('Given an entry whose recorded second equals the index mtime second but whose nanosecond strictly precedes it', () => {
     describe('When checked against a matching stat', () => {
-      it('Then it is clean (not racy: the second-equal fallthrough compares nanoseconds, not the whole-second boundary)', () => {
+      it('Then it is not clean (git compares whole seconds, never nanoseconds)', () => {
         // Arrange
         const indexMtime: IndexMtime = {
           seconds: BASE_ENTRY.mtimeSeconds,
@@ -296,10 +309,10 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime, ALL);
 
         // Assert
-        expect(result).toBe(true);
+        expect(result).toBe(false);
       });
     });
   });
@@ -314,7 +327,7 @@ describe('isEntryStatClean', () => {
         };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime, ALL);
 
         // Assert
         expect(result).toBe(false);
@@ -329,7 +342,107 @@ describe('isEntryStatClean', () => {
         const stat: FileStat = { ...BASE_STAT, size: BASE_STAT.size + 1 };
 
         // Act
-        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME, ALL);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    ['ctime a second later', { ctimeMs: BASE_STAT.ctimeMs + 1000 }, NO_CTIME, true],
+    ['ctime a second later', { ctimeMs: BASE_STAT.ctimeMs + 1000 }, ALL, false],
+    ['inode', { ino: BASE_STAT.ino + 1 }, MINIMAL, true],
+    ['inode', { ino: BASE_STAT.ino + 1 }, ALL, false],
+  ] as const)('Given a stat drifted in %s', (_label, drift, check, expected) => {
+    describe('When checked under the stat policy', () => {
+      it('Then it is clean only when the policy does not compare the drifted field', () => {
+        // Arrange
+        const stat = { ...BASE_STAT, ...drift } as FileStat;
+        const sut = isEntryStatClean;
+
+        // Act
+        const result = sut(BASE_ENTRY, stat, BASE_INDEX_MTIME, check);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given an entry recorded with size 0 for a non-empty blob and a stat of size 0', () => {
+    describe('When checked and not racy', () => {
+      it('Then it is not clean (the size was smudged, not measured)', () => {
+        // Arrange
+        const entry: IndexEntry = { ...BASE_ENTRY, fileSize: 0 };
+        const stat: FileStat = { ...BASE_STAT, size: 0 };
+        const sut = isEntryStatClean;
+
+        // Act
+        const result = sut(entry, stat, BASE_INDEX_MTIME, ALL);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('isRacyTimestamp', () => {
+  const INDEX_SECOND = 946;
+
+  describe.each([
+    ['the same second with nanoseconds before the index', INDEX_SECOND, 1, 85_000_000, true],
+    ['the same second with nanoseconds 0 against 999999999', INDEX_SECOND, 0, 999_999_999, true],
+    ['a second below the index second', INDEX_SECOND - 1, 999_999_999, 0, false],
+    ['a second above the index second', INDEX_SECOND + 1, 0, 999_999_999, true],
+  ] as const)('Given an entry modified in %s', (_label, seconds, entryNs, indexNs, expected) => {
+    describe('When judged against the index mtime', () => {
+      it('Then it is racy only when the index second is not after its second', () => {
+        // Arrange
+        const entry = { ...BASE_ENTRY, mtimeSeconds: seconds, mtimeNanoseconds: entryNs };
+        const sut = isRacyTimestamp;
+
+        // Act
+        const result = sut(entry, { seconds: INDEX_SECOND, nanoseconds: indexNs });
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry in the index second', () => {
+    describe('When judged against the index mtime', () => {
+      it('Then it is not racy', () => {
+        // Arrange
+        const entry = {
+          ...BASE_ENTRY,
+          mode: FILE_MODE.GITLINK,
+          mtimeSeconds: INDEX_SECOND,
+          mtimeNanoseconds: 0,
+        };
+        const sut = isRacyTimestamp;
+
+        // Act
+        const result = sut(entry, { seconds: INDEX_SECOND, nanoseconds: 0 });
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an index mtime of second 0', () => {
+    describe('When an entry of any second is checked', () => {
+      it('Then it is not racy', () => {
+        // Arrange
+        const entry = { ...BASE_ENTRY, mtimeSeconds: 0, mtimeNanoseconds: 0 };
+        const sut = isRacyTimestamp;
+
+        // Act
+        const result = sut(entry, { seconds: 0, nanoseconds: 0 });
 
         // Assert
         expect(result).toBe(false);
@@ -402,7 +515,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -424,7 +542,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'ignored',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -444,7 +567,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -471,7 +599,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'ignored' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'ignored',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -493,7 +626,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           stat,
           contentMatches,
@@ -514,7 +652,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: BASE_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -538,7 +681,12 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: RACY_INDEX_MTIME, executableBit: 'trusted' },
+          {
+            entry: BASE_ENTRY,
+            indexMtime: RACY_INDEX_MTIME,
+            executableBit: 'trusted',
+            statCheck: ALL,
+          },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -551,6 +699,62 @@ describe('matchesCachedStat', () => {
     });
   });
 
+  describe.each([
+    ['ctime nanoseconds that drifted', { ctimeNs: laterInSecond(BASE_STAT.ctimeMs) }, ALL],
+    ['mtime nanoseconds that drifted', { mtimeNs: laterInSecond(BASE_STAT.mtimeMs) }, ALL],
+    [
+      'a ctime a second later under a policy ignoring it',
+      { ctimeMs: BASE_STAT.ctimeMs + MS_PER_SECOND },
+      NO_CTIME,
+    ],
+    ['an inode that drifted under a policy ignoring it', { ino: BASE_STAT.ino + 1 }, MINIMAL],
+  ] as const)('Given a non-racy entry whose stat shows %s', (_label, drift, statCheck) => {
+    describe('When judged', () => {
+      it('Then it matches without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(false);
+        const stat = { ...BASE_STAT, ...drift } as FileStat;
+        const sut = matchesCachedStat;
+
+        // Act
+        const result = await sut(
+          { entry: BASE_ENTRY, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted', statCheck },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a non-racy entry of size 0 holding a non-empty blob', () => {
+    describe('When judged against a stat of size 0', () => {
+      it('Then it does not match without consulting the content', async () => {
+        // Arrange
+        const contentMatches = vi.fn().mockResolvedValue(true);
+        const entry = { ...BASE_ENTRY, fileSize: 0 };
+        const stat: FileStat = { ...BASE_STAT, size: 0 };
+        const sut = matchesCachedStat;
+
+        // Act
+        const result = await sut(
+          { entry, indexMtime: BASE_INDEX_MTIME, executableBit: 'trusted', statCheck: ALL },
+          ABS_PATH,
+          stat,
+          contentMatches,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(contentMatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a matching stat with no index mtime known', () => {
     describe('When judged', () => {
       it('Then the content decides', async () => {
@@ -559,7 +763,7 @@ describe('matchesCachedStat', () => {
 
         // Act
         const result = await matchesCachedStat(
-          { entry: BASE_ENTRY, indexMtime: undefined, executableBit: 'trusted' },
+          { entry: BASE_ENTRY, indexMtime: undefined, executableBit: 'trusted', statCheck: ALL },
           ABS_PATH,
           BASE_STAT,
           contentMatches,
@@ -639,35 +843,66 @@ describe('lstatBeyondLink', () => {
   });
 });
 
-describe('matchesStatFields', () => {
-  const ALL: StatCheck = { ctime: true, ownerAndInode: true };
-  const NO_CTIME: StatCheck = { ctime: false, ownerAndInode: true };
-  const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
-
+describe('matchesStatData', () => {
   describe.each([
     ['nothing drifted', {}, ALL, true],
     ['the nanoseconds of mtime and ctime', { mtimeNs: 1n, ctimeNs: 1n }, ALL, true],
-    ['mtime by a second', { mtimeMs: 1_700_000_101_000 }, MINIMAL, false],
-    ['ctime by a second', { ctimeMs: 1_700_000_001_000 }, ALL, false],
-    ['ctime by a second', { ctimeMs: 1_700_000_001_000 }, NO_CTIME, true],
-    ['uid', { uid: 502 }, ALL, false],
-    ['uid', { uid: 502 }, MINIMAL, true],
-    ['gid', { gid: 21 }, ALL, false],
-    ['gid', { gid: 21 }, MINIMAL, true],
-    ['inode', { ino: 43 }, ALL, false],
-    ['inode', { ino: 43 }, MINIMAL, true],
-    ['size', { size: 8 }, MINIMAL, false],
-    ['size beyond 32 bits that wraps to the recorded one', { size: 2 ** 32 + 7 }, ALL, true],
-    ['inode beyond 32 bits that wraps to the recorded one', { ino: 2 ** 32 + 42 }, ALL, true],
+    ['mtime by a second', { mtimeMs: BASE_STAT.mtimeMs + MS_PER_SECOND }, MINIMAL, false],
+    ['ctime by a second', { ctimeMs: BASE_STAT.ctimeMs + MS_PER_SECOND }, ALL, false],
+    ['ctime by a second', { ctimeMs: BASE_STAT.ctimeMs + MS_PER_SECOND }, NO_CTIME, true],
+    ['uid', { uid: BASE_STAT.uid + 1 }, ALL, false],
+    ['uid', { uid: BASE_STAT.uid + 1 }, MINIMAL, true],
+    ['gid', { gid: BASE_STAT.gid + 1 }, ALL, false],
+    ['gid', { gid: BASE_STAT.gid + 1 }, MINIMAL, true],
+    ['inode', { ino: BASE_STAT.ino + 1 }, ALL, false],
+    ['inode', { ino: BASE_STAT.ino + 1 }, MINIMAL, true],
+    ['size', { size: BASE_STAT.size + 1 }, MINIMAL, false],
+    [
+      'size beyond 32 bits that wraps to the recorded one',
+      { size: U32_MODULUS + BASE_STAT.size },
+      ALL,
+      true,
+    ],
+    [
+      'inode beyond 32 bits that wraps to the recorded one',
+      { ino: U32_MODULUS + BASE_STAT.ino },
+      ALL,
+      true,
+    ],
   ] as const)('Given a stat drifted in %s', (_label, drift, check, expected) => {
     describe('When matched against the entry', () => {
       it('Then it matches only when git compares no drifted field', () => {
         // Arrange
         const stat = { ...BASE_STAT, ...drift } as FileStat;
-        const sut = matchesStatFields;
+        const sut = matchesStatData;
 
         // Act
         const result = sut(BASE_ENTRY, stat, check);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  const SHA1_EMPTY_BLOB = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391';
+  const SHA256_EMPTY_BLOB = '473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813';
+
+  describe.each([
+    ['a non-empty blob smudged to size 0', 'a'.repeat(40), 0, false],
+    ['the SHA-1 empty blob', SHA1_EMPTY_BLOB, 0, true],
+    ['the SHA-256 empty blob', SHA256_EMPTY_BLOB, 0, true],
+    ['a non-empty blob of a real size', 'a'.repeat(40), 7, true],
+  ] as const)('Given an entry of size 0 or 7 holding %s', (_label, id, size, expected) => {
+    describe('When matched against a stat of the same size', () => {
+      it('Then it matches unless the entry is racily smudged', () => {
+        // Arrange
+        const entry = { ...BASE_ENTRY, id: id as ObjectId, fileSize: size };
+        const stat = { ...BASE_STAT, size };
+        const sut = matchesStatData;
+
+        // Act
+        const result = sut(entry, stat, ALL);
 
         // Assert
         expect(result).toBe(expected);

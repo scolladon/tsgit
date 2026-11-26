@@ -251,17 +251,11 @@ A well-formed repository, but a configuration, layout or argument shape few call
 - **32.86** A forced `mv` onto an existing file through an untracked symbolic link to a directory outside the work tree refuses `PERMISSION_DENIED` where git writes outside — pinned against git 2.56.0. Tracked `file`, an outside directory holding `full/o`, and an untracked link `link -> ../out/full`: git `mv -f file link/o` exits 0, overwrites the outside `o` and stages `link/o`; tsgit `mv(['file'], 'link/o', { force: true })` throws `PERMISSION_DENIED { path: 'link/o' }` from the working-tree rename (`src/application/commands/internal/working-tree.ts`), index and work tree unchanged. The refusal is ADR-625's write-side leading-path containment, kept on purpose; the in-tree case (ADR-1227) renames through the link as git does. Lifting the guard would need an ADR and a security review. Not folded: needs its own decision.
 
 - **32.89** Spike — a true merge refuses `WORKING_TREE_DIRTY` on an assume-unchanged file edited to the same size within the index's second, where git's merge-ort merges — pre-existing, pinned against git 2.56.0. Both lose the local edit (git writes theirs, tsgit leaves the index blob). Locus: `src/application/primitives/apply-changeset.ts`. Question: does git's pre-merge index refresh move the index mtime past the entry so the whole-second stat match passes, and is that 32.87's mechanism? Not folded: needs a probe.
+  Since the stat match moved to whole seconds, the nanosecond half of this mechanism is gone; the racy half still needs the merge path read, so the row stays.
   ```
   # base f=v1; other: f=theirs; main: keep=k2; update-index --assume-unchanged f; printf 'v2\n' > f
   git merge --no-edit other    -> Merge branch 'other' ; f=[theirs]
   tsgit merge.run({rev:'other'}) -> WORKING_TREE_DIRTY {"localChanges":["f"],"untracked":[]} ; f=[v1]
-  ```
-
-- **32.90** `core.checkStat=minimal` is ignored by the plain stat-clean check: `status` reports modified where git trusts the stat — pinned against git 2.56.0. `readStatCheck` feeds only the assume-unchanged drift check; `matchesContentStat` (`src/application/primitives/internal/is-entry-stat-clean.ts`) still compares ctime, uid, gid and inode. Resolved by 32.87. Not folded: out of scope.
-  ```
-  # echo aaaa>f; touch -t 202001010000 f; add; commit; [config]; echo bbbb>g; touch -r f g; mv g f
-  default:                git " M f" | tsgit unstaged:"modified"
-  core.checkstat=minimal: git ""     | tsgit unstaged:"modified"
   ```
 
 - **(status)** Under `core.ignorecase = true`, `status` lists an untracked file that is the case variant of a tracked one, where git folds it onto the tracked entry — pinned against git 2.56.0 on a case-insensitive file system (macOS), no sparse checkout needed. Tracked `a/f`, the directory `a` replaced on disk by `A` holding `A/f`: git `status --porcelain` prints ` M a/f` only; tsgit reports `a/f` modified and `A/f` untracked, because the working-tree walk does not fold case against the index (`src/application/primitives/walk-working-tree.ts`). Same row under sparse checkout with the entry skip-worktree: git ` M a/f`, tsgit ` M a/f` plus `?? A/f`. Pinned in `test/integration/skip-worktree-present-files-status-interop.test.ts` (`TSGIT_CASE_VARIANT`). Not folded: out of scope (untracked walk, not the skip-worktree clear).
@@ -305,6 +299,33 @@ A well-formed repository, but a configuration, layout or argument shape few call
   ```
   Not folded: out of scope — the file is decoded before the glob compiler sees a pattern.
 
+- **(checkout)** Under `core.ignorecase = true`, a switch to a tree that adds `F` beside the tracked `f` is refused, where git switches — pre-existing, pinned against git 2.56.1 on a case-insensitive file system (macOS). Base commit `f`=`one`; `other` carries both `f` and `F`=`cap`; the work tree is clean. git `checkout other` exits 0 and the disk holds one file, `F` with `cap`. tsgit `checkout(ctx, { rev: 'other' })` throws `CHECKOUT_OVERWRITE_DIRTY` with `untracked: ['F']`: the case-only occupant of the added path is read as an untracked file (`classifyAddedPath`, `src/application/primitives/internal/occupant-clash.ts`). With `core.ignorecase = false`, or once `f` is dirty, both refuse. Sibling of 32.76.
+  ```
+  git init -b main r; git -C r config core.ignorecase true; printf 'one\n' > r/f; add f; commit base
+  other = main's tree + cacheinfo 100644,<blob of 'cap\n'>,F   (built with a scratch GIT_INDEX_FILE)
+  git checkout other            -> rc=0 HEAD=other ls=F content=cap
+  tsgit checkout {rev:'other'}  -> CHECKOUT_OVERWRITE_DIRTY {"localChanges":[],"untracked":["F"]} HEAD=main
+  ignorecase=false, or chmod +x f: git rc=1 "untracked working tree files would be overwritten"; tsgit same code
+  ```
+  Not folded: adds feature behaviour.
+
+- **(checkout)** A forced checkout restores an edited assume-unchanged file that git keeps once the index holds 1000 entries or more — pre-existing, pinned against git 2.56.1, default config. `update-index --assume-unchanged f`, wait past the index's second, edit `f`, then `checkout -f HEAD`. With 1100 entries git leaves `f` edited: its preload-index pass, which runs from 1000 entries, marks the assume-unchanged entry up to date. With 2 entries git restores `abc`. tsgit `checkout(ctx, { rev: 'HEAD', force: true })` restores `abc` at both sizes (`src/application/primitives/internal/stale-entries.ts`). Sibling of 32.89.
+  ```
+  printf 'abc\n' > f; 1099 more files; add .; commit; update-index --assume-unchanged f; sleep 1.1; printf 'edited\n' > f
+  entries=2    git checkout -f HEAD -> f=abc      tsgit checkout {rev:'HEAD',force:true} -> f=abc
+  entries=1100 git checkout -f HEAD -> f=edited   tsgit checkout {rev:'HEAD',force:true} -> f=abc
+  ```
+  Not folded: out of scope.
+
+- **(mv)** `mv` moves a tracked source that lies outside the sparse-checkout cone, where git refuses it without `--sparse` — pre-existing, pinned against git 2.56.1, both `core.ignorecase` values. `sparse-checkout set --cone in`, re-create `out/f`, then move it into the cone. git `mv out/f in/f` exits 1 with `The following paths and/or pathspecs matched paths that exist outside of your sparse-checkout definition, so will not be updated in the index` and moves nothing. tsgit `mv(ctx, ['out/f'], 'in/f')` renames the file and its index entry (`src/application/commands/mv.ts`, source planning). With `out/f` absent both refuse: git as above, tsgit with `MV_BAD_SOURCE`.
+  ```
+  in/a and out/f committed; git sparse-checkout set --cone in; mkdir -p out; printf 'f\n' > out/f
+  git mv out/f in/f            -> rc=1 "...outside of your sparse-checkout definition..."; ls-files: in/a out/f
+  tsgit mv(['out/f'], 'in/f')  -> {"moved":[{"from":"out/f","to":"in/f"}],"skipped":[]}; ls-files: in/a in/f
+  out/f absent: git rc=1, same advice; tsgit MV_BAD_SOURCE {"source":"out/f","destination":"in/f"}
+  ```
+  Not folded: adds feature behaviour.
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
@@ -330,6 +351,14 @@ Measured, on a command that is not on a common caller path.
   git check-ignore --no-index, same pattern and path, n=5000/10000/20000 -> exit 0, under 1 s each
   ```
   Not folded: out of scope — the bound predates this run and the matcher keeps it by design.
+
+- **(mv)** `mv` refreshes its moved entries one at a time, about 40 to 50 ms slower than a bounded pass on a 5000-file directory move under the I/O thread pool — measured at the whole-second-stat-match head. `refreshMoved` (`src/application/commands/mv.ts`) awaits one comparison per entry, as git's own loop does. A copy that fans the comparisons out through the I/O bound closes most of the gap under `io: 'threadpool'` and changes nothing in the default mode. Fixture: `mv d e`, settled index, three runs.
+  ```
+  N=5000, settled index, ms over three runs
+  io threadpool   sequential 103, 98, 91   bounded 64, 52, 52   git mv 40, 40, 47
+  default mode    sequential 62, 54, 55    bounded 63, 53, 53   git mv 49, 39, 38
+  ```
+  Not folded: needs its own decision — a concurrent pass has to keep a clean filter driver's request order, as the status scan does.
 
 ## Feature gaps
 

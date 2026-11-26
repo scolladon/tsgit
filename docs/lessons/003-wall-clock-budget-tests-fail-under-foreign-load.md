@@ -9,10 +9,11 @@ evidence:
   - test/perf/domain/refs/reftable-seek.perf.test.ts
   - test/perf/domain/regex/extended-regex.perf.test.ts
   - test/unit/application/commands/add.test.ts
+  - test/unit/application/primitives/walk-working-tree.test.ts
 source: { run: lift-delta-chain-read-cap, phase: review, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-11-08
+last-verified: 2026-11-25
 ---
 # 003 — Wall-clock budget tests fail under foreign load
 
@@ -55,3 +56,9 @@ coverage (150 s) while two review agents ran interop suites beside `npm run vali
 Spotlight indexing and an orphaned vitest worker at 100 %); the same gate re-run alone passed 29 652 tests,
 and `test:perf` failed its archive (1037 vs 1000 ms) and reftable-seek (801 vs 800 ms) budgets in that run
 and passed 15/15 twice alone. A unit timeout under coverage is the same symptom as a budget miss.
+
+Refreshed 2026-11-25: no foreign job is needed. `npm run validate` alone drove the load to 30 to 38
+and went red on the reftable-seek budget (816 vs 800 ms) and on three 120 s timeouts under coverage:
+two 2048-level rows of `test/unit/application/primitives/walk-working-tree.test.ts` and the size-cap
+row of `add.test.ts`. All four passed alone (the perf row in 174 ms), and the re-run at load 6 to 12
+was green with only `test:perf` and `test:coverage` re-executing.

@@ -2917,6 +2917,25 @@ describe('Given a same-size rewrite in the tick of the index write, then an inde
       expect(dec((await readBlob(ctx, staged?.id as ObjectId)).content)).toBe('m2\n');
     });
   });
+
+  describe('When another path is added in the same second', () => {
+    it('Then the rewritten entry, which this add did not stage, is written with size 0', async () => {
+      // Arrange
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(tickMs);
+      const ctx = await seedFreshRepo({ 'm.txt': 'm1\n', 'y.txt': 'y\n' });
+      await add(ctx, ['m.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm2\n');
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['y.txt']);
+
+      // Assert
+      const carried = (await readIndex(ctx)).entries.find((entry) => entry.path === 'm.txt');
+      expect(carried?.fileSize).toBe(0);
+    });
+  });
 });
 
 const configure = (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, text: string) =>

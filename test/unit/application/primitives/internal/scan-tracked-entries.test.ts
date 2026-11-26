@@ -236,4 +236,29 @@ describe('verifiedBy', () => {
       });
     });
   });
+
+  describe('Given a scan that left a skip-worktree entry alone', () => {
+    describe('When asking which paths are verified', () => {
+      it('Then the skip-worktree path is, as a refresh marks it up to date', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        at(5);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${B}`, 'changed!');
+        at(7);
+        const index = await freshIndex(ctx);
+        const entries = index.entries.map((entry) =>
+          entry.path === B ? { ...entry, flags: { ...entry.flags, skipWorktree: true } } : entry,
+        );
+        const scan = await scanTrackedEntries(ctx, index, entries, () => {});
+        const sut = verifiedBy;
+
+        // Act
+        const isVerified = sut(scan);
+        const result = [isVerified(B), isVerified('missing' as FilePath)];
+
+        // Assert
+        expect(result).toEqual([true, false]);
+      });
+    });
+  });
 });

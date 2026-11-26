@@ -11,7 +11,7 @@ evidence:
 source: { run: skip-worktree-present-files, phase: review, date: 2026-11-22 }
 status: active
 supersedes: []
-last-verified: 2026-11-22
+last-verified: 2026-11-25
 ---
 # 051 — A rule fitted to probe outcomes is derived from git's source before it folds
 

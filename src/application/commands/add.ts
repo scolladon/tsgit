@@ -33,6 +33,7 @@ import {
   type ResolveUndoRecord,
   resolveUndoRecordOf,
 } from '../../domain/git-index/resolve-undo.js';
+import type { StatCheck } from '../../domain/git-index/stat-check.js';
 import { unmergedModeDonor } from '../../domain/git-index/unmerged-mode-donor.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import { type ExecutableBitTrust, indexModeFromStat } from '../../domain/objects/file-mode.js';
@@ -86,6 +87,7 @@ import {
 import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
+import { readStatCheck } from '../primitives/read-stat-check.js';
 import {
   IDENTITY_CONVERSION,
   readEolSettings,
@@ -200,6 +202,7 @@ interface ConversionScope {
   readonly provider: AttributeProvider;
   readonly settings: EolSettings;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
   readonly exclusion: SparseExclusion;
 }
 
@@ -236,6 +239,7 @@ const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => (
   provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
   executableBit: await readExecutableBitTrust(ctx),
+  statCheck: await readStatCheck(ctx),
   exclusion: sparseExclusionOf(await loadSparseMatcher(ctx)),
 });
 
@@ -778,7 +782,18 @@ const commitIfChanged = async (
   options: CommitOptions,
 ): Promise<void> => {
   if (!changesIndex(existingCount, entries, options)) return;
-  await lock.commit(entries, 'update', options);
+  await lock.commit(entries, 'update', { ...options, verified: restagedIn(options) });
+};
+
+/**
+ * git's `fill_stat_cache_info` marks an entry it just staged up to date: its stat and its
+ * object name were taken together, so the racy smudge does not read the file a second time.
+ */
+const restagedIn = ({
+  restagedPaths = [],
+}: CommitOptions): NonNullable<CommitOptions['verified']> => {
+  const restaged = new Set(restagedPaths.map(({ path }) => path));
+  return (path) => restaged.has(path);
 };
 
 /** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */
@@ -2164,7 +2179,7 @@ const stagePromisorChecked = async (
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
 ): Promise<StagedBlob> => {
-  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime, scope.executableBit))
+  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime, scope))
     return { entry: previous };
   // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
   // stage race cannot smuggle an oversize blob past the pre-filter.
@@ -2218,13 +2233,13 @@ const restagesAsIs = (
   previous: IndexEntry,
   fresh: FileStat,
   indexMtime: IndexMtime | undefined,
-  executableBit: ExecutableBitTrust,
+  policy: Pick<ConversionScope, 'executableBit' | 'statCheck'>,
 ): boolean =>
   indexMtime !== undefined &&
   // Stryker disable next-line ConditionalExpression: equivalent — indexModeFromStat never returns FILE_MODE.GITLINK (a gitlink donor yields 100644 or the stat-derived mode), so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
   previous.mode !== FILE_MODE.GITLINK &&
-  indexModeFromStat(fresh, previous.mode, executableBit) === previous.mode &&
-  isEntryStatClean(previous, fresh, indexMtime);
+  indexModeFromStat(fresh, previous.mode, policy.executableBit) === previous.mode &&
+  isEntryStatClean(previous, fresh, indexMtime, policy.statCheck);
 
 /**
  * The cleaned blob's id, written to the store. Reached only once the staging

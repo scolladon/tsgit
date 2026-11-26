@@ -8,10 +8,11 @@ trigger: a design gates a fold's cost as a percentage over a base that does not 
 evidence:
   - docs/adr/1247-the-bit-clear-probes-presence-synchronously-under-a-floor-relative-gate.md
   - test/bench/status-sparse.bench.ts
+  - test/bench/status-racy-window.bench.ts
 source: { run: skip-worktree-present-files, phase: implementation, date: 2026-11-22 }
 status: active
 supersedes: []
-last-verified: 2026-11-22
+last-verified: 2026-11-25
 ---
 # 050 — A perf gate on newly faithful work is measured against git's floor
 
@@ -37,3 +38,9 @@ Measure the floor and the base on the same fixture before ratifying the gate.
 
 `docs/adr/1247-the-bit-clear-probes-presence-synchronously-under-a-floor-relative-gate.md` —
 Context and Decision; `test/bench/status-sparse.bench.ts` — the floor and the two status rows.
+
+Refreshed 2026-11-25: `docs/adr/1267-the-racy-window-status-bench-gates-against-a-floor-twin.md` —
+the design gated the racy-window `status` at 1.25 over reading the index and hashing every file;
+it measured 1.36 to 1.60, because that base leaves out the scan git also pays. The ratified gate
+is 1.5 over a settled `status` plus one read and one SHA-1 per file, in
+`test/bench/status-racy-window.bench.ts` (1.07, 1.13, 1.09).

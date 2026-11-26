@@ -18,6 +18,7 @@ import { buildCheckinAttributeProvider } from '../../primitives/internal/read-gi
 import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
 import { readExecutableBitTrust } from '../../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../../primitives/read-index.js';
+import { readStatCheck } from '../../primitives/read-stat-check.js';
 import {
   configuredSubmoduleIgnore,
   readGitmodulesRows,
@@ -161,6 +162,7 @@ const unstagedDirty = async (
   const scope = {
     ...scopeOf(provider, indexMtime, createLeadingPathScanner(ctx)),
     executableBit: await readExecutableBitTrust(ctx),
+    statCheck: await readStatCheck(ctx),
   };
   const dirty: FilePath[] = [];
   for (const entry of stage0) {

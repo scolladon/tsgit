@@ -5,6 +5,7 @@ import {
   indexPathKey,
   isLossy,
 } from '../../../domain/git-index/index-path-key.js';
+import type { StatCheck } from '../../../domain/git-index/stat-check.js';
 import {
   deriveWorkingMode,
   type ExecutableBitTrust,
@@ -16,6 +17,7 @@ import type { FileStat } from '../../../ports/file-system.js';
 import { createWorkingTreeDirtyCheck, type WorkingTreeDirtyCheck } from '../apply-changeset.js';
 import { readConfig } from '../config-read.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
+import { readStatCheck } from '../read-stat-check.js';
 import { boundedMapFor } from './concurrency.js';
 import {
   type IndexMtime,
@@ -55,6 +57,7 @@ interface Judgement {
   readonly isDirty: WorkingTreeDirtyCheck;
   readonly scanner: LeadingPathScanner;
   readonly executableBit: () => Promise<ExecutableBitTrust>;
+  readonly statCheck: () => Promise<StatCheck>;
   readonly hasSymlinks: () => Promise<boolean>;
   readonly indexMtime: IndexMtime | undefined;
 }
@@ -73,12 +76,30 @@ const modeDiffers = async (
   return !executableBitOnly || (await executableBit()) === 'trusted';
 };
 
+const isStatClean = async (
+  { executableBit, statCheck, indexMtime }: Judgement,
+  entry: IndexEntry,
+  absPath: string,
+  stat: FileStat,
+): Promise<boolean> =>
+  matchesCachedStat(
+    {
+      entry,
+      indexMtime,
+      executableBit: await executableBit(),
+      statCheck: await statCheck(),
+    },
+    absPath,
+    stat,
+    deferRacyToContent,
+  );
+
 const verdictOf = async (
   judgement: Judgement,
   entry: IndexEntry,
   absPath: string,
 ): Promise<Verdict> => {
-  const { ctx, isDirty, scanner, indexMtime } = judgement;
+  const { ctx, isDirty, scanner } = judgement;
   const stat = await lstatBeyondLink(ctx, absPath);
   // git's verify_uptodate: ENOENT is up to date, any other lstat failure is left and warned.
   if (stat === undefined) return 'unproven';
@@ -89,12 +110,7 @@ const verdictOf = async (
   if (!stat.isFile && !stat.isSymbolicLink) return 'dirty';
   if (await modeDiffers(judgement, entry, stat)) return 'dirty';
   // git's ie_match_stat: a stat-clean entry is up to date without reading the file.
-  const executableBit = await judgement.executableBit();
-  if (
-    await matchesCachedStat({ entry, indexMtime, executableBit }, absPath, stat, deferRacyToContent)
-  ) {
-    return 'verified-clean';
-  }
+  if (await isStatClean(judgement, entry, absPath, stat)) return 'verified-clean';
   return (await isDirty(absPath, entry.id)) ? 'dirty' : 'verified-clean';
 };
 
@@ -110,6 +126,7 @@ export const judgeMovers = async (
     isDirty: createWorkingTreeDirtyCheck(ctx),
     scanner: createLeadingPathScanner(ctx),
     executableBit: lazily(() => readExecutableBitTrust(ctx)),
+    statCheck: lazily(() => readStatCheck(ctx)),
     hasSymlinks: lazily(async () => (await readConfig(ctx)).core?.symlinks !== false),
     indexMtime,
   };

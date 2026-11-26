@@ -33,6 +33,7 @@ import {
   type ResolveUndoRecord,
   resolveUndoRecordOf,
 } from '../../domain/git-index/resolve-undo.js';
+import type { StatCheck } from '../../domain/git-index/stat-check.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { ExecutableBitTrust } from '../../domain/objects/file-mode.js';
 import { FILE_MODE } from '../../domain/objects/index.js';
@@ -59,6 +60,7 @@ import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodu
 import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readStatCheck } from '../primitives/read-stat-check.js';
 import { removeConfigSectionInText } from '../primitives/update-config-sections.js';
 import { writeObject } from '../primitives/write-object.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -368,6 +370,7 @@ interface ValveDeps {
   readonly indexMtime: GitIndex['indexMtime'];
   readonly childStatus: ChildStatus;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
 /**
@@ -376,7 +379,7 @@ interface ValveDeps {
  */
 const localModificationOf = async (
   ctx: Context,
-  { scanner, provider, indexMtime, childStatus, executableBit }: ValveDeps,
+  { scanner, provider, indexMtime, childStatus, executableBit, statCheck }: ValveDeps,
   entry: IndexEntry,
 ): Promise<GitlinkLocalModification> => {
   if (entry.mode === FILE_MODE.GITLINK) {
@@ -386,6 +389,7 @@ const localModificationOf = async (
     provider,
     scanner,
     executableBit,
+    statCheck,
     ...(indexMtime !== undefined && { indexMtime }),
   };
   const { delta } = await compareAndRefresh(ctx, entry, scope);
@@ -407,7 +411,8 @@ const classifyEntries = async (
   const childStatus: ChildStatus = (child) =>
     statusForDirtyCheck(child, { submoduleIgnore: 'none' });
   const executableBit = await readExecutableBitTrust(ctx);
-  const deps = { scanner, provider, indexMtime, childStatus, executableBit };
+  const statCheck = await readStatCheck(ctx);
+  const deps = { scanner, provider, indexMtime, childStatus, executableBit, statCheck };
   const both: FilePath[] = [];
   const stagedOnly: FilePath[] = [];
   const localOnly: FilePath[] = [];

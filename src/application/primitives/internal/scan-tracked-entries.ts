@@ -1,20 +1,26 @@
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import { escapedPathOf } from '../../../domain/git-index/index-path-key.js';
-import type { ExecutableBitTrust } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import { compareAndRefresh, type WorkingTreeDelta } from '../compare-working-tree-entry.js';
+import {
+  type ComparisonScope,
+  compareAndRefresh,
+  type WorkingTreeDelta,
+} from '../compare-working-tree-entry.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
+import { readStatCheck } from '../read-stat-check.js';
 import { type CleanOrder, configuresFilterDriver, inIndexOrder } from './clean-order.js';
 import { boundedMapFor } from './concurrency.js';
 import { type AttributeProvider, buildCheckinAttributeProvider } from './read-gitattributes.js';
 import type { IsVerified } from './smudge-racily-clean.js';
-import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
+import { createLeadingPathScanner } from './symlinked-leading-path.js';
 
 /** The tracked pass: every tracked file's delta plus the entries whose stat data drifted. */
 export interface TrackedScan {
   readonly workingMap: Map<FilePath, WorkingTreeDelta>;
   readonly refreshed: ReadonlyArray<IndexEntry>;
+  /** The skip-worktree paths: git's refresh does not compare them and marks them up to date. */
+  readonly leftAlone: ReadonlySet<FilePath>;
 }
 
 interface ScannedEntry {
@@ -37,24 +43,16 @@ interface ScannedEntry {
 const scanEntry = async (
   ctx: Context,
   entry: IndexEntry,
-  provider: AttributeProvider,
-  indexMtime: GitIndex['indexMtime'],
-  filterDriversConfigured: boolean,
-  scanner: LeadingPathScanner,
-  executableBit: ExecutableBitTrust,
+  scope: ComparisonScope,
 ): Promise<ScannedEntry | undefined> => {
   if (entry.flags.skipWorktree) return undefined;
-  const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
-    provider,
-    ...(indexMtime !== undefined && { indexMtime }),
-    filterDriversConfigured,
-    scanner,
-    executableBit,
-  });
+  const { delta, refreshed } = await compareAndRefresh(ctx, entry, scope);
   return { path: escapedPathOf(entry), delta, refreshed };
 };
 
-const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
+const trackedScanOf = (
+  results: ReadonlyArray<ScannedEntry | undefined>,
+): Omit<TrackedScan, 'leftAlone'> => {
   const workingMap = new Map<FilePath, WorkingTreeDelta>();
   const refreshed: IndexEntry[] = [];
   for (const result of results) {
@@ -74,19 +72,18 @@ const scanWorkingTree = async (
 ): Promise<TrackedScan> => {
   const filterDriversConfigured = await configuresFilterDriver(ctx);
   const scanner = createLeadingPathScanner(ctx);
-  const executableBit = await readExecutableBitTrust(ctx);
+  const scope: ComparisonScope = {
+    provider,
+    ...(indexMtime !== undefined && { indexMtime }),
+    filterDriversConfigured,
+    scanner,
+    executableBit: await readExecutableBitTrust(ctx),
+    statCheck: await readStatCheck(ctx),
+  };
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
-        const scanned = await scanEntry(
-          ctx,
-          entry,
-          provider,
-          indexMtime,
-          filterDriversConfigured,
-          scanner,
-          executableBit,
-        );
+        const scanned = await scanEntry(ctx, entry, scope);
         onScanned();
         return scanned;
       } finally {
@@ -96,8 +93,11 @@ const scanWorkingTree = async (
   // A clean driver hears the paths in index order, however the reads race;
   // with no driver configured no clean runs or refuses, and the scan needs no order.
   const results = filterDriversConfigured ? await inIndexOrder(ctx, stage0, scan) : await scan();
-  return trackedScanOf(results);
+  return { ...trackedScanOf(results), leftAlone: leftAloneIn(stage0) };
 };
+
+const leftAloneIn = (stage0: ReadonlyArray<IndexEntry>): ReadonlySet<FilePath> =>
+  new Set(stage0.filter((entry) => entry.flags.skipWorktree).map(escapedPathOf));
 
 /**
  * One `compareAndRefresh` per stage-0, non-skip-worktree entry through the
@@ -115,8 +115,11 @@ export const scanTrackedEntries = async (
   return scanWorkingTree(ctx, stage0, onScanned, provider, index.indexMtime);
 };
 
-/** git's `CE_UPTODATE`: the scan found the path unchanged, by stat or by content. */
+/**
+ * git's `CE_UPTODATE`: the scan found the path unchanged, by stat or by content, or left it
+ * alone as a refresh leaves a skip-worktree entry.
+ */
 export const verifiedBy =
   (scan: TrackedScan): IsVerified =>
   (path) =>
-    scan.workingMap.get(path)?.status === 'unchanged';
+    scan.leftAlone.has(path) || scan.workingMap.get(path)?.status === 'unchanged';

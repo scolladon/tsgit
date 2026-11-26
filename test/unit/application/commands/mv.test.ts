@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -19,6 +20,9 @@ import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
 
+const MS_PER_SECOND = 1000;
+const STAGED_AT_MS = 1_700_000_000_000;
+
 const seedAndStage = async (workingTree: Readonly<Record<string, string>>): Promise<Context> => {
   const ctx = createMemoryContext();
   await seedRepo(ctx, { workingTree });
@@ -27,12 +31,24 @@ const seedAndStage = async (workingTree: Readonly<Record<string, string>>): Prom
 };
 
 const work = (ctx: Context, path: string): string => `${ctx.layout.workDir}/${path}`;
+const indexFile = (ctx: Context): string => `${ctx.layout.gitDir}/index`;
 const exists = (ctx: Context, path: string): Promise<boolean> => ctx.fs.exists(work(ctx, path));
 const readWork = (ctx: Context, path: string): Promise<string> => ctx.fs.readUtf8(work(ctx, path));
 
 const indexEntry = async (ctx: Context, path: string) => {
   const index = await readIndex(ctx);
   return index.entries.find((entry) => entry.path === path);
+};
+
+/** Flags the staged entry skip-worktree, as `update-index --skip-worktree` does, and returns it. */
+const markSkipWorktree = async (ctx: Context, path: string): Promise<IndexEntry> => {
+  const { entries } = await readIndex(ctx);
+  const flagged = entries.map((entry) =>
+    entry.path === path ? { ...entry, flags: { ...entry.flags, skipWorktree: true } } : entry,
+  );
+  const lock = await acquireIndexLock(ctx);
+  await lock.commit(flagged, 'update');
+  return flagged.find((entry) => entry.path === path) as IndexEntry;
 };
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
@@ -96,6 +112,186 @@ describe('mv', () => {
         expect(await readWork(ctx, 'b.txt')).toBe('modified-on-disk');
         const moved = await indexEntry(ctx, 'b.txt');
         expect(moved?.id).toBe(staged?.id);
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten at the same size in the second it was staged', () => {
+    describe('When mv renames it a second later', () => {
+      it('Then the moved entry is written with size 0, so no later stat can read it clean', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          expect((await indexEntry(ctx, 'b.txt'))?.fileSize).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten at the same size in the second it was staged, and an untracked source', () => {
+    describe('When mv skips the untracked source a second later', () => {
+      it('Then the index is left as it was, as no entry moved', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
+          await ctx.fs.writeUtf8(work(ctx, 'untracked.txt'), 'new\n');
+          const written = await ctx.fs.read(indexFile(ctx));
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          const result = await sut(ctx, ['untracked.txt'], 'b.txt', { skipErrors: true });
+
+          // Assert
+          expect(result.skipped).toEqual([
+            { source: 'untracked.txt', reason: 'source-not-tracked' },
+          ]);
+          expect(await ctx.fs.read(indexFile(ctx))).toEqual(written);
+          expect(await ctx.fs.exists(`${indexFile(ctx)}.lock`)).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a repository without an index and an untracked source', () => {
+    describe('When mv skips the source', () => {
+      it('Then no index is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'untracked.txt': 'new\n' } });
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['untracked.txt'], 'b.txt', { skipErrors: true });
+
+        // Assert
+        expect(result.skipped).toEqual([{ source: 'untracked.txt', reason: 'source-not-tracked' }]);
+        expect(await ctx.fs.exists(indexFile(ctx))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree file rewritten at the same size in the second it was staged', () => {
+    describe('When mv renames it a second later', () => {
+      it('Then the moved entry keeps its recorded size, as a refresh leaves a skip-worktree entry alone', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          const staged = await markSkipWorktree(ctx, 'a.txt');
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'xyz\n');
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          expect((await indexEntry(ctx, 'b.txt'))?.fileSize).toBe(staged.fileSize);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten with the same content a second after it was staged', () => {
+    describe('When mv renames it', () => {
+      it('Then the moved entry takes the stat of the file as it now stands', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'abc\n');
+          vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          const moved = await indexEntry(ctx, 'b.txt');
+          expect(moved?.mtimeSeconds).toBe((STAGED_AT_MS + MS_PER_SECOND) / MS_PER_SECOND);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a file staged through an end-of-line conversion and rewritten with the same content a second later', () => {
+    describe('When mv renames it', () => {
+      it('Then the moved entry takes the stat of the file as it now stands', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({
+            '.gitattributes': '* text eol=crlf\n',
+            'a.txt': 'abc\r\n',
+          });
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'abc\r\n');
+          vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          const moved = await indexEntry(ctx, 'b.txt');
+          expect(moved?.mtimeSeconds).toBe((STAGED_AT_MS + MS_PER_SECOND) / MS_PER_SECOND);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
+  describe('Given a tracked file rewritten with other content a second after it was staged', () => {
+    describe('When mv renames it', () => {
+      it('Then the moved entry keeps the stat it was staged with', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(STAGED_AT_MS);
+          const ctx = await seedAndStage({ 'a.txt': 'abc\n' });
+          const staged = await indexEntry(ctx, 'a.txt');
+          vi.setSystemTime(STAGED_AT_MS + MS_PER_SECOND);
+          await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'other content\n');
+          vi.setSystemTime(STAGED_AT_MS + 2 * MS_PER_SECOND);
+          const sut = mv;
+
+          // Act
+          await sut(ctx, ['a.txt'], 'b.txt');
+
+          // Assert
+          const moved = await indexEntry(ctx, 'b.txt');
+          expect(moved?.mtimeSeconds).toBe(staged?.mtimeSeconds);
+          expect(moved?.fileSize).toBe(staged?.fileSize);
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
   });

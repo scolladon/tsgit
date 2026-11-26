@@ -1,19 +1,18 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index-entry.js';
-import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index-path-key.js';
-import {
-  type ExecutableBitTrust,
-  FILE_MODE,
-  indexModeFromStat,
-} from '../../../domain/objects/file-mode.js';
+import type { StatCheck } from '../../../domain/git-index/stat-check.js';
+import { type ExecutableBitTrust, indexModeFromStat } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { compareAndRefresh, scopeOf } from '../compare-working-tree-entry.js';
 import { indexPath } from '../path-layout.js';
 import { readExecutableBitTrust } from '../read-executable-bit-trust.js';
 import { readIndexAt } from '../read-index.js';
+import { readStatCheck } from '../read-stat-check.js';
+import { boundedMapFor } from './concurrency.js';
 import { lstatIfReachable } from './fs-probes.js';
-import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
+import { type IndexMtime, isRacyTimestamp, matchesStatData } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 import { createLeadingPathScanner } from './symlinked-leading-path.js';
@@ -23,10 +22,6 @@ const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
 export type IsVerified = (path: FilePath) => boolean;
 
 export const NOTHING_VERIFIED: IsVerified = () => false;
-
-/** `is_racy_timestamp`: a gitlink is never racy. */
-const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): boolean =>
-  entry.mode !== FILE_MODE.GITLINK && isRacy(entry, indexMtime);
 
 /** Everything `ce_stat_data` and the object name hold, as one comparable value. */
 const statDataKey = (entry: IndexEntry): string =>
@@ -59,51 +54,62 @@ export const readPreviousIndex = async (ctx: Context): Promise<GitIndex | undefi
   }
 };
 
-/** Stands in for git's `!ce_uptodate`: the entry is the index's own, unchanged since read. */
+/**
+ * Stands in for git's `!ce_uptodate`: the entry still carries stat data the index held when it
+ * was read, at its own path or at the path a rename moved it from. Only the racy entries of
+ * that index are keyed: a carried-over entry has its former self's mtime, so that one was racy
+ * too, and a large index with a few racy entries costs a few keys.
+ */
 const carriedOver = (
   previous: GitIndex,
   racy: ReadonlyArray<IndexEntry>,
+  indexMtime: IndexMtime,
 ): ReadonlyArray<IndexEntry> => {
-  const racyByPath = new Map<IndexPathKey, IndexEntry>(
-    racy.map((entry) => [indexPathKey(entry), entry]),
-  );
-  const unchanged: IndexEntry[] = [];
-  for (const entry of previous.entries) {
-    const candidate = racyByPath.get(indexPathKey(entry));
-    if (candidate !== undefined && statDataKey(candidate) === statDataKey(entry)) {
-      unchanged.push(candidate);
-    }
-  }
-  return unchanged;
+  // Stryker disable next-line MethodExpression: equivalent — a key holds the mode and the mtime second, all the racy test reads of an entry, so an as-read entry sharing a racy entry's key is racy too
+  const racyAsRead = previous.entries.filter((entry) => isRacyTimestamp(entry, indexMtime));
+  const asRead = new Set(racyAsRead.map(statDataKey));
+  return racy.filter((entry) => asRead.has(statDataKey(entry)));
 };
 
-/** The entries `keep` approves, each probed concurrently. */
+/**
+ * The entries `keep` approves, probed through the I/O bound: after a checkout every entry can
+ * share the index's second, and an unbounded fan-out then opens every tracked file at once.
+ */
 const filterConcurrently = async (
+  ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
   keep: (entry: IndexEntry) => Promise<boolean>,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const kept = await Promise.all(entries.map(keep));
+  const kept = await boundedMapFor(ctx, 'ioBound', entries, keep);
   return entries.filter((_, i) => kept[i]);
 };
+
+/**
+ * git's smudge returns on any `lstat` failure, not only an absent path: a stat that cannot be
+ * taken proves nothing about the entry, and must not fail the index write.
+ */
+const statIfAny = (ctx: Context, absPath: string): Promise<FileStat | undefined> =>
+  lstatIfReachable(ctx.fs, absPath).catch(() => undefined);
 
 /** `ce_match_stat_basic` found no change: same kind, mode and content stat. */
 const statStillMatches = async (
   ctx: Context,
   workDir: string,
   entry: IndexEntry,
-  executableBit: ExecutableBitTrust,
+  policy: Pick<RacilyClean, 'executableBit' | 'statCheck'>,
 ): Promise<boolean> => {
-  const stat = await lstatIfReachable(ctx.fs, joinPath(workDir, entry.path));
+  const stat = await statIfAny(ctx, joinPath(workDir, entry.path));
   return (
     stat !== undefined &&
-    indexModeFromStat(stat, entry.mode, executableBit) === entry.mode &&
-    matchesContentStat(entry, stat)
+    indexModeFromStat(stat, entry.mode, policy.executableBit) === entry.mode &&
+    matchesStatData(entry, stat, policy.statCheck)
   );
 };
 
 interface RacilyClean {
   readonly clean: ReadonlyArray<IndexEntry>;
   readonly executableBit: ExecutableBitTrust;
+  readonly statCheck: StatCheck;
 }
 
 /** The racy carried-over entries whose stat still matches their working file. */
@@ -119,11 +125,14 @@ const racilyClean = async (
     (entry) => isRacyTimestamp(entry, indexMtime) && !verified(entry.path),
   );
   if (racy.length === 0) return undefined;
-  const executableBit = await readExecutableBitTrust(ctx);
-  const clean = await filterConcurrently(carriedOver(previous, racy), (entry) =>
-    statStillMatches(ctx, workDir, entry, executableBit),
+  const policy = {
+    executableBit: await readExecutableBitTrust(ctx),
+    statCheck: await readStatCheck(ctx),
+  };
+  const clean = await filterConcurrently(ctx, carriedOver(previous, racy, indexMtime), (entry) =>
+    statStillMatches(ctx, workDir, entry, policy),
   );
-  return { clean, executableBit };
+  return { clean, ...policy };
 };
 
 /**
@@ -143,11 +152,16 @@ export const smudgeRacilyClean = async (
   if (workDir === undefined || previous?.indexMtime === undefined) return entries;
   const found = await racilyClean(ctx, workDir, entries, previous, previous.indexMtime, verified);
   if (found === undefined || found.clean.length === 0) return entries;
-  const { clean, executableBit } = found;
+  const { clean, executableBit, statCheck } = found;
   const provider = await buildCheckinAttributeProvider(ctx);
   // One single-flight leading-path memo for the concurrent pass: a shared directory is lstat-ed once.
-  const scope = { ...scopeOf(provider, undefined, createLeadingPathScanner(ctx)), executableBit };
+  const scope = {
+    ...scopeOf(provider, undefined, createLeadingPathScanner(ctx)),
+    executableBit,
+    statCheck,
+  };
   const modified = await filterConcurrently(
+    ctx,
     clean,
     async (entry) => (await compareAndRefresh(ctx, entry, scope)).delta.status === 'modified',
   );

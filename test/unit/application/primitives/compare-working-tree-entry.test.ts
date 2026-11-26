@@ -71,6 +71,8 @@ const seedSymlink = async (
   return { ctx, entry };
 };
 
+const ALL_STAT_FIELDS = { ctime: true, ownerAndInode: true } as const;
+
 const MOVED_HEAD = 'b'.repeat(40);
 
 const gitlinkOf = (entry: IndexEntry): IndexEntry => ({
@@ -718,7 +720,7 @@ describe('compareWorkingTreeDelta', () => {
   describe('Given a stat-clean file whose recorded mode differs from the working file, index mtime supplied', () => {
     describe('When comparing the delta', () => {
       it("Then returns 'mode-changed' without reading or hashing the content (stat-cache ternary distinguishes the mode mismatch)", async () => {
-        // Arrange — index mtime strictly after the entry's mtime ⇒ non-racy; matchesContentStat
+        // Arrange — index mtime strictly after the entry's mtime ⇒ non-racy; matchesStatData
         // deliberately excludes mode, so the stat cache reports clean even though this
         // entry's mode (100755) differs from the seeded working file's real mode (100644) —
         // only the caller's ternary is what must tell 'unchanged' from 'mode-changed' apart.
@@ -1658,6 +1660,72 @@ describe('compareAndRefresh', () => {
     });
   });
 
+  describe('Given a staged file whose entry ctime moved within its second', () => {
+    describe('When comparing with a policy that counts ctime', () => {
+      it('Then the delta is unchanged and nothing is refreshed', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const moved = { ...entry, ctimeNanoseconds: entry.ctimeNanoseconds + 1 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, moved, { indexMtime, statCheck: ALL_STAT_FIELDS });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged file whose entry ctime is one second earlier', () => {
+    describe.each([
+      ['counts ctime', ALL_STAT_FIELDS, true],
+      ['ignores ctime', { ctime: false, ownerAndInode: true }, false],
+    ] as const)('When comparing with a policy that %s', (_label, statCheck, refreshes) => {
+      it(`Then the entry ${refreshes ? 'is' : 'is not'} refreshed`, async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const earlier = { ...entry, ctimeSeconds: entry.ctimeSeconds - 1 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, earlier, { indexMtime, statCheck });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed !== undefined).toBe(refreshes);
+      });
+    });
+  });
+
+  describe('Given an entry recorded with size 0 whose id is not the empty blob', () => {
+    describe('When the working file is empty and its stat matches', () => {
+      it('Then the content decides and the delta is modified', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), '');
+        const unsized = { ...entry, fileSize: 0 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, unsized, { indexMtime, statCheck: ALL_STAT_FIELDS });
+
+        // Assert
+        expect(result.delta.status).toBe('modified');
+      });
+    });
+  });
+
   describe('Given an entry whose stat moved but which must not be refreshed', () => {
     describe('When comparing with the index mtime', () => {
       it('Then refreshed is undefined for changed content', async () => {
@@ -2143,6 +2211,23 @@ describe('compareWorkingTreeEntry under core.fileMode = false', () => {
       });
     });
   });
+
+  describe('Given the default config and a scope that carries a stat policy but no executable-bit policy', () => {
+    describe('When compareAndRefresh on an exec-bit-only change', () => {
+      it("Then the missing policy is read from the config and the delta is 'mode-changed'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        lstatReportsMode(ctx, 0o100755);
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, { statCheck: ALL_STAT_FIELDS });
+
+        // Assert
+        expect(result.delta.status).toBe('mode-changed');
+      });
+    });
+  });
 });
 
 describe('compareAndRefresh on an assume-valid entry the overwrite check judges', () => {
@@ -2170,6 +2255,46 @@ describe('compareAndRefresh on an assume-valid entry the overwrite check judges'
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n${core}`);
     invalidateConfigCache(ctx);
   };
+
+  describe('Given an assume-unchanged entry whose ctime moved by a second, and core.trustCtime left true', () => {
+    describe('When compared for an overwrite with a scope whose stat policy ignores ctime', () => {
+      it("Then the scope's policy decides and the entry is not a change", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        const drifted = { ...entry, ctimeSeconds: entry.ctimeSeconds - 1 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, drifted, {
+          ...armed,
+          executableBit: 'trusted',
+          statCheck: { ctime: false, ownerAndInode: true },
+        });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+      });
+    });
+
+    describe('When compared for an overwrite with a scope whose stat policy counts ctime', () => {
+      it("Then the drift is a change and the entry is 'modified'", async () => {
+        // Arrange
+        const { ctx, entry, armed } = await assumedEntry();
+        const drifted = { ...entry, ctimeSeconds: entry.ctimeSeconds - 1 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, drifted, {
+          ...armed,
+          executableBit: 'trusted',
+          statCheck: { ctime: true, ownerAndInode: true },
+        });
+
+        // Assert
+        expect(result.delta.status).toBe('modified');
+      });
+    });
+  });
 
   describe('Given an assume-valid entry whose stat matches but is racy and whose content changed in place', () => {
     describe('When comparing it as the overwrite check does', () => {

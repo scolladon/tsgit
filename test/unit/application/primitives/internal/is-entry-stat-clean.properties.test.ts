@@ -4,8 +4,11 @@ import {
   hasRacyTimestamp,
   type IndexMtime,
   isEntryStatClean,
+  isRacyTimestamp,
+  matchesStatData,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
 import type { IndexEntry } from '../../../../../src/domain/git-index/index-entry.js';
+import type { StatCheck } from '../../../../../src/domain/git-index/stat-check.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { FileStat } from '../../../../../src/ports/file-system.js';
@@ -14,9 +17,15 @@ const NS_PER_SECOND = 1_000_000_000n;
 const U32_MODULUS = 2 ** 32;
 const SAMPLE_ID = 'a'.repeat(40) as ObjectId;
 const SAMPLE_PATH = 'f.txt' as FilePath;
+const ALL: StatCheck = { ctime: true, ownerAndInode: true };
+const MINIMAL: StatCheck = { ctime: false, ownerAndInode: false };
 
 const arbSeconds = (): fc.Arbitrary<number> => fc.integer({ min: 1, max: 4_000_000_000 });
 const arbNanoseconds = (): fc.Arbitrary<number> => fc.integer({ min: 0, max: 999_999_999 });
+// The index second is drawn beside the entry's: nanoseconds can only matter when the two are equal.
+const arbSecondOffset = (): fc.Arbitrary<number> => fc.integer({ min: 0, max: 2 });
+// Size 0 on a non-empty blob reads as a smudged entry, never as a measured size.
+const arbMeasuredSize = (): fc.Arbitrary<number> => fc.integer({ min: 1, max: 0xff_ff_ff_ff });
 const arbU32 = (): fc.Arbitrary<number> => fc.integer({ min: 0, max: 0xff_ff_ff_ff });
 
 interface Seed {
@@ -39,7 +48,7 @@ const arbSeed = (): fc.Arbitrary<Seed> =>
     uid: arbU32(),
     gid: arbU32(),
     ino: arbU32(),
-    size: arbU32(),
+    size: arbMeasuredSize(),
   });
 
 interface CleanFixture {
@@ -91,13 +100,38 @@ const bumpNs = (ns: bigint): bigint => {
   return seconds * NS_PER_SECOND + ((remainder + 1n) % NS_PER_SECOND);
 };
 
+const bumpNanoseconds = (ns: number): number => (ns + 1) % Number(NS_PER_SECOND);
+
+interface Sides {
+  readonly entry: IndexEntry;
+  readonly stat: FileStat;
+}
+
+const NANOSECOND_MUTATORS: Record<string, (sides: Sides) => Sides> = {
+  statMtimeNs: ({ entry, stat }) => ({
+    entry,
+    stat: { ...stat, mtimeNs: bumpNs(stat.mtimeNs as bigint) },
+  }),
+  statCtimeNs: ({ entry, stat }) => ({
+    entry,
+    stat: { ...stat, ctimeNs: bumpNs(stat.ctimeNs as bigint) },
+  }),
+  entryMtimeNs: ({ entry, stat }) => ({
+    entry: { ...entry, mtimeNanoseconds: bumpNanoseconds(entry.mtimeNanoseconds) },
+    stat,
+  }),
+  entryCtimeNs: ({ entry, stat }) => ({
+    entry: { ...entry, ctimeNanoseconds: bumpNanoseconds(entry.ctimeNanoseconds) },
+    stat,
+  }),
+};
+const NANOSECOND_MUTATOR_NAMES = Object.keys(NANOSECOND_MUTATORS);
+
 const bumpU32 = (n: number): number => (n + 1) % U32_MODULUS;
 
 const STAT_MUTATORS: Record<string, (stat: FileStat) => FileStat> = {
   mtimeSecond: (stat) => ({ ...stat, mtimeMs: stat.mtimeMs + 1000 }),
   ctimeSecond: (stat) => ({ ...stat, ctimeMs: stat.ctimeMs + 1000 }),
-  mtimeNs: (stat) => ({ ...stat, mtimeNs: bumpNs(stat.mtimeNs as bigint) }),
-  ctimeNs: (stat) => ({ ...stat, ctimeNs: bumpNs(stat.ctimeNs as bigint) }),
   uid: (stat) => ({ ...stat, uid: bumpU32(stat.uid) }),
   gid: (stat) => ({ ...stat, gid: bumpU32(stat.gid) }),
   ino: (stat) => ({ ...stat, ino: bumpU32(stat.ino) }),
@@ -156,18 +190,41 @@ const arbIndexMtime = (): fc.Arbitrary<IndexMtime> =>
 
 describe('isEntryStatClean properties', () => {
   describe('Given a mutually-agreeing (entry, stat, indexMtime) triple', () => {
-    describe('When exactly one compared stat field is mutated', () => {
+    describe('When exactly one compared whole-second stat field is mutated', () => {
       it('Then it is never clean', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbSeed(), fc.constantFrom(...MUTATOR_NAMES), (seed, mutatorName) => {
             const { entry, stat, indexMtime } = buildClean(seed);
             // Sanity: the unmutated fixture is clean.
-            expect(isEntryStatClean(entry, stat, indexMtime)).toBe(true);
+            expect(isEntryStatClean(entry, stat, indexMtime, ALL)).toBe(true);
 
             const mutated = (STAT_MUTATORS[mutatorName] as (s: FileStat) => FileStat)(stat);
-            expect(isEntryStatClean(entry, mutated, indexMtime)).toBe(false);
+            expect(isEntryStatClean(entry, mutated, indexMtime, ALL)).toBe(false);
           }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a non-racy (entry, stat) pair that agrees on every whole second', () => {
+    describe('When any nanosecond field of either side changes', () => {
+      it('Then isEntryStatClean does not change', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbSeed(),
+            fc.constantFrom(...NANOSECOND_MUTATOR_NAMES),
+            (seed, mutatorName) => {
+              const { entry, stat, indexMtime } = buildClean(seed);
+              const mutate = NANOSECOND_MUTATORS[mutatorName] as (sides: Sides) => Sides;
+              const mutated = mutate({ entry, stat });
+              expect(isEntryStatClean(mutated.entry, mutated.stat, indexMtime, ALL)).toBe(
+                isEntryStatClean(entry, stat, indexMtime, ALL),
+              );
+            },
+          ),
           { numRuns: 100 },
         );
       });
@@ -184,7 +241,7 @@ describe('isEntryStatClean properties', () => {
             arbFileStat(),
             arbIndexMtime(),
             (entry, stat, indexMtime) => {
-              expect(isEntryStatClean(entry, stat, indexMtime)).toBe(true);
+              expect(isEntryStatClean(entry, stat, indexMtime, ALL)).toBe(true);
             },
           ),
           { numRuns: 100 },
@@ -203,7 +260,7 @@ describe('isEntryStatClean properties', () => {
               seconds: entry.mtimeSeconds,
               nanoseconds: entry.mtimeNanoseconds,
             };
-            expect(isEntryStatClean(entry, stat, racyIndexMtime)).toBe(false);
+            expect(isEntryStatClean(entry, stat, racyIndexMtime, ALL)).toBe(false);
           }),
           { numRuns: 100 },
         );
@@ -267,6 +324,81 @@ describe('hasRacyTimestamp properties', () => {
               const older = { ...entry, mtimeSeconds: Math.max(0, seconds - gap) };
               const indexMtime = { seconds, nanoseconds: entry.mtimeNanoseconds };
               expect(hasRacyTimestamp([older], indexMtime)).toBe(false);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('matchesStatData properties', () => {
+  describe('Given an (entry, stat) pair that agrees on every whole second', () => {
+    describe('When any nanosecond field of either side changes', () => {
+      it('Then matchesStatData does not change', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbSeed(),
+            fc.constantFrom(...NANOSECOND_MUTATOR_NAMES),
+            (seed, mutatorName) => {
+              const { entry, stat } = buildClean(seed);
+              const mutate = NANOSECOND_MUTATORS[mutatorName] as (sides: Sides) => Sides;
+              const mutated = mutate({ entry, stat });
+              expect(matchesStatData(mutated.entry, mutated.stat, ALL)).toBe(
+                matchesStatData(entry, stat, ALL),
+              );
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a policy that compares neither ctime nor owner and inode', () => {
+    describe('When the ctime, uid, gid or inode of the stat drifts', () => {
+      it('Then matchesStatData does not change', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbSeed(),
+            fc.constantFrom('ctimeSecond', 'uid', 'gid', 'ino'),
+            (seed, mutatorName) => {
+              const { entry, stat } = buildClean(seed);
+              const mutated = (STAT_MUTATORS[mutatorName] as (s: FileStat) => FileStat)(stat);
+              expect(matchesStatData(entry, mutated, MINIMAL)).toBe(
+                matchesStatData(entry, stat, MINIMAL),
+              );
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('isRacyTimestamp properties', () => {
+  describe('Given an entry and an index mtime within a second of it', () => {
+    describe('When the nanoseconds of either side change', () => {
+      it('Then isRacyTimestamp does not change', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbIndexEntry(false),
+            arbSecondOffset(),
+            arbNanoseconds(),
+            arbNanoseconds(),
+            arbNanoseconds(),
+            (entry, offset, startNs, entryNs, indexNs) => {
+              const indexMtime = { seconds: entry.mtimeSeconds + offset, nanoseconds: startNs };
+              const changedEntry = { ...entry, mtimeNanoseconds: entryNs };
+              const changedIndex = { ...indexMtime, nanoseconds: indexNs };
+              expect(isRacyTimestamp(changedEntry, changedIndex)).toBe(
+                isRacyTimestamp(entry, indexMtime),
+              );
             },
           ),
           { numRuns: 100 },

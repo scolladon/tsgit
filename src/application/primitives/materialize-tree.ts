@@ -37,6 +37,7 @@ import {
 } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
+import type { StatCheck } from '../../domain/git-index/stat-check.js';
 import type { ExecutableBitTrust } from '../../domain/objects/file-mode.js';
 import {
   FILE_MODE,
@@ -83,6 +84,7 @@ import { judgeMovers, warnLeftDespiteSparse } from './internal/sparse-left-dirty
 import { type StaleRule, upgradeStaleNoops } from './internal/stale-entries.js';
 import { carryStagedChanges } from './internal/two-way-carry.js';
 import { readExecutableBitTrust } from './read-executable-bit-trust.js';
+import { readStatCheck } from './read-stat-check.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -487,23 +489,34 @@ interface Displaced {
 const keysOf = (entries: ReadonlyArray<IndexPath>): Set<IndexPathKey> =>
   new Set(entries.map(indexPathKey));
 
+/** What one obstruction pass shares: the racy-content check and the lazily read stat policies. */
+interface ObstructionJudge {
+  readonly contentMatches: RacyContentCheck;
+  readonly executableBit: () => Promise<ExecutableBitTrust>;
+  readonly statCheck: () => Promise<StatCheck>;
+}
+
 /** git's icase_exists: a stat-clean tracked file in an added path's way may be replaced. */
 const obstructionMayGo = async (
   ctx: Context,
   workdir: string,
   index: GitIndex,
   entry: IndexEntry,
-  contentMatches: RacyContentCheck,
-  executableBit: () => Promise<ExecutableBitTrust>,
+  judge: ObstructionJudge,
 ): Promise<boolean> => {
   const absPath = joinPath(workdir, escapedPathOf(entry));
   const stat = await lstatIfReachable(ctx.fs, absPath);
   if (stat === undefined) return false;
   return matchesCachedStat(
-    { entry, indexMtime: index.indexMtime, executableBit: await executableBit() },
+    {
+      entry,
+      indexMtime: index.indexMtime,
+      executableBit: await judge.executableBit(),
+      statCheck: await judge.statCheck(),
+    },
     absPath,
     stat,
-    contentMatches,
+    judge.contentMatches,
   );
 };
 
@@ -515,12 +528,14 @@ const clearedObstructions = async (
   over: ReadonlyArray<IndexEntry>,
 ): Promise<IndexEntry[]> => {
   const ignoreCase = lazily(async () => (await readConfig(ctx)).core?.ignoreCase === true);
-  const executableBit = lazily(() => readExecutableBitTrust(ctx));
-  const contentMatches = racyContentMatcher(ctx);
+  const judge: ObstructionJudge = {
+    contentMatches: racyContentMatcher(ctx),
+    executableBit: lazily(() => readExecutableBitTrust(ctx)),
+    statCheck: lazily(() => readStatCheck(ctx)),
+  };
   const going: IndexEntry[] = [];
   for (const entry of over) {
-    const mayGo = async () =>
-      obstructionMayGo(ctx, workdir, index, entry, contentMatches, executableBit);
+    const mayGo = async () => obstructionMayGo(ctx, workdir, index, entry, judge);
     if ((await ignoreCase()) && (await mayGo())) {
       going.push(entry);
     }

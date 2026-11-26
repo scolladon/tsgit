@@ -185,7 +185,7 @@ Worktree bytes go through git's check-in conversion before they are hashed, so t
 - **CRLF already in the index.** Under the `auto` family only, a path whose index blob is text and already holds a CRLF is not normalised. The rule reads the path's stage 0 entry, else its stage 2 entry (an unmerged path). `renormalize` ignores it.
 - **`ident`.** `$Id: <hex> $` collapses to `$Id$` on the way in.
 - **Symlinks and gitlinks** are never converted.
-- **Unchanged paths** short-circuit on the index stat and never convert.
+- **Unchanged paths** short-circuit on the index stat and never convert. The stat is compared in whole seconds, on the fields `core.trustCtime` and `core.checkStat` let count. An entry whose mtime second is not older than the index file's second is racy and is always re-read, and a recorded size of 0 on a non-empty blob never matches.
 - **Literal staging.** Each literal path is stat-ed once and staged through the concurrency pool. The staging read is bounded by the probed size, as git's `index_core`: a file that grew since the probe is staged truncated to the probed size, and one that shrank is refused.
 - **Tracked first.** Whichever way paths are given, tracked paths are staged first in index order, then untracked ones (index order for literals, walk order for bulk mode), so notices and the first refusal land in git's order.
 
@@ -244,8 +244,11 @@ the **cleaned** content, not the raw worktree bytes.
   (the `ie_match_stat` short-circuit below) never converts, so it never
   triggers this check — matching git.
 - **Stat-clean short-circuit (`ie_match_stat`).** A path whose stat
-  (`mtime`/`ctime`/`size`/`ino`) matches the index's recorded fields and whose
-  mode is unchanged is re-staged as-is: no read, no clean filter, no re-hash.
+  (`mtime`/`ctime`/`size`/`ino`) matches the index's recorded fields, compared
+  in whole seconds on the fields `core.trustCtime` and `core.checkStat` let count,
+  and whose mode is unchanged is re-staged as-is: no read, no clean filter, no
+  re-hash. A racy entry (mtime second not older than the index file's) is always
+  re-read, and a recorded size of 0 on a non-empty blob never matches.
   This only changes cost, never `AddResult` — a stat-clean path was already
   neither `added` nor `modified`.
 

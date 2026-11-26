@@ -26,7 +26,7 @@ import {
   entriesAtLeadingDirectories,
   entriesBeneath,
 } from '../../domain/git-index/directory-file-conflict.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { withPath } from '../../domain/git-index/index-entry.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
 import {
@@ -44,17 +44,26 @@ import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { asciiLower } from '../../domain/pretty/ascii.js';
 import type { Context } from '../../ports/context.js';
+import {
+  type ComparisonScope,
+  compareAndRefresh,
+  scopeOf,
+} from '../primitives/compare-working-tree-entry.js';
 import { readConfig } from '../primitives/config-read.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { lazily } from '../primitives/internal/lazily.js';
+import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   beyondSymlink,
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
+import { readExecutableBitTrust } from '../primitives/read-executable-bit-trust.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readStatCheck } from '../primitives/read-stat-check.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -155,10 +164,10 @@ export const mv = async (
   const request = parseRequest(sources, destination);
   const lock = await acquireIndexLock(ctx);
   try {
-    const byPath = await readIndexMap(ctx);
-    const plan = await planUnderLock(ctx, byPath, request, opts);
+    const index = await readIndexMap(ctx);
+    const plan = await planUnderLock(ctx, index.byPath, request, opts);
     if (opts.dryRun === true) return { moved: plannedMoves(plan.planned), skipped: plan.skipped };
-    return await executePlan(ctx, lock, byPath, plan, opts);
+    return await executePlan(ctx, lock, index, plan, opts);
   } finally {
     await lock.release();
   }
@@ -222,17 +231,25 @@ interface ExecutedItem extends RepathedItem {
 const executePlan = async (
   ctx: Context,
   lock: IndexLock,
-  byPath: Map<IndexPathKey, IndexEntry>,
+  index: IndexAsRead,
   { planned, skipped }: Plan,
   opts: MvOptions,
 ): Promise<MvResult> => {
+  const { byPath } = index;
   const pathRules = indexPathRulesOf(ctx);
   const repathed = planned.map((item) => repathItem(pathRules, item));
   const executed = await renameEach(ctx, repathed, opts);
   const indexed = executed.filter(movesIndex);
-  applyToIndex(byPath, indexed);
+  const moves = indexed.flatMap((item) => item.moves);
+  applyToIndex(byPath, moves);
+  const upToDate = await refreshMoved(ctx, index, moves);
   await removeAbandonedSources(ctx, byPath, executed);
-  await lock.commit(Array.from(byPath.values()), 'update');
+  // git's `SKIP_IF_UNCHANGED`: the index is written only when an entry moved.
+  if (moves.length > 0) {
+    await lock.commit(Array.from(byPath.values()), 'update', {
+      verified: (path) => upToDate.has(path),
+    });
+  }
   return {
     moved: plannedMoves(indexed.map(({ item }) => item)),
     skipped: [...skipped, ...renameSkipsOf(executed)],
@@ -312,16 +329,65 @@ const removeAbandonedSources = async (
   }
 };
 
-const readIndexMap = async (ctx: Context): Promise<Map<IndexPathKey, IndexEntry>> => {
+/** The index as read: its entries by path, and its own mtime, the racy test's reference. */
+interface IndexAsRead {
+  readonly byPath: Map<IndexPathKey, IndexEntry>;
+  readonly indexMtime: GitIndex['indexMtime'];
+}
+
+const NO_INDEX: Pick<GitIndex, 'entries' | 'indexMtime'> = { entries: [] };
+
+const readIndexMap = async (ctx: Context): Promise<IndexAsRead> => {
   const index = await readIndex(ctx).catch((err: unknown) => {
-    if (err instanceof TsgitError && isIndexMissingCode(err.data.code)) {
-      return { entries: [] as ReadonlyArray<IndexEntry> };
-    }
+    if (err instanceof TsgitError && isIndexMissingCode(err.data.code)) return NO_INDEX;
     throw err;
   });
   const byPath = new Map<IndexPathKey, IndexEntry>();
   for (const entry of index.entries) byPath.set(indexPathKey(entry), entry);
-  return byPath;
+  return { byPath, indexMtime: index.indexMtime };
+};
+
+const refreshScope = async (ctx: Context, indexMtime: GitIndex['indexMtime']) => ({
+  ...scopeOf(await buildCheckinAttributeProvider(ctx), indexMtime, createLeadingPathScanner(ctx)),
+  executableBit: await readExecutableBitTrust(ctx),
+  statCheck: await readStatCheck(ctx),
+});
+
+/**
+ * A moved entry as git's refresh leaves it when it is up to date: a skip-worktree entry as it
+ * is, without a look at its file; an unchanged one with the stat the rename left. `undefined`
+ * when the content differs: the entry keeps the stat it was read with.
+ */
+const settleMoved = async (
+  ctx: Context,
+  to: IndexEntry,
+  scope: () => Promise<ComparisonScope>,
+): Promise<IndexEntry | undefined> => {
+  if (to.flags.skipWorktree) return to;
+  const { delta, refreshed } = await compareAndRefresh(ctx, to, await scope());
+  if (delta.status !== 'unchanged') return undefined;
+  return refreshed ?? to;
+};
+
+/**
+ * git's `rename_index_entry_at`: each moved entry is refreshed at its new path. The paths
+ * returned are up to date; any other is left to the racy smudge of the index write.
+ */
+const refreshMoved = async (
+  ctx: Context,
+  { byPath, indexMtime }: IndexAsRead,
+  moves: ReadonlyArray<IndexMove>,
+): Promise<ReadonlySet<FilePath>> => {
+  const upToDate = new Set<FilePath>();
+  // Built for the first entry that is compared: a move that compares none reads no policy.
+  const scope = lazily(() => refreshScope(ctx, indexMtime));
+  for (const { to } of moves) {
+    const settled = await settleMoved(ctx, to, scope);
+    if (settled === undefined) continue;
+    upToDate.add(to.path);
+    byPath.set(indexPathKey(to), settled);
+  }
+  return upToDate;
 };
 
 const resolveDestinationMode = async (
@@ -613,9 +679,8 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
 
 const applyToIndex = (
   byPath: Map<IndexPathKey, IndexEntry>,
-  indexed: ReadonlyArray<ExecutedItem>,
+  moves: ReadonlyArray<IndexMove>,
 ): void => {
-  const moves = indexed.flatMap((executed) => executed.moves);
   for (const { from } of moves) byPath.delete(indexPathKey(from));
   const remaining = Array.from(byPath.values());
   for (const { to } of moves) {
