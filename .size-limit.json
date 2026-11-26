@@ -374,13 +374,13 @@
   {
     "name": "Full library",
     "path": "dist/esm/**/*.js",
-    "limit": "434.5 kB",
+    "limit": "434.6 kB",
     "gzip": true
   },
   {
     "name": "Chunks: domain",
     "path": "dist/esm/chunks/domain-*.js",
-    "limit": "130.8 kB",
+    "limit": "130.9 kB",
     "gzip": true
   },
   {
