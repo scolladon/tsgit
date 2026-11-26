@@ -7,13 +7,16 @@
  * directory, whose rule then decides the path. The match returns the
  * matching rule's level + index, which we surface as a
  * `source: { kind, basedir, line, pattern }` block when the verdict is
- * "ignored".
+ * "ignored". A query beyond a symbolic link is refused before any rule file
+ * is read.
  */
+import { pathspecBeyondSymlink } from '../../domain/commands/error.js';
 import { operationAborted } from '../../domain/error.js';
 import type { VerboseMatch } from '../../domain/ignore/matcher-stack.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { createIgnoreSession } from './internal/ignore-evaluator.js';
+import { beyondSymlink, createLeadingPathScanner } from './internal/symlinked-leading-path.js';
 
 export interface IsIgnoredQuery {
   readonly path: FilePath;
@@ -64,12 +67,24 @@ const toIgnoredMatch = (path: FilePath, match: VerboseMatch): IsIgnoredMatch => 
   };
 };
 
+// git parses every argument before it matches any: the first one beyond a symbolic link refuses the call.
+const refuseBeyondSymlink = async (
+  ctx: Context,
+  queries: ReadonlyArray<IsIgnoredQuery>,
+): Promise<void> => {
+  const scanner = createLeadingPathScanner(ctx);
+  for (const query of queries) {
+    if (await beyondSymlink(scanner, query.path)) throw pathspecBeyondSymlink(query.path);
+  }
+};
+
 export const isIgnored = async (
   ctx: Context,
   queries: ReadonlyArray<IsIgnoredQuery>,
 ): Promise<ReadonlyArray<IsIgnoredMatch>> => {
   if (ctx.signal?.aborted) throw operationAborted();
   if (queries.length === 0) return [];
+  await refuseBeyondSymlink(ctx, queries);
 
   const session = await createIgnoreSession(ctx);
   const results: IsIgnoredMatch[] = [];

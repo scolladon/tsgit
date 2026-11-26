@@ -9,13 +9,14 @@
  *   unique:         a path beneath an excluded leading directory reports that directory's rule as git check-ignore does under both core.ignorecase values
  *   interopSurface: isIgnored
  */
-import { lstatSync } from 'node:fs';
+import { lstatSync, symlinkSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { isIgnored } from '../../src/application/primitives/is-ignored.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { FilePath } from '../../src/domain/objects/object-id.js';
 import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -254,6 +255,46 @@ const writeRepo = async (root: string, ignoreCase: string, fixture: Row): Promis
   return repo;
 };
 
+interface GitRefusal {
+  readonly exitCode: number;
+  readonly stderr: string;
+}
+
+const gitRefusal = (repo: string, query: string): GitRefusal => {
+  const { stderr, exitCode } = tryRunGitWithExit(
+    ['-C', repo, 'check-ignore', '-v', '--no-index', '--', query],
+    {},
+  );
+  return { exitCode, stderr };
+};
+
+const tsgitRefusal = async (repo: string, query: string): Promise<unknown> => {
+  const sut = isIgnored;
+  try {
+    await sut(createNodeContext({ workDir: repo }), [{ path: query as FilePath }]);
+  } catch (caught) {
+    return (caught as TsgitError).data;
+  }
+  return expect.unreachable('isIgnored did not refuse');
+};
+
+const LINK_TARGETS = [
+  { title: 'outside the repository', inside: false, ignoreFile: 'secret\n' },
+  { title: 'inside the repository', inside: true, ignoreFile: 'secret\n' },
+  { title: 'holding no .gitignore', inside: true, ignoreFile: undefined },
+] as const;
+
+const layLink = async (root: string, repo: string, target: (typeof LINK_TARGETS)[number]) => {
+  const directory = target.inside
+    ? path.join(repo, 'real')
+    : await mkdtemp(path.join(root, 'elsewhere-'));
+  await mkdir(directory, { recursive: true });
+  if (target.ignoreFile !== undefined) {
+    await writeFile(path.join(directory, '.gitignore'), target.ignoreFile);
+  }
+  symlinkSync(directory, path.join(repo, 'link'));
+};
+
 describe.skipIf(!GIT_AVAILABLE)('integration — isIgnored beneath an excluded directory', () => {
   let root: string;
 
@@ -282,6 +323,46 @@ describe.skipIf(!GIT_AVAILABLE)('integration — isIgnored beneath an excluded d
 
         // Assert
         expect(result).toEqual(gitVerdict(repo, fixture.query));
+      });
+    });
+
+    describe('When isIgnored is asked about a path beyond a symbolic link', () => {
+      it.each(LINK_TARGETS)(
+        'Then a link $title is refused as git check-ignore refuses',
+        async (target) => {
+          // Arrange
+          const repo = await writeRepo(root, ignoreCase, row('link', {}, 'link/secret'));
+          await layLink(root, repo, target);
+
+          // Act
+          const result = await tsgitRefusal(repo, 'link/secret');
+
+          // Assert
+          const refusal = gitRefusal(repo, 'link/secret');
+          expect(refusal.exitCode).toBe(128);
+          expect(refusal.stderr).toContain('is beyond a symbolic link');
+          expect(result).toMatchObject({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'link/secret' });
+        },
+      );
+    });
+
+    describe('When isIgnored is asked about the symbolic link itself', () => {
+      it('Then it answers as git check-ignore does', async () => {
+        // Arrange
+        const repo = await writeRepo(
+          root,
+          ignoreCase,
+          row('link', { '.gitignore': 'link\n' }, 'link'),
+        );
+        await layLink(root, repo, LINK_TARGETS[1]);
+        const sut = tsgitVerdict;
+
+        // Act
+        const result = await sut(repo, 'link', path.join(repo, '.git', EXCLUDES_FILE_NAME));
+
+        // Assert
+        expect(gitRefusal(repo, 'link').exitCode).toBeLessThanOrEqual(1);
+        expect(result).toEqual(gitVerdict(repo, 'link'));
       });
     });
   });

@@ -860,4 +860,117 @@ describe('isIgnored', () => {
       },
     );
   });
+
+  describe('Given a query whose leading directory is a symbolic link', () => {
+    const refusalOf = async (
+      ctx: Awaited<ReturnType<typeof seedRepo>>,
+      queries: ReadonlyArray<string>,
+    ): Promise<unknown> => {
+      const sut = isIgnored;
+      try {
+        await sut(
+          ctx,
+          queries.map((query) => ({ path: path(query) })),
+        );
+      } catch (caught) {
+        return (caught as TsgitError).data;
+      }
+      return expect.unreachable('isIgnored did not refuse');
+    };
+
+    describe.each([
+      ['outside the work tree', 'link', '/elsewhere', 'link/secret'],
+      ['inside the work tree', 'link', 'real', 'link/secret'],
+      ['nowhere (dangling)', 'gone', 'missing-target', 'gone/x'],
+      ['inside the work tree, nested under a real directory', 'a/link', 'real', 'a/link/deep/x'],
+    ])('When the link points %s', (_title, link, target, query) => {
+      it('Then it refuses with the queried path', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        const work = ctx.layout.workDir;
+        await ctx.fs.writeUtf8(`${work}/real/.gitignore`, 'secret\n');
+        await ctx.fs.writeUtf8(`${work}/a/file`, '');
+        const resolved = target.startsWith('/') ? target : `${work}/${target}`;
+        await ctx.fs.symlink(resolved, `${work}/${link}`);
+
+        // Act
+        const result = await refusalOf(ctx, [query]);
+
+        // Assert
+        expect(result).toMatchObject({ code: 'PATHSPEC_BEYOND_SYMLINK', path: query });
+      });
+    });
+
+    describe('When the refused query follows an answerable one', () => {
+      it('Then it refuses with the refused path and answers nothing', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        const work = ctx.layout.workDir;
+        await ctx.fs.writeUtf8(`${work}/.gitignore`, '*.log\n');
+        await ctx.fs.writeUtf8(`${work}/real/.gitignore`, 'secret\n');
+        await ctx.fs.symlink(`${work}/real`, `${work}/link`);
+
+        // Act
+        const result = await refusalOf(ctx, ['top.log', 'link/secret']);
+
+        // Assert
+        expect(result).toMatchObject({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'link/secret' });
+      });
+    });
+
+    describe.each([['link'], ['a/link']])('When the link %s is queried as itself', (query) => {
+      it('Then it is answered', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        const work = ctx.layout.workDir;
+        await ctx.fs.writeUtf8(`${work}/.gitignore`, 'link\n');
+        await ctx.fs.writeUtf8(`${work}/a/file`, '');
+        await ctx.fs.writeUtf8(`${work}/real/file`, '');
+        await ctx.fs.symlink(`${work}/real`, `${work}/link`);
+        await ctx.fs.symlink(`${work}/real`, `${work}/a/link`);
+        const sut = isIgnored;
+
+        // Act
+        const result = await sut(ctx, [{ path: path(query) }]);
+
+        // Assert
+        expect(result.map((match) => match.path)).toEqual([query]);
+      });
+    });
+
+    describe('When a query has no leading directory', () => {
+      it('Then it is answered', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        const work = ctx.layout.workDir;
+        await ctx.fs.writeUtf8(`${work}/.gitignore`, '*.log\n');
+        await ctx.fs.writeUtf8(`${work}/real/file`, '');
+        await ctx.fs.symlink(`${work}/real`, `${work}/link`);
+        const sut = isIgnored;
+
+        // Act
+        const result = await sut(ctx, [{ path: path('top.log') }]);
+
+        // Assert
+        expect(result.map((match) => match.ignored)).toEqual([true]);
+      });
+    });
+
+    describe('When the query list is empty', () => {
+      it('Then it returns no match', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        const work = ctx.layout.workDir;
+        await ctx.fs.writeUtf8(`${work}/real/file`, '');
+        await ctx.fs.symlink(`${work}/real`, `${work}/link`);
+        const sut = isIgnored;
+
+        // Act
+        const result = await sut(ctx, []);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
 });
