@@ -737,7 +737,34 @@ any matrix moved.
 - **A pin was missing.** Matrix E row X3 now has its checkout row.
 - **Known equivalents, left unmarked.** `rules.length > 0` forced true, and `>` turned into
   `>=`, only push an empty level, which matches nothing. Each shares its line with a killed
-  mutant, so the line carries no suppression.
+  mutant, so the line carries no suppression. (Validation removed them: §12.)
+
+### 12. What validation changed
+
+One narrowed mutation bucket at concurrency 1 (six suites, 428 tests in the dry run) over the
+changed ranges of the three source files.
+
+| pass | scope | mutants | killed | rejected by the type checker | timed out | survived | ignored |
+|---|---|---|---|---|---|---|---|
+| 1 | the three files | 86 | 22 | 48 | 9 | 2 | 5 |
+| 2, after triage | `ignore-evaluator.ts` | 37 | 8 | 23 | 5 | 0 | 1 |
+
+- **Every timeout was applied by hand**, with its exact replacement, in a throwaway copy under
+  a watchdog. Seven fail between 4 and 95 tests in two seconds once the 20 000-directory row is
+  set aside: that row turns any mutant that never excludes, or always loads, into 20 000
+  rule-file reads, which the run reports as a timeout. Two are true infinite loops: the
+  walk-up loop with its body emptied, and the root's seeded entry removed, after which the
+  walk-up never meets a known chain. §10 predicted a stack overflow for the second; since the
+  loop of §11 it hangs instead. The five timeouts of the second pass are the same mutants,
+  verified again on the new tree.
+- **The four static mutants the run ignores** (each exported function replaced by
+  `() => undefined`) were applied by hand too: three fail 59 to 161 tests, the fourth loops.
+- **The two survivors were equivalent, and are gone by construction.** With the
+  empty-ruleset guard forced true, or `>` turned into `>=`, 1 305 tests over 16 files pass:
+  an empty level matches nothing. `loadDirRules` now yields nothing for an absent rule file
+  and `pushDirRules` tests `rules !== undefined`, so the forced-true form no longer
+  type-checks. A `.gitignore` that exists and holds no rule pushes an empty level, as the
+  root file already did.
 
 ## Decision candidates
 
