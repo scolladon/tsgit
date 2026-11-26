@@ -11,7 +11,7 @@ evidence:
 source: { run: rev-list-objects-zero-count-boundary, phase: review, date: 2026-11-11 }
 status: active
 supersedes: []
-last-verified: 2026-11-24
+last-verified: 2026-11-26
 ---
 # 035 — A lockfile bump is written by the npm major that wrote main
 

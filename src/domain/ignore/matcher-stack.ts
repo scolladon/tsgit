@@ -65,6 +65,21 @@ export const matchInStackVerbose = (
   stack: ReadonlyArray<IgnoreLevel>,
   path: FilePath,
   isDir: boolean,
+): VerboseMatch =>
+  lastDecidingLevel(path === '' ? stack.map(rulesNamingTheRoot) : stack, path, isDir);
+
+// git matches a rule holding a slash only against a path beneath its file's directory, and a
+// directory-only rule only against a path it can stat as a directory. The empty path is
+// neither, so only a rule holding no slash at all can name it.
+const rulesNamingTheRoot = (level: IgnoreLevel): IgnoreLevel => ({
+  ...level,
+  rules: level.rules.filter((rule) => !rule.anchored && !rule.directoryOnly),
+});
+
+const lastDecidingLevel = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
 ): VerboseMatch => {
   let result: VerboseMatch = { verdict: 'unset' };
   for (const level of stack) {
@@ -77,3 +92,31 @@ export const matchInStackVerbose = (
   }
   return result;
 };
+
+/** The directory holding `path`, or `''` for a root-level path. */
+export const parentDirectoryOf = (path: FilePath): FilePath | '' =>
+  path.slice(0, Math.max(path.lastIndexOf('/'), 0)) as FilePath | '';
+
+/** git's prep_exclude test of one directory: the positive match that excludes it, if any. */
+export const directoryExclusion = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath,
+): VerboseMatch | undefined => {
+  const match = matchInStackVerbose(stack, directory, true);
+  return match.verdict === 'ignored' ? match : undefined;
+};
+
+/** git's prep_exclude step: an excluded chain above decides, else the directory's own test. */
+export const chainExclusion = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath,
+  above: VerboseMatch | undefined,
+): VerboseMatch | undefined => above ?? directoryExclusion(stack, directory);
+
+/** git's last_matching_pattern: the exclusion of the leading chain decides, else the full path. */
+export const matchBeneathChain = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
+  chain: VerboseMatch | undefined,
+): VerboseMatch => chain ?? matchInStackVerbose(stack, path, isDir);

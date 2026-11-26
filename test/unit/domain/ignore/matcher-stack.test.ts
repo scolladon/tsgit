@@ -1,17 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chainExclusion,
+  directoryExclusion,
   type IgnoreLevel,
+  matchBeneathChain,
   matchInStack,
   matchInStackVerbose,
+  parentDirectoryOf,
 } from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import { chainOver } from './arbitraries.js';
 
 const level = (basedir: '' | string, source: string): IgnoreLevel => ({
   basedir: basedir as IgnoreLevel['basedir'],
   rules: parseGitignore(source),
 });
+const foldedLevel = (basedir: '' | string, source: string): IgnoreLevel => ({
+  basedir: basedir as IgnoreLevel['basedir'],
+  rules: parseGitignore(source, { caseFold: true }),
+});
+const kindLevel = (kind: NonNullable<IgnoreLevel['kind']>, source: string): IgnoreLevel => ({
+  basedir: '',
+  rules: parseGitignore(source),
+  kind,
+});
 const path = (s: string): FilePath => s as FilePath;
+/** What a verbose match reports of its deciding rule when nothing matched. */
+const UNSET_FIELDS = {
+  kind: undefined,
+  basedir: undefined,
+  line: undefined,
+  pattern: undefined,
+};
 
 describe('matchInStack', () => {
   describe('Given a stack of ignore levels, a path, and an isDir flag', () => {
@@ -203,6 +224,552 @@ describe('matchInStackVerbose', () => {
         // Assert
         expect(result.verdict).toBe('ignored');
         expect(result.level?.kind).toBe('info');
+      });
+    });
+  });
+
+  describe('Given the empty path, which is beneath no rule file', () => {
+    const decidingRule = (stack: ReadonlyArray<IgnoreLevel>, isDir: boolean) => {
+      const sut = matchInStackVerbose;
+      const result = sut(stack, path(''), isDir);
+      const rule = result.level?.rules[result.ruleIndex ?? Number.NaN];
+      return {
+        verdict: result.verdict,
+        kind: result.level?.kind,
+        basedir: result.level?.basedir,
+        line: rule?.lineNumber,
+        pattern: rule?.pattern,
+      };
+    };
+    const UNSET = { verdict: 'unset' };
+
+    describe.each([
+      {
+        label: 'a rule holding a slash does not match it',
+        stack: [kindLevel('gitignore', '/*\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a directory-only rule holding a slash does not match it',
+        stack: [kindLevel('gitignore', '/*/\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a directory-only rule without a slash does not match it',
+        stack: [kindLevel('gitignore', '*/\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a directory-only double-star rule does not match it',
+        stack: [kindLevel('gitignore', '**/\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a later directory-only rule does not override a basename rule',
+        stack: [kindLevel('gitignore', '*\n!*/\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'a rule matched by basename matches it',
+        stack: [kindLevel('gitignore', '*\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'a later rule holding a slash does not override a basename rule',
+        stack: [kindLevel('gitignore', '*\n/*\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'a later negation holding a slash does not re-include it',
+        stack: [kindLevel('gitignore', '*\n!/*\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'the deciding rule keeps its own line after a rule holding a slash',
+        stack: [kindLevel('info', '/x\n*\n')],
+        expected: { verdict: 'ignored', kind: 'info', basedir: '', line: 2, pattern: '*' },
+      },
+      {
+        label: 'a later level decides over an earlier one',
+        stack: [kindLevel('global', '*\n'), kindLevel('gitignore', '/*\n!*\n')],
+        expected: { verdict: 'unignored', kind: 'gitignore', basedir: '', line: 2, pattern: '!*' },
+      },
+    ])('When matched against $stack.length level(s)', ({ label, stack, expected }) => {
+      it(`Then ${label}`, () => {
+        // Arrange
+        const sut = decidingRule;
+
+        // Act
+        const result = sut(stack, true);
+
+        // Assert
+        expect(result).toEqual({ ...UNSET_FIELDS, ...expected });
+      });
+    });
+
+    describe('When matched through the plain verdict', () => {
+      it('Then a rule holding a slash leaves it unset', () => {
+        // Arrange
+        const sut = matchInStack;
+
+        // Act
+        const result = sut([level('', '/*\n')], path(''), true);
+
+        // Assert
+        expect(result).toBe('unset');
+      });
+    });
+  });
+
+  describe('Given a path ending at the directory of a nested rule file', () => {
+    describe('When matched', () => {
+      it('Then a rule holding a slash in that file still matches it', () => {
+        // Arrange
+        const nested = level('a', '/*\n');
+        const sut = matchInStackVerbose;
+
+        // Act
+        const result = sut([nested], path('a/'), true);
+
+        // Assert
+        expect(result).toEqual({ verdict: 'ignored', level: nested, ruleIndex: 0 });
+      });
+    });
+  });
+});
+
+describe('parentDirectoryOf', () => {
+  describe.each([
+    { filePath: 'a', expected: '' },
+    { filePath: 'a/b', expected: 'a' },
+    { filePath: 'a/b/c', expected: 'a/b' },
+  ])('Given the path $filePath', ({ filePath, expected }) => {
+    describe('When its parent directory is asked', () => {
+      it('Then it is the path without its last segment, empty at the root', () => {
+        // Arrange
+        const sut = parentDirectoryOf;
+
+        // Act
+        const result = sut(path(filePath));
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('directoryExclusion', () => {
+  describe('Given a root level excluding a directory', () => {
+    describe('When the directory is tested', () => {
+      it('Then it returns the excluding match with its level and rule index', () => {
+        // Arrange
+        const sut = directoryExclusion;
+        const stack = [level('', 'ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'));
+
+        // Assert
+        expect(result?.verdict).toBe('ignored');
+        expect(result?.level).toBe(stack[0]);
+        expect(result?.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a root level excluding a directory then re-including it', () => {
+    describe('When the directory is tested', () => {
+      it('Then a negation as the last match is no exclusion', () => {
+        // Arrange
+        const sut = directoryExclusion;
+        const stack = [level('', 'ab/\n!ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a root level excluding a/b and a nested level re-including b', () => {
+    describe('When a/b is tested', () => {
+      it('Then the deeper negation leaves it not excluded', () => {
+        // Arrange
+        const sut = directoryExclusion;
+        const stack = [level('', 'a/b/'), level('a', '!b/')];
+
+        // Act
+        const result = sut(stack, path('a/b'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a directory-only rule and a path without a trailing slash', () => {
+    describe('When the directory is tested', () => {
+      it('Then it is tested as a directory and excluded', () => {
+        // Arrange
+        const sut = directoryExclusion;
+        const stack = [level('', 'ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'));
+
+        // Assert
+        expect(result).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a single level anchored at the tested directory itself', () => {
+    describe('When the directory is tested', () => {
+      it('Then the level never applies', () => {
+        // Arrange
+        const sut = directoryExclusion;
+        const stack = [level('ab', '*')];
+
+        // Act
+        const result = sut(stack, path('ab'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('chainExclusion', () => {
+  describe('Given an excluded chain above and a directory no rule excludes', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the chain above is kept by identity', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const root = level('', 'zz/');
+        const stack = [root];
+        const above = { verdict: 'ignored', level: root, ruleIndex: 0 } as const;
+
+        // Act
+        const result = sut(stack, path('ab'), above);
+
+        // Assert
+        expect(result).toBe(above);
+      });
+    });
+  });
+
+  describe('Given an excluded chain above and a directory another rule excludes', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the first exclusion wins by identity', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const root = level('', 'zz/\nab/');
+        const stack = [root];
+        const above = { verdict: 'ignored', level: root, ruleIndex: 0 } as const;
+
+        // Act
+        const result = sut(stack, path('ab'), above);
+
+        // Assert
+        expect(result).toBe(above);
+      });
+    });
+  });
+
+  describe('Given no chain above and a root level excluding the directory', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the directory exclusion starts the chain', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const stack = [level('', 'ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'), undefined);
+
+        // Assert
+        expect(result?.verdict).toBe('ignored');
+        expect(result?.level).toBe(stack[0]);
+        expect(result?.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given no chain above and a root level excluding then re-including the directory', () => {
+    describe('When the chain is extended by the directory', () => {
+      it('Then the chain stays open', () => {
+        // Arrange
+        const sut = chainExclusion;
+        const stack = [level('', 'ab/\n!ab/')];
+
+        // Act
+        const result = sut(stack, path('ab'), undefined);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('matchBeneathChain', () => {
+  describe('Given an excluded chain and a negation beneath it', () => {
+    describe('When a path beneath the chain is matched', () => {
+      it('Then the chain decides by identity', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+        const root = level('', 'ab/\n!ab/c');
+        const stack = [root];
+        const chain = { verdict: 'ignored', level: root, ruleIndex: 0 } as const;
+
+        // Act
+        const result = sut(stack, path('ab/c'), false, chain);
+
+        // Assert
+        expect(result).toBe(chain);
+      });
+    });
+  });
+
+  describe('Given no chain and a root rule matching the file', () => {
+    describe('When the path is matched', () => {
+      it('Then the full path is ignored by that rule', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+        const stack = [level('', '*.log')];
+
+        // Act
+        const result = sut(stack, path('x.log'), false, undefined);
+
+        // Assert
+        expect(result.verdict).toBe('ignored');
+        expect(result.level).toBe(stack[0]);
+        expect(result.ruleIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given no chain and a negation re-including a file', () => {
+    describe('When the path is matched', () => {
+      it('Then the file is unignored by the negation', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+        const stack = [level('', 'ab/*\n!ab/c')];
+
+        // Act
+        const result = sut(stack, path('ab/c'), false, undefined);
+
+        // Assert
+        expect(result.verdict).toBe('unignored');
+        expect(result.ruleIndex).toBe(1);
+      });
+    });
+  });
+
+  describe('Given no chain and no rule', () => {
+    describe('When the path is matched', () => {
+      it('Then the verdict is unset', () => {
+        // Arrange
+        const sut = matchBeneathChain;
+
+        // Act
+        const result = sut([], path('ab/c'), false, undefined);
+
+        // Assert
+        expect(result.verdict).toBe('unset');
+      });
+    });
+  });
+});
+
+describe('matchBeneathChain over the chain of a loaded stack', () => {
+  const ROOT = 0;
+  const SECOND = 1;
+  const rootOnly = (source: string): ReadonlyArray<IgnoreLevel> => [level('', source)];
+  const rows: ReadonlyArray<{
+    label: string;
+    stack: ReadonlyArray<IgnoreLevel>;
+    query: string;
+    isDir: boolean;
+    verdict: 'ignored' | 'unignored' | 'unset';
+    levelIndex?: number;
+    ruleIndex?: number;
+  }> = [
+    {
+      label: 'a rule naming the directory without a slash',
+      stack: rootOnly('ab'),
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a later negation cannot re-include',
+      stack: rootOnly('ab/\n!ab/c'),
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a deep file beneath an excluded directory',
+      stack: rootOnly('x/y/'),
+      query: 'x/y/z/w',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a file directly beneath an excluded directory',
+      stack: rootOnly('x/y/'),
+      query: 'x/y/z',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a sibling of an excluded directory',
+      stack: rootOnly('x/y/'),
+      query: 'x/q',
+      isDir: false,
+      verdict: 'unset',
+    },
+    {
+      label: 'the first excluded directory decides',
+      stack: rootOnly('x/y/\nx/y/z/'),
+      query: 'x/y/z/w',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a re-included directory is not excluded',
+      stack: rootOnly('ab/\n!ab/'),
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'unset',
+    },
+    {
+      label: 'a negative leading test falls through to the full path',
+      stack: rootOnly('*\n!ab/'),
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a leading rule precedes a later file rule',
+      stack: rootOnly('ab\n*.log'),
+      query: 'ab/x.log',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a nested level excluding a directory',
+      stack: [level('a', 'b/')],
+      query: 'a/b/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a nested negation cannot re-include under an excluded ancestor',
+      stack: [level('', 'a/'), level('a', '!b/\n!b/c')],
+      query: 'a/b/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a recursive directory rule',
+      stack: rootOnly('**/build/'),
+      query: 'p/build/o/f',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a negation of a file under a non-excluded directory',
+      stack: rootOnly('ab/*\n!ab/c'),
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'unignored',
+      levelIndex: ROOT,
+      ruleIndex: SECOND,
+    },
+    {
+      label: 'a sibling of a re-included file',
+      stack: rootOnly('ab/*\n!ab/c'),
+      query: 'ab/d',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'an info exclude level',
+      stack: [kindLevel('info', 'ab/')],
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a global excludes level',
+      stack: [kindLevel('global', 'ab/')],
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a case-folded rule against a differently cased directory',
+      stack: [foldedLevel('', 'AB/')],
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'ignored',
+      levelIndex: ROOT,
+      ruleIndex: 0,
+    },
+    {
+      label: 'a case-sensitive rule against a differently cased directory',
+      stack: [level('', 'AB/')],
+      query: 'ab/c',
+      isDir: false,
+      verdict: 'unset',
+    },
+  ];
+
+  describe.each(rows)('Given $label', ({ stack, query, isDir, verdict, levelIndex, ruleIndex }) => {
+    describe('When the path is judged beneath its leading directories', () => {
+      it('Then the verdict, level and rule are those of the deciding match', () => {
+        // Arrange
+        const chain = chainOver(stack, parentDirectoryOf(path(query)));
+        const sut = matchBeneathChain;
+
+        // Act
+        const result = sut(stack, path(query), isDir, chain);
+
+        // Assert
+        expect(result.verdict).toBe(verdict);
+        expect(result.ruleIndex).toBe(ruleIndex);
+        expect(result.level).toBe(levelIndex === undefined ? undefined : stack[levelIndex]);
       });
     });
   });

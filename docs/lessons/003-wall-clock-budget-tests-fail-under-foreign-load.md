@@ -10,10 +10,13 @@ evidence:
   - test/perf/domain/regex/extended-regex.perf.test.ts
   - test/unit/application/commands/add.test.ts
   - test/unit/application/primitives/walk-working-tree.test.ts
+  - test/integration/gitmodules-symlink-alias-interop.test.ts
+  - test/integration/merge-abort-interop.test.ts
+  - test/integration/skip-worktree-present-files-status-interop.test.ts:246
 source: { run: lift-delta-chain-read-cap, phase: review, date: 2026-10-20 }
 status: active
 supersedes: []
-last-verified: 2026-11-25
+last-verified: 2026-11-26
 ---
 # 003 — Wall-clock budget tests fail under foreign load
 
@@ -62,3 +65,12 @@ and went red on the reftable-seek budget (816 vs 800 ms) and on three 120 s time
 two 2048-level rows of `test/unit/application/primitives/walk-working-tree.test.ts` and the size-cap
 row of `add.test.ts`. All four passed alone (the perf row in 174 ms), and the re-run at load 6 to 12
 was green with only `test:perf` and `test:coverage` re-executing.
+
+Refreshed 2026-11-26: three of four full-gate runs went red on one integration row each, a
+different file every time, at load 21 to 30 with Spotlight at 145 to 268 % CPU. Two were
+`spawnSync git ETIMEDOUT` (`test/integration/gitmodules-symlink-alias-interop.test.ts`,
+`test/integration/merge-abort-interop.test.ts`); each file passed twice alone in under 30 s. The
+third was an assertion at `test/integration/skip-worktree-present-files-status-interop.test.ts:246`,
+a row whose fixture settles index raciness with wall-clock sleeps: 2 of 3 alone at load 19 to 27,
+8 of 8 on main and on the branch, alternated, at load 4 to 9. Before the first of those runs, five
+orphaned vitest workers from hand-applied hanging mutants held a core each until they were ended.

@@ -175,7 +175,8 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
 - **Overwrite guard.** `apply` refuses with `STASH_APPLY_WOULD_OVERWRITE` —
   writing no tracked path — when a path the merge would change carries uncommitted
   working-tree modifications, or sits where an untracked file blocks it (git's
-  "local changes would be overwritten"). The error keeps git's two classes apart:
+  "local changes would be overwritten"). An occupant beneath a directory an ignore
+  rule excludes is ignored, not untracked, and is overwritten. The error keeps git's two classes apart:
   `localChanges` and `untracked`, with `paths` their concatenation.
 - **Untracked files are restored after the merge.** Whatever the merge's outcome
   (clean, conflict or refusal), `apply`/`pop` then restore the stash's untracked

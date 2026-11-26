@@ -1,8 +1,10 @@
+import type { IgnoreLevel, IgnoreRuleset } from '../../../domain/ignore/index.js';
 import {
-  type IgnoreLevel,
-  type IgnoreRuleset,
-  matchInStack,
-} from '../../../domain/ignore/index.js';
+  chainExclusion,
+  matchBeneathChain,
+  parentDirectoryOf,
+  type VerboseMatch,
+} from '../../../domain/ignore/matcher-stack.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -13,81 +15,136 @@ export interface IgnoreEvaluator {
   /** Base levels available before the walk begins (global → info → repo-root, in order). */
   readonly base: ReadonlyArray<IgnoreLevel>;
   /**
-   * Lazily load and cache the ruleset for a directory's `.gitignore`.
+   * Read the ruleset of a directory's `.gitignore`; an absent file yields
+   * nothing. Nothing is kept: the session asks once per directory.
    * `dir === ''` is the repo root; non-root values are POSIX-relative
    * `FilePath`s (no trailing slash).
    */
-  readonly loadDirRules: (dir: FilePath | '') => Promise<IgnoreRuleset>;
+  readonly loadDirRules: (dir: FilePath | '') => Promise<IgnoreRuleset | undefined>;
 }
+
+/** What git reads at setup, before it looks at any path: the global excludes, then `info/exclude`. */
+export interface StandardExcludes {
+  readonly caseFold: boolean;
+  readonly levels: ReadonlyArray<IgnoreLevel>;
+}
+
+export const readStandardExcludes = async (ctx: Context): Promise<StandardExcludes> => {
+  const caseFold = (await readConfig(ctx)).core?.ignoreCase === true;
+  const levels: IgnoreLevel[] = [];
+  const global = await readGlobalExcludes(ctx, { caseFold });
+  if (global !== undefined) levels.push({ basedir: '', rules: global, kind: 'global' });
+  const info = await readInfoExclude(ctx, { caseFold });
+  if (info !== undefined) levels.push({ basedir: '', rules: info, kind: 'info' });
+  return { caseFold, levels };
+};
 
 /**
  * Build an `IgnoreEvaluator` from the four repository-wide ignore sources.
  * Per-directory `.gitignore` files are NOT loaded eagerly —
- * the caller (typically `buildRepoIgnorePredicate`) loads them on
- * demand during the walk, so subtrees pruned by a parent rule are
- * never read.
+ * the ignore session loads them on demand, one leading directory at a
+ * time, so nothing at or beneath an excluded directory is ever read.
+ * A caller that already read the standard excludes hands them in.
  */
-export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluator> => {
-  const caseFold = (await readConfig(ctx)).core?.ignoreCase === true;
-  const base: IgnoreLevel[] = [];
-  const global = await readGlobalExcludes(ctx, { caseFold });
-  if (global !== undefined) base.push({ basedir: '', rules: global, kind: 'global' });
-  const info = await readInfoExclude(ctx, { caseFold });
-  if (info !== undefined) base.push({ basedir: '', rules: info, kind: 'info' });
+export const buildIgnoreEvaluator = async (
+  ctx: Context,
+  standard?: StandardExcludes,
+): Promise<IgnoreEvaluator> => {
+  const { caseFold, levels } = standard ?? (await readStandardExcludes(ctx));
+  const base = [...levels];
   const root = await readGitignore(ctx, '', { caseFold });
   if (root !== undefined) base.push({ basedir: '', rules: root, kind: 'gitignore' });
-  const cache = new Map<FilePath | '', IgnoreRuleset>();
-  const loadDirRules = async (dir: FilePath | ''): Promise<IgnoreRuleset> => {
-    const cached = cache.get(dir);
-    if (cached !== undefined) return cached;
-    const loaded = (await readGitignore(ctx, dir, { caseFold })) ?? [];
-    cache.set(dir, loaded);
-    return loaded;
-  };
+  const loadDirRules = (dir: FilePath | ''): Promise<IgnoreRuleset | undefined> =>
+    readGitignore(ctx, dir, { caseFold });
   return { base, loadDirRules };
 };
 
-/**
- * Build the ignore predicate used by the walk. The closure owns a
- * mutable stack that grows as the walk descends: every time the
- * predicate sees a path with a previously-unseen ancestor directory,
- * the ancestor's `.gitignore` is loaded (via `loadDirRules`) and
- * pushed onto the stack. Pruned subtrees are never visited, so their
- * `.gitignore` files are never read.
- */
-export const buildRepoIgnorePredicate = async (ctx: Context): Promise<IgnorePredicate> => {
-  const evaluator = await buildIgnoreEvaluator(ctx);
-  const stack: IgnoreLevel[] = [...evaluator.base];
-  // Stryker disable next-line ArrayDeclaration: equivalent — any initial Set contents other than `[]` are phantom entries that never equal a real POSIX-relative ancestor path, so `stackedDirs.has(ancestor)` is never affected.
-  const stackedDirs = new Set<string>([]);
-  return async (path, isDirectory) => {
-    for (const ancestor of ancestorsOf(path)) {
-      // Stryker disable next-line ConditionalExpression: equivalent — dropping the skip only re-runs an idempotent `Set.add`, a cached `loadDirRules`, and a duplicate identical `stack.push`; `matchInStack` is last-match-wins and every call appends its own ancestor chain root-first, so stale duplicates are always shadowed by that trailing correct chain (verified exhaustively).
-      if (stackedDirs.has(ancestor)) continue;
-      stackedDirs.add(ancestor);
-      const rules = await evaluator.loadDirRules(ancestor as FilePath | '');
-      // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — forcing the guard true (or `>= 0`) only also pushes empty rulesets, which never match anything in `matchInStack`, leaving the predicate result identical.
-      if (rules.length > 0) {
-        stack.push({ basedir: ancestor as FilePath | '', rules });
-      }
-    }
-    return matchInStack(stack, path, isDirectory) === 'ignored';
+/** One ignore judgement for a command: rules read lazily, one outcome per directory chain. */
+export interface IgnoreSession {
+  /** git's verdict for one path, with the rule that decided it. */
+  readonly match: (path: FilePath, isDirectory: boolean) => Promise<VerboseMatch>;
+}
+
+type ChainOutcome = Promise<VerboseMatch | undefined>;
+
+interface SessionState {
+  readonly evaluator: IgnoreEvaluator;
+  readonly stack: IgnoreLevel[];
+  /** The first excluded directory on each directory's chain, root-first; the root has none. */
+  readonly chains: Map<FilePath | '', ChainOutcome>;
+}
+
+const pushDirRules = async (state: SessionState, directory: FilePath): Promise<void> => {
+  const rules = await state.evaluator.loadDirRules(directory);
+  if (rules !== undefined) state.stack.push({ basedir: directory, rules, kind: 'gitignore' });
+};
+
+const resolveChain = async (
+  state: SessionState,
+  directory: FilePath,
+  above: ChainOutcome,
+): ChainOutcome => {
+  const exclusion = chainExclusion(state.stack, directory, await above);
+  if (exclusion === undefined) await pushDirRules(state, directory);
+  return exclusion;
+};
+
+const rememberChain = (
+  state: SessionState,
+  directory: FilePath,
+  above: ChainOutcome,
+): ChainOutcome => {
+  const chain = resolveChain(state, directory, above);
+  state.chains.set(directory, chain);
+  return chain;
+};
+
+// Walks up to the nearest directory whose chain is known, then settles the missing ones
+// root-first. A loop, not a recursion: a path may hold more directories than the call stack
+// holds frames. The root's chain is always known, so the walk ends before it.
+const settleChain = (state: SessionState, directory: FilePath): ChainOutcome => {
+  const missing: FilePath[] = [];
+  let at: FilePath | '' = directory;
+  let known = state.chains.get(at);
+  while (known === undefined) {
+    missing.push(at as FilePath);
+    at = parentDirectoryOf(at as FilePath);
+    known = state.chains.get(at);
+  }
+  return missing.reduceRight((above, next) => rememberChain(state, next, above), known);
+};
+
+const chainOf = (state: SessionState, directory: FilePath | ''): ChainOutcome =>
+  state.chains.get(directory) ?? settleChain(state, directory as FilePath);
+
+export const createIgnoreSession = async (
+  ctx: Context,
+  standard?: StandardExcludes,
+): Promise<IgnoreSession> => {
+  const evaluator = await buildIgnoreEvaluator(ctx, standard);
+  const state: SessionState = {
+    evaluator,
+    stack: [...evaluator.base],
+    chains: new Map([['', Promise.resolve(undefined)]]),
+  };
+  return {
+    match: async (path, isDirectory) =>
+      matchBeneathChain(
+        state.stack,
+        path,
+        isDirectory,
+        await chainOf(state, parentDirectoryOf(path)),
+      ),
   };
 };
 
 /**
- * Yield each ancestor directory of `path`, root-first, excluding the
- * path itself. For `a/b/c.txt` returns `['a', 'a/b']`. The repo root
- * ancestor is not yielded — its rules live in `evaluator.base`.
+ * Build the ignore predicate shared by the walk and the pre-flight checks. One session backs
+ * every call: a path beneath an excluded directory is ignored, and nothing at or beneath that
+ * directory is read.
  */
-const ancestorsOf = (path: FilePath): ReadonlyArray<string> => {
-  const segments = path.split('/');
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArrayDeclaration: equivalent — `split('/')` always yields ≥1 segment so `< 1` is unreachable; the early return only skips a loop that would run zero iterations and return the same empty array anyway.
-  if (segments.length <= 1) return [];
-  // Stryker disable next-line ArrayDeclaration: equivalent — a non-empty `out` seed is a placeholder that never equals a real POSIX-relative ancestor, so `stackedDirs.has(...)` filters it and it never pushes a level.
-  const out: string[] = [];
-  for (let i = 1; i < segments.length; i += 1) {
-    out.push(segments.slice(0, i).join('/'));
-  }
-  return out;
+export const buildRepoIgnorePredicate = async (ctx: Context): Promise<IgnorePredicate> => {
+  const session = await createIgnoreSession(ctx);
+  return async (path, isDirectory) =>
+    (await session.match(path, isDirectory)).verdict === 'ignored';
 };

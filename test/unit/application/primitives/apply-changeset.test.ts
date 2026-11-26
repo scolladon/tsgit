@@ -812,6 +812,55 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an untracked directory ab holding c and sub/d under a rule excluding ab, replaced by a file ab', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the file replaces the directory and its excluded contents', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('ab/\n'));
+        await ctx.fs.write(`${WORKDIR}/ab/c`, enc('c'));
+        await ctx.fs.write(`${WORKDIR}/ab/sub/d`, enc('d'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('ab', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/ab`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given the same directory under a rule excluding only ab/c', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses listing ab and keeps the unignored file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('ab/c\n'));
+        await ctx.fs.write(`${WORKDIR}/ab/c`, enc('c'));
+        await ctx.fs.write(`${WORKDIR}/ab/sub/d`, enc('d'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('ab', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['ab'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/ab/sub/d`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given d/x, a directory-only ignore rule build/ and an untracked FILE d/build, replaced by a file d', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then the file is not mistaken for the ignored directory: it refuses listing d and keeps it', async () => {

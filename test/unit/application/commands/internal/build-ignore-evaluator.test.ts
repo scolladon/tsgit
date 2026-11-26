@@ -5,6 +5,11 @@ import {
   buildRepoIgnorePredicate,
 } from '../../../../../src/application/commands/internal/build-ignore-evaluator.js';
 import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
+import {
+  createIgnoreSession,
+  readStandardExcludes,
+} from '../../../../../src/application/primitives/internal/ignore-evaluator.js';
+import { MAX_GITIGNORE_BYTES } from '../../../../../src/application/primitives/types.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 
 afterEach(() => __resetConfigCacheForTests());
@@ -59,6 +64,93 @@ describe('buildIgnoreEvaluator', () => {
         expect(sut.base[2]?.rules[0]?.pattern).toBe('*.log');
       });
     });
+
+    describe('When the standard excludes are read on their own', () => {
+      it('Then they hold the global level, then the info level, and no root level', async () => {
+        // Arrange
+        const ctx = await seed('/repo/home');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.tmp\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n  excludesFile = ~/global\n',
+        );
+        await ctx.fs.writeUtf8('/repo/home/global', '*.swp\n');
+        const sut = readStandardExcludes;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.caseFold).toBe(false);
+        expect(
+          result.levels.map((level) => [level.kind, level.basedir, level.rules[0]?.pattern]),
+        ).toEqual([
+          ['global', '', '*.swp'],
+          ['info', '', '*.tmp'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given core.ignorecase true', () => {
+    describe('When the standard excludes are read', () => {
+      it('Then they carry the case-folding choice', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  ignorecase = true\n');
+        const sut = readStandardExcludes;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ caseFold: true, levels: [] });
+      });
+    });
+  });
+
+  describe('Given standard excludes read before info/exclude and the root .gitignore changed', () => {
+    describe('When the evaluator is built over them', () => {
+      it('Then it keeps them as read and adds the root .gitignore as it now is', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.tmp\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        const standard = await readStandardExcludes(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.changed\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.now\n');
+        const sut = buildIgnoreEvaluator;
+
+        // Act
+        const result = await sut(ctx, standard);
+
+        // Assert
+        expect(result.base.map((level) => [level.kind, level.rules[0]?.pattern])).toEqual([
+          ['info', '*.tmp'],
+          ['gitignore', '*.now'],
+        ]);
+        expect(standard.levels).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given handed-in standard excludes that fold case where the config does not', () => {
+    describe('When a session over them matches a path differing from a root rule by case', () => {
+      it('Then the handed-in choice decides and the path is ignored', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.LOG\n');
+        const sut = createIgnoreSession;
+
+        // Act
+        const session = await sut(ctx, { caseFold: true, levels: [] });
+        const result = await session.match('x.log' as FilePath, false);
+
+        // Assert
+        expect(result.verdict).toBe('ignored');
+      });
+    });
   });
 
   describe('Given a built evaluator', () => {
@@ -94,39 +186,40 @@ describe('buildIgnoreEvaluator', () => {
     });
   });
 
-  describe('Given the evaluator', () => {
-    describe('When loadDirRules is invoked for the same directory twice', () => {
-      it('Then the second call returns the cached ruleset (same value, no second read)', async () => {
+  describe('Given a directory holding a .gitignore', () => {
+    describe('When loadDirRules loads it', () => {
+      it('Then it yields the parsed rules of that file', async () => {
         // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
-        const baseReadUtf8 = ctx.fs.readUtf8;
-        let calls = 0;
-        const countingFs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop === 'readUtf8') {
-              return async (p: string) => {
-                if (p.endsWith('/sub/.gitignore')) calls += 1;
-                return baseReadUtf8(p);
-              };
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        });
-        const evalCtx = { ...ctx, fs: countingFs };
-        const sut = await buildIgnoreEvaluator(evalCtx);
+        const evaluator = await buildIgnoreEvaluator(ctx);
+        const sut = evaluator.loadDirRules;
 
         // Act
-        const first = await sut.loadDirRules('sub' as FilePath);
-        const second = await sut.loadDirRules('sub' as FilePath);
+        const result = await sut('sub' as FilePath);
 
-        // Assert — only one read on the .gitignore AND both calls return
-        // the same parsed ruleset (a mutant that returned an empty array
-        // on the second call would have `calls === 1` but `second !== first`).
-        expect(calls).toBe(1);
-        expect(second).toBe(first);
-        expect(second).toHaveLength(1);
-        expect(second[0]?.pattern).toBe('*.tmp');
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result?.[0]?.pattern).toBe('*.tmp');
+        expect(result?.[0]?.lineNumber).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a directory holding no .gitignore', () => {
+    describe('When loadDirRules loads it', () => {
+      it('Then it yields no ruleset', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/kept.txt`, 'kept\n');
+        const evaluator = await buildIgnoreEvaluator(ctx);
+        const sut = evaluator.loadDirRules;
+
+        // Act
+        const result = await sut('sub' as FilePath);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -342,6 +435,106 @@ describe('buildRepoIgnorePredicate', () => {
         expect(nested).toHaveLength(1);
         expect(nested[0]?.endsWith('/a/.gitignore')).toBe(true);
         expect(lstatGitignorePaths.some((p) => p.includes('foo.txt'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a rule excluding the directory holding the path', () => {
+    describe('When called for a file beneath the directory with root `ab`', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When called for a file beneath the directory with root `ab/`', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When called for a file beneath the directory with root `ab/` and a negation of the file', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n!ab/c\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When called for a file beneath the directory with root `ab/` and a nested negation', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ab/.gitignore`, '!c\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the nested rule file beneath the directory is oversized', () => {
+      it('Then returns true without reading it', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/ab/.gitignore`,
+          new Uint8Array(MAX_GITIGNORE_BYTES + 1).fill(0x23),
+        );
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the file is asked before its directory with a nested negation', () => {
+      it('Then both are ignored', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ab/.gitignore`, '!c\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const file = await sut('ab/c' as FilePath, false);
+        const directory = await sut('ab' as FilePath, true);
+
+        // Assert
+        expect(file).toBe(true);
+        expect(directory).toBe(true);
       });
     });
   });

@@ -12,10 +12,11 @@ evidence:
   - src/application/primitives/internal/symlinked-leading-path.ts
   - test/unit/application/primitives/internal/symlinked-leading-path.test.ts
   - src/domain/pathspec/compile-glob.ts:50-56
+  - src/application/primitives/internal/ignore-evaluator.ts:61-64
 source: { run: status-gitlink-parity, phase: validation, date: 2026-10-24 }
 status: active
 supersedes: []
-last-verified: 2026-11-24
+last-verified: 2026-11-26
 ---
 # 011 — An optimisation gate breeds equivalent survivors
 
@@ -38,8 +39,8 @@ equivalent and the triage must say so with the proof, not chase them with spies.
 ## How to apply
 
 Hand-verify each survivor against its full covering set first; a pass proves the shape.
-Then remove the arithmetic the mutants bite where a value-free form exists (a fresh `Symbol`
-per change instead of a counter).
+Then remove what the mutants bite where a value-free form exists: a fresh `Symbol` per change
+instead of a counter, absence as `undefined` instead of an emptiness test.
 Mark the remaining lines inline with the mutator names and the one-line proof.
 Never add a call-count spy to kill a perf-only mutant.
 Expect the review's PROBE records to predict these; verify them, do not trust them.
@@ -50,3 +51,9 @@ Expect the review's PROBE records to predict these; verify them, do not trust th
 `src/application/primitives/internal/symlinked-leading-path.ts` — the `generation` token and the marked cache-key lines.
 `test/unit/application/primitives/internal/symlinked-leading-path.test.ts` — the invalidation rows that kill the real mutants beside them.
 `src/domain/pathspec/compile-glob.ts:50-56` — the block above git's three fast paths: nineteen survivors there were first killed with a call-count suite, which was removed for this lesson.
+
+`src/application/primitives/internal/ignore-evaluator.ts:61-64` — `pushDirRules`: the guard was
+`rules.length > 0`, and its forced-true and `>=` mutants only pushed an empty level (1 305 tests
+pass with either) while sharing their line with two killed mutants, so the line could not be
+marked. The loader now yields nothing for an absent rule file and the guard tests that: the
+forced-true form no longer type-checks.

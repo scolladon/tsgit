@@ -1,22 +1,38 @@
 /**
  * Per-path ignore lookup with rule provenance. Mirrors `git check-ignore -v`.
  *
- * Reuses `buildIgnoreEvaluator` so the global / `info/exclude` / root
- * `.gitignore` files are loaded once per call, then loads per-directory
- * `.gitignore` rules lazily along each query path's ancestor chain.
- * `matchInStackVerbose` returns the matching rule's level + index, which
- * we surface as a `source: { kind, basedir, line, pattern }` block when
- * the verdict is "ignored" (ADR-163).
+ * Runs on one `IgnoreSession`, so the global / `info/exclude` / root
+ * `.gitignore` files are loaded once per call. Per-directory `.gitignore`
+ * rules are read only on the chain above the first excluded leading
+ * directory, whose rule then decides the path. The match returns the
+ * matching rule's level + index, which we surface as a
+ * `source: { kind, basedir, line, pattern }` block when the verdict is
+ * "ignored".
+ *
+ * Each query is parsed as git parses a `check-ignore` argument, after the
+ * global excludes and `info/exclude` are read and before any `.gitignore`
+ * is: an empty path refuses the call, the path is normalized (`.`, `..` and
+ * doubled separators), one that leaves the repository or lies beyond a
+ * symbolic link refuses the call, and the normalized path is the one judged.
+ * The result names the path as asked.
  */
-import { operationAborted } from '../../domain/error.js';
 import {
-  type IgnoreLevel,
-  type IgnoreRuleset,
-  matchInStackVerbose,
-} from '../../domain/ignore/index.js';
+  emptyPathspec,
+  pathspecBeyondSymlink,
+  pathspecOutsideRepo,
+} from '../../domain/commands/error.js';
+import { operationAborted } from '../../domain/error.js';
+import type { VerboseMatch } from '../../domain/ignore/matcher-stack.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import { normalizePathCopy } from '../../domain/path/normalize-path-copy.js';
 import type { Context } from '../../ports/context.js';
-import { buildIgnoreEvaluator } from './internal/ignore-evaluator.js';
+import { isPermissionDenied } from './internal/fs-probes.js';
+import { createIgnoreSession, readStandardExcludes } from './internal/ignore-evaluator.js';
+import {
+  beyondSymlink,
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from './internal/symlinked-leading-path.js';
 
 export interface IsIgnoredQuery {
   readonly path: FilePath;
@@ -41,17 +57,79 @@ export interface IsIgnoredMatch {
   readonly source?: IsIgnoredMatchSource;
 }
 
-const ancestorsOf = (path: FilePath): ReadonlyArray<string> => {
-  const segments = (path as string).split('/');
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArrayDeclaration: equivalent — split('/') always yields ≥1 segment so `< 1` is unreachable and the early return only skips a zero-iteration loop returning the same []; a placeholder return array names a directory loadDirRules cannot find, so its empty ruleset is never pushed and the verdict/source is unchanged.
-  if (segments.length <= 1) return [];
-  // Stryker disable next-line ArrayDeclaration: equivalent — a placeholder seed names a directory loadDirRules cannot find, so its empty ruleset is never pushed and the verdict/source is unchanged.
-  const out: string[] = [];
-  // Stryker disable next-line EqualityOperator: equivalent — the extra iteration seeds the query path itself as an ancestor whose level basedir equals the path; matchInStackVerbose relativizes each level against `basedir + '/'`, so a level whose basedir is the path is always skipped, and deeper sibling queries only pre-load identical rules in the same root-first order — verdict/source unchanged.
-  for (let i = 1; i < segments.length; i += 1) {
-    out.push(segments.slice(0, i).join('/'));
+const toIgnoredMatch = (path: FilePath, match: VerboseMatch): IsIgnoredMatch => {
+  // Treat anything except an explicit "ignored" verdict as not ignored —
+  // `'unset'` and `'unignored'` both collapse to no `source`.
+  // `match.level` and `match.ruleIndex` are only populated when verdict !==
+  // 'unset', but we narrow on the actual values rather than the verdict so
+  // a future refactor of `VerboseMatch` cannot silently break the cast path.
+  if (match.verdict !== 'ignored' || match.level === undefined || match.ruleIndex === undefined) {
+    return { path, ignored: false };
   }
-  return out;
+  const rule = match.level.rules[match.ruleIndex];
+  if (rule === undefined) {
+    // Stryker disable next-line BooleanLiteral: equivalent — this branch is a noUncheckedIndexedAccess type-narrowing guard; matchInStackVerbose only sets ruleIndex to an in-bounds index (from matchesVerbose/lastMatch), so rule is never undefined at runtime and the literal is never observed.
+    return { path, ignored: false };
+  }
+  return {
+    path,
+    ignored: true,
+    source: {
+      kind: match.level.kind ?? 'gitignore',
+      basedir: match.level.basedir,
+      line: rule.lineNumber,
+      pattern: rule.pattern,
+    },
+  };
+};
+
+const SEPARATOR = '/';
+
+/** A query with the normalized path git judges in its place. */
+interface ParsedQuery {
+  readonly query: IsIgnoredQuery;
+  readonly judged: FilePath;
+}
+
+// git's lstat cache reads a leading directory it may not examine as "not a link".
+const liesBeyondSymlink = async (
+  scanner: LeadingPathScanner,
+  judged: FilePath,
+): Promise<boolean> => {
+  try {
+    return await beyondSymlink(scanner, judged);
+  } catch (error) {
+    if (isPermissionDenied(error)) return false;
+    throw error;
+  }
+};
+
+// A path is judged relative to the work tree: an absolute one is outside it, like one that
+// climbs above the root.
+const judgedPathOf = (path: FilePath): FilePath | undefined =>
+  path.startsWith(SEPARATOR) ? undefined : (normalizePathCopy(path) as FilePath | undefined);
+
+const parseQuery = async (
+  scanner: LeadingPathScanner,
+  query: IsIgnoredQuery,
+): Promise<ParsedQuery> => {
+  const judged = judgedPathOf(query.path);
+  if (judged === undefined) throw pathspecOutsideRepo(query.path);
+  if (await liesBeyondSymlink(scanner, judged)) throw pathspecBeyondSymlink(query.path);
+  return { query, judged };
+};
+
+// git parses every argument before it matches any: an empty one refuses the call before the
+// others are looked at, then the first one it refuses does.
+const parseQueries = async (
+  ctx: Context,
+  queries: ReadonlyArray<IsIgnoredQuery>,
+): Promise<ReadonlyArray<ParsedQuery>> => {
+  const scanner = createLeadingPathScanner(ctx);
+  if (queries.some((query) => query.path === '')) throw emptyPathspec();
+  const parsed: ParsedQuery[] = [];
+  for (const query of queries) parsed.push(await parseQuery(scanner, query));
+  return parsed;
 };
 
 export const isIgnored = async (
@@ -60,55 +138,15 @@ export const isIgnored = async (
 ): Promise<ReadonlyArray<IsIgnoredMatch>> => {
   if (ctx.signal?.aborted) throw operationAborted();
   if (queries.length === 0) return [];
+  const standard = await readStandardExcludes(ctx);
+  const parsed = await parseQueries(ctx, queries);
 
-  const evaluator = await buildIgnoreEvaluator(ctx);
-  const stack: IgnoreLevel[] = [...evaluator.base];
-  const stackedDirs = new Set<string>();
-
-  const ensureAncestorRules = async (path: FilePath): Promise<void> => {
-    for (const ancestor of ancestorsOf(path)) {
-      // Stryker disable next-line ConditionalExpression: equivalent — dropping the skip only re-runs an idempotent Set.add, a cached loadDirRules, and a duplicate identical stack.push; matchInStackVerbose is last-match-wins and every query appends its ancestor chain root-first, so a duplicate level is shadowed by the trailing correct one carrying identical basedir/line/pattern — verdict/source unchanged.
-      if (stackedDirs.has(ancestor)) continue;
-      stackedDirs.add(ancestor);
-      const rules: IgnoreRuleset = await evaluator.loadDirRules(ancestor as FilePath | '');
-      // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — forcing the guard always-true only also pushes empty rulesets, which match nothing in matchInStackVerbose, leaving the verdict/source identical.
-      if (rules.length > 0) {
-        stack.push({ basedir: ancestor as FilePath | '', rules, kind: 'gitignore' });
-      }
-    }
-  };
-
+  const session = await createIgnoreSession(ctx, standard);
   const results: IsIgnoredMatch[] = [];
-  for (const query of queries) {
+  for (const { query, judged } of parsed) {
     if (ctx.signal?.aborted) throw operationAborted();
-    await ensureAncestorRules(query.path);
-    const isDir = query.isDirectory === true;
-    const match = matchInStackVerbose(stack, query.path, isDir);
-    // Treat anything except an explicit "ignored" verdict as not ignored —
-    // `'unset'` and `'unignored'` both collapse to no `source` per ADR-163.
-    // `match.level` and `match.ruleIndex` are only populated when verdict !==
-    // 'unset', but we narrow on the actual values rather than the verdict so
-    // a future refactor of `VerboseMatch` cannot silently break the cast path.
-    if (match.verdict !== 'ignored' || match.level === undefined || match.ruleIndex === undefined) {
-      results.push({ path: query.path, ignored: false });
-      continue;
-    }
-    const rule = match.level.rules[match.ruleIndex];
-    if (rule === undefined) {
-      // Stryker disable next-line BooleanLiteral: equivalent — this branch is a noUncheckedIndexedAccess type-narrowing guard; matchInStackVerbose only sets ruleIndex to an in-bounds index (from matchesVerbose/lastMatch), so rule is never undefined at runtime and the literal is never observed.
-      results.push({ path: query.path, ignored: false });
-      continue;
-    }
-    results.push({
-      path: query.path,
-      ignored: true,
-      source: {
-        kind: match.level.kind ?? 'gitignore',
-        basedir: match.level.basedir,
-        line: rule.lineNumber,
-        pattern: rule.pattern,
-      },
-    });
+    const match = await session.match(judged, query.isDirectory === true);
+    results.push(toIgnoredMatch(query.path, match));
   }
   return results;
 };

@@ -6,6 +6,8 @@ import type { IndexMtime } from '../../../../../src/application/primitives/inter
 import {
   type ClashScope,
   classifyOccupant,
+  createIgnoredProbe,
+  holdsSurvivor,
   type IgnoredProbe,
   type TrackedLookup,
 } from '../../../../../src/application/primitives/internal/occupant-clash.js';
@@ -44,6 +46,11 @@ const scopeOf = (ctx: Context, options: ScopeOptions = {}): ClashScope => {
     tracked: options.tracked ?? (async () => undefined),
   };
 };
+
+const realScopeOf = (ctx: Context): ClashScope => ({
+  ...scopeOf(ctx),
+  isIgnoredPath: createIgnoredProbe(ctx),
+});
 
 const classify = (
   ctx: Context,
@@ -836,6 +843,115 @@ describe('classifyOccupant', () => {
 
         // Assert
         expect(result).toEqual(LOCAL_AT(REACHED));
+      });
+    });
+  });
+});
+
+describe('classifyOccupant beneath a directory the rules exclude', () => {
+  describe('Given an untracked file beneath a directory the rules exclude', () => {
+    describe('When classifying an added path beneath it', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.write(`${ctx.layout.workDir}/ab/c`, BYTES);
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await classify(ctx, 'ab/c', realScopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given an untracked file and no rule excluding its directory', () => {
+    describe('When classifying an added path beneath it', () => {
+      it('Then it is untracked at that path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/ab/c`, BYTES);
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await classify(ctx, 'ab/c', realScopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'ab/c' } });
+      });
+    });
+  });
+
+  describe('Given a directory holding files beneath an excluded directory rule', () => {
+    describe('When asking whether the directory holds a survivor', () => {
+      it('Then no file survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.write(`${ctx.layout.workDir}/ab/c`, BYTES);
+        await ctx.fs.write(`${ctx.layout.workDir}/ab/sub/d`, BYTES);
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await holdsSurvivor(ctx, `${ctx.layout.workDir}/ab`, realScopeOf(ctx));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a directory holding files and no rule', () => {
+    describe('When asking whether the directory holds a survivor', () => {
+      it('Then a file survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/ab/c`, BYTES);
+        await ctx.fs.write(`${ctx.layout.workDir}/ab/sub/d`, BYTES);
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await holdsSurvivor(ctx, `${ctx.layout.workDir}/ab`, realScopeOf(ctx));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a file standing where a leading directory is due under an excluded directory', () => {
+    describe('When classifying a path beneath it', () => {
+      it('Then it is clear', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'x/\n');
+        await ctx.fs.write(`${ctx.layout.workDir}/x/ab`, BYTES);
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await classify(ctx, 'x/ab/c', realScopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clear' });
+      });
+    });
+  });
+
+  describe('Given a file standing where a leading directory is due and no ignore rule', () => {
+    describe('When classifying a path beneath it', () => {
+      it('Then it is untracked at the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/x/ab`, BYTES);
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await classify(ctx, 'x/ab/c', realScopeOf(ctx));
+
+        // Assert
+        expect(result).toEqual({ kind: 'clash', clash: { class: 'untracked', path: 'x/ab' } });
       });
     });
   });

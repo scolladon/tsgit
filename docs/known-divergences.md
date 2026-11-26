@@ -95,6 +95,13 @@ A damaged object, ref, index or state file, or a file the process cannot read.
   tsgit status()               -> threw {"code":"PERMISSION_DENIED","path":"<repo>/a"}
   ```
 
+- **(isIgnored)** An unreadable `.gitignore` in a directory no rule excludes makes every ignore consumer throw where git warns and carries on — pre-existing, pinned against git 2.56.1, both `core.ignorecase` values (POSIX, not root). `ab/.gitignore` is at mode 000 and no rule excludes `ab`. git prints `warning: unable to access 'ab/.gitignore': Permission denied`, reads no rule from the file and exits 1 (not ignored). tsgit `isIgnored(ctx, [{ path: 'ab/c' }])` throws `PERMISSION_DENIED` from the bounded reader (`src/application/primitives/internal/read-capped-file.ts`); `status`, `add` and the overwrite pre-flights read through the same loader. When a rule excludes the directory the file is never opened and nothing throws (ADR-1271). Not folded: out of scope (ADR-1277: reading no rule and reporting it needs a warning surface the ignore path does not have).
+  ```
+  mkdir ab; printf x >ab/c; printf '*.log\n' >ab/.gitignore; chmod 000 ab/.gitignore
+  git check-ignore -v --no-index -- ab/c -> warning: unable to access 'ab/.gitignore': Permission denied; exit 1
+  tsgit isIgnored(ab/c)                  -> threw {"code":"PERMISSION_DENIED","path":"<repo>/ab/.gitignore"}
+  ```
+
 ## Message only
 
 Exit codes and data match git; only the wording or the named path differs.
@@ -325,6 +332,23 @@ A well-formed repository, but a configuration, layout or argument shape few call
   out/f absent: git rc=1, same advice; tsgit MV_BAD_SOURCE {"source":"out/f","destination":"in/f"}
   ```
   Not folded: adds feature behaviour.
+
+- **(isIgnored)** `isIgnored` refuses an absolute path that lies inside the work tree, where `git check-ignore` answers it — deliberate (ADR-1280), pinned against git 2.56.1, both `core.ignorecase` values. With a root `.gitignore` holding `/*`, git answers `<repo>/top.log` as `top.log` and reports `.gitignore:1:/*`. tsgit `isIgnored(ctx, [{ path: '<repo>/top.log' }])` throws `PATHSPEC_OUTSIDE_REPO` (`src/application/primitives/is-ignored.ts`, `judgedPathOf`): a `FilePath` is work-tree-relative and the library refuses a leading `/` wherever it validates one. An absolute path outside the work tree is refused by both. Before the refusal the path was matched as typed and answered "not ignored" here.
+  ```
+  git init -q repo; printf '/*\n' >repo/.gitignore
+  git -C repo check-ignore -v --no-index -- "$PWD/repo/top.log" -> .gitignore:1:/*	<repo>/top.log; exit 0
+  tsgit isIgnored(<repo>/top.log)                              -> threw {"code":"PATHSPEC_OUTSIDE_REPO","path":"<repo>/top.log"}
+  ```
+  Not folded: adds feature behaviour (answering needs the caller's spelling of the work tree resolved against the real one).
+
+- **(core.excludesFile)** A repository-local `core.excludesFile` that names a file outside the repository makes every ignore consumer (`isIgnored`, `status`, `add`) throw `PERMISSION_DENIED` where git reads the file — pre-existing, pinned against git 2.56.1, both `core.ignorecase` values. The file holds `ab/`; it sits beside the repository, or under the home directory. git reports `ab/c` ignored by that file, line 1, and exits 0. tsgit `readGlobalExcludes` (`src/application/primitives/internal/read-gitignore.ts`) reads the path through the adapter, which is rooted at the layout roots only and refuses a path lexically outside them: ADR-625 makes that refusal deliberate. A global `core.excludesFile`, the common case, is not read at all today, because typed config reads the repository's own file only (32.7). Reading the file needs the out-of-root reader 32.7 is scoped to design.
+  ```
+  mkdir -p repo/ab; git -C repo init -q; printf 'ab/\n' >global-excludes
+  git -C repo config core.excludesFile "$PWD/global-excludes"; printf x >repo/ab/c
+  git check-ignore -v --no-index -- ab/c -> <d>/global-excludes:1:ab/	ab/c; exit 0
+  tsgit isIgnored(ab/c)                  -> threw {"code":"PERMISSION_DENIED","path":"<d>/global-excludes"}
+  ```
+  Not folded: out of scope.
 
 ## Performance off the hot path
 

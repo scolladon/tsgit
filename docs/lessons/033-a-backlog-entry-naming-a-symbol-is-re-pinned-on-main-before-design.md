@@ -9,10 +9,11 @@ evidence:
   - docs/design/commit-graph-chain-strict-parse.md
   - test/integration/commit-graph-read-interop.test.ts
   - test/integration/fsck-commit-graph-interop.test.ts
+  - docs/design/is-ignored-leading-directory.md:20-40
 source: { run: commit-graph-chain-strict-parse, phase: design, date: 2026-11-10 }
 status: active
 supersedes: []
-last-verified: 2026-11-10
+last-verified: 2026-11-26
 ---
 # 033 — A backlog entry naming a symbol is re-pinned on main before any design
 
@@ -46,3 +47,8 @@ Record the corrected git behaviour in the design doc, because the backlog tick o
 
 `docs/design/commit-graph-chain-strict-parse.md` holds the git 2.56.0 table and the finding that tsgit already matched it.
 The interop suites `test/integration/commit-graph-read-interop.test.ts` and `test/integration/fsck-commit-graph-interop.test.ts` carry the rows. A loader that skips blank lines turns six of them red.
+
+Refreshed 2026-11-26: `docs/design/is-ignored-leading-directory.md:20-40` — the entry named one
+primitive and said the commands were not affected. The re-pin confirmed the primitive and refuted
+the rest: the per-path probe of every overwrite pre-flight shared the predicate, so checkout,
+merge, cherry-pick, revert, rebase and stash apply refused where git overwrites.

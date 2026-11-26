@@ -6,6 +6,7 @@
 import { type IgnoreLevel, matchInStack, parseGitignore } from '../../src/domain/ignore/index.js';
 import { FilePath } from '../../src/domain/objects/object-id.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { IGNORE_RULES_PLAIN } from './support/ignore-rules.js';
 
 const DIRECTORY_COUNT = 200;
 const FILES_PER_DIRECTORY = 100;
@@ -32,49 +33,6 @@ const ENTRIES: ReadonlyArray<Entry> = Array.from({ length: DIRECTORY_COUNT }, (_
   buildDirectoryEntries(directory),
 ).flat();
 
-const RULES_PLAIN: ReadonlyArray<string> = [
-  '*.log',
-  '*.tmp',
-  '*.swp',
-  '*.bak',
-  '*.orig',
-  '*.class',
-  '*.o',
-  '*.so',
-  '*.dll',
-  '*.exe',
-  '*.pyc',
-  '*.pyo',
-  '*.cache',
-  '*.map',
-  '*.lock',
-  'node_modules/',
-  'dist/',
-  'build/',
-  'coverage/',
-  '.env',
-  '.DS_Store',
-  'Thumbs.db',
-  '/out',
-  '/tmp',
-  '/vendor',
-  'target/',
-  'docs/_build/',
-  'pkg1*/gen/',
-  'mod1*/',
-  'file9*.md',
-  '**/generated',
-  '**/snapshots/**',
-  'src/**/*.gen.ts',
-  'pkg1/**/file1?.json',
-  'pkg2/mod2?/',
-  '*-debug.log',
-  '*~',
-  '.idea/',
-  '.vscode/',
-  'logs/**',
-];
-
 const CLASS_REPLACEMENTS: ReadonlyMap<string, string> = new Map([
   ['*.pyc', '*.py[cod]'],
   ['*.o', '*.[oa]'],
@@ -90,7 +48,7 @@ const CLASS_REPLACEMENTS: ReadonlyMap<string, string> = new Map([
   ['Thumbs.db', 'Thumbs.d[ab]'],
 ]);
 
-const RULES_CLASS: ReadonlyArray<string> = RULES_PLAIN.map(
+const RULES_CLASS: ReadonlyArray<string> = IGNORE_RULES_PLAIN.map(
   (line) => CLASS_REPLACEMENTS.get(line) ?? line,
 );
 
@@ -116,7 +74,7 @@ const ignoreMatchScenario = (given: string, lines: ReadonlyArray<string>): void 
 
 ignoreMatchScenario(
   'Given 20000 walked paths and 40 ignore rules without bracket sets',
-  RULES_PLAIN,
+  IGNORE_RULES_PLAIN,
 );
 ignoreMatchScenario('Given 20000 walked paths and 40 ignore rules with bracket sets', RULES_CLASS);
 ignoreMatchScenario(

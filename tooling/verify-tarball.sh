@@ -564,7 +564,15 @@ done
 # the stat-data keys and bounded fan-out of the racy smudge — runtime code in
 # every distribution form, none removable without dropping the behaviour. The
 # nanosecond comparators the whole-second compare replaces paid part of it back.
-SIZE_CAP=$((1554 * 1024))
+# Raised 1554 -> 1555 KiB by the leading-directory ignore rule: the measured pack
+# landed at 1 591 687 B, 391 B over the old cap, attributable to the ignore session
+# with its one outcome per directory chain, and to isIgnored parsing each query as
+# git check-ignore parses an argument (the standard excludes read first, the
+# normalized path, the empty, outside-repository and beyond-a-symbolic-link
+# refusals, the root-path rule of the matcher) — runtime code in every
+# distribution form, none removable without dropping the behaviour. The
+# evaluator's own rule cache and both ancestor walks it replaces paid part of it back.
+SIZE_CAP=$((1555 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
