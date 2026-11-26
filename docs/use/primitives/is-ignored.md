@@ -29,7 +29,10 @@ interface IsIgnoredMatch {
 - Each leading directory of a path is tested root-first, as a directory, against the rule files above it; the first one a rule excludes decides, as in git. The path is then ignored and `source` names that directory's rule, not a rule on the path itself.
 - Nothing at or beneath an excluded directory is read: a negation beneath it, or a `.gitignore` inside it, cannot re-include the path. A `.gitignore` inside an excluded directory is never opened, so one that is oversized, unreadable or a directory cannot make the call throw.
 - Rule files are read on demand: only the `.gitignore` files on the chain above the first excluded directory are opened.
-- A path whose leading directory is a symbolic link is refused, as `git check-ignore` refuses it (`pathspec '<path>' is beyond a symbolic link`): the call throws `PATHSPEC_BEYOND_SYMLINK`. Every query is checked before any is matched, so a refused call reads no rule file and returns no partial result. The link may point anywhere, inside the repository or outside it, or at nothing. A link that is the last component of the path is answered like any other path.
+- Each queried path is parsed as `git check-ignore` parses an argument. The path is normalized: `.` and empty components drop, and `..` removes the component before it. The normalized path is the one judged, so `sub/../top.log` is judged as `top.log`. `path` in the result is the path as asked.
+- A path that climbs above the repository root (`../x`, `sub/../../x`) is refused, as `git check-ignore` refuses it (`is outside repository`): the call throws `PATHSPEC_OUTSIDE_REPO`.
+- A path whose leading directory is a symbolic link is refused, as `git check-ignore` refuses it (`pathspec '<path>' is beyond a symbolic link`): the call throws `PATHSPEC_BEYOND_SYMLINK`. The link may point anywhere, inside the repository or outside it, or at nothing. A link that is the last component of the path is answered like any other path. A leading directory the file system refuses to examine is not taken for a link.
+- Every query is parsed before any is matched, after the global excludes file and `.git/info/exclude` are read and before any `.gitignore` is. A refused call reads no `.gitignore` and returns no partial result; the first refused query, in query order, decides the error.
 - A leading directory is tested as a directory whatever stands at that path on disk. The query's own `isDirectory` is still the caller's declaration.
 - `source.pattern` is the rule line as written, after git's trailing-space trim, with `!`, `/` and `\` escapes kept, as `git check-ignore -v` prints it.
 - Patterns are git's wildmatch with `WM_PATHNAME` (`[…]` sets, `\` escapes, a byte-wise `?`), and matching honours `core.ignorecase` (ASCII case folding). A pattern git cannot parse matches nothing. In `.gitattributes`, a line whose pattern starts with `!` is ignored; write a literal leading `!` as `\!`.
@@ -52,7 +55,8 @@ With `build/` in the root `.gitignore`, `build/keep.js` is ignored and `source.p
 ## Throws
 
 - `OPERATION_ABORTED` — `ctx.signal` is aborted at entry or between queries.
-- `PATHSPEC_BEYOND_SYMLINK { path }` — a leading directory of a queried path is a symbolic link. `path` is the first such query, in query order. Nothing is answered.
+- `PATHSPEC_OUTSIDE_REPO { path }` — a queried path climbs above the repository root. `path` is the query as asked. Nothing is answered.
+- `PATHSPEC_BEYOND_SYMLINK { path }` — a leading directory of a queried path is a symbolic link. `path` is the query as asked. Nothing is answered.
 
 ## See also
 
