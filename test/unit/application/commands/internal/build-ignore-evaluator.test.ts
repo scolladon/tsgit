@@ -109,15 +109,15 @@ describe('buildIgnoreEvaluator', () => {
 
         // Assert
         expect(result).toHaveLength(1);
-        expect(result[0]?.pattern).toBe('*.tmp');
-        expect(result[0]?.lineNumber).toBe(1);
+        expect(result?.[0]?.pattern).toBe('*.tmp');
+        expect(result?.[0]?.lineNumber).toBe(1);
       });
     });
   });
 
   describe('Given a directory holding no .gitignore', () => {
     describe('When loadDirRules loads it', () => {
-      it('Then it yields an empty ruleset', async () => {
+      it('Then it yields no ruleset', async () => {
         // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/kept.txt`, 'kept\n');
@@ -128,7 +128,7 @@ describe('buildIgnoreEvaluator', () => {
         const result = await sut('sub' as FilePath);
 
         // Assert
-        expect(result).toEqual([]);
+        expect(result).toBeUndefined();
       });
     });
   });

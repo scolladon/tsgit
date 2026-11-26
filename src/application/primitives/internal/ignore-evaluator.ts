@@ -15,12 +15,12 @@ export interface IgnoreEvaluator {
   /** Base levels available before the walk begins (global → info → repo-root, in order). */
   readonly base: ReadonlyArray<IgnoreLevel>;
   /**
-   * Read the ruleset of a directory's `.gitignore`; an absent file is an empty
-   * ruleset. Nothing is kept: the session asks once per directory.
+   * Read the ruleset of a directory's `.gitignore`; an absent file yields
+   * nothing. Nothing is kept: the session asks once per directory.
    * `dir === ''` is the repo root; non-root values are POSIX-relative
    * `FilePath`s (no trailing slash).
    */
-  readonly loadDirRules: (dir: FilePath | '') => Promise<IgnoreRuleset>;
+  readonly loadDirRules: (dir: FilePath | '') => Promise<IgnoreRuleset | undefined>;
 }
 
 /**
@@ -38,8 +38,8 @@ export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluato
   if (info !== undefined) base.push({ basedir: '', rules: info, kind: 'info' });
   const root = await readGitignore(ctx, '', { caseFold });
   if (root !== undefined) base.push({ basedir: '', rules: root, kind: 'gitignore' });
-  const loadDirRules = async (dir: FilePath | ''): Promise<IgnoreRuleset> =>
-    (await readGitignore(ctx, dir, { caseFold })) ?? [];
+  const loadDirRules = (dir: FilePath | ''): Promise<IgnoreRuleset | undefined> =>
+    readGitignore(ctx, dir, { caseFold });
   return { base, loadDirRules };
 };
 
@@ -60,7 +60,7 @@ interface SessionState {
 
 const pushDirRules = async (state: SessionState, directory: FilePath): Promise<void> => {
   const rules = await state.evaluator.loadDirRules(directory);
-  if (rules.length > 0) state.stack.push({ basedir: directory, rules, kind: 'gitignore' });
+  if (rules !== undefined) state.stack.push({ basedir: directory, rules, kind: 'gitignore' });
 };
 
 const resolveChain = async (
