@@ -7,7 +7,7 @@
  * directory, whose rule then decides the path. The match returns the
  * matching rule's level + index, which we surface as a
  * `source: { kind, basedir, line, pattern }` block when the verdict is
- * "ignored" (ADR-163).
+ * "ignored".
  */
 import { operationAborted } from '../../domain/error.js';
 import type { VerboseMatch } from '../../domain/ignore/matcher-stack.js';
@@ -40,7 +40,7 @@ export interface IsIgnoredMatch {
 
 const toIgnoredMatch = (path: FilePath, match: VerboseMatch): IsIgnoredMatch => {
   // Treat anything except an explicit "ignored" verdict as not ignored —
-  // `'unset'` and `'unignored'` both collapse to no `source` per ADR-163.
+  // `'unset'` and `'unignored'` both collapse to no `source`.
   // `match.level` and `match.ruleIndex` are only populated when verdict !==
   // 'unset', but we narrow on the actual values rather than the verdict so
   // a future refactor of `VerboseMatch` cannot silently break the cast path.
