@@ -8,8 +8,8 @@
  *   bucket:         platform-only
  *   unique:         an unreadable .gitignore inside an excluded directory is never opened: the excluding rule is reported and a checkout overwrites beneath it as git does
  */
-import { chmodSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmodSync, existsSync } from 'node:fs';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -42,14 +42,22 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
   'integration — an unreadable .gitignore inside an excluded directory',
   () => {
     let root: string;
-    let unreadable: string;
+    let locked: string[] = [];
+    const lock = (file: string): void => {
+      chmodSync(file, UNREADABLE);
+      locked.push(file);
+    };
+    const unlockAll = (): void => {
+      for (const file of locked) if (existsSync(file)) chmodSync(file, READABLE);
+    };
 
     beforeEach(async () => {
+      locked = [];
       root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-ignore-unreadable-')));
     });
 
     afterEach(async () => {
-      await chmod(unreadable, READABLE);
+      unlockAll();
       await rm(root, { recursive: true, force: true });
     });
 
@@ -63,9 +71,9 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
           await writeFile(path.join(repo, '.gitignore'), 'ab/\n');
           await mkdir(path.join(repo, 'ab'));
           await writeFile(path.join(repo, QUERY), '');
-          unreadable = path.join(repo, 'ab', '.gitignore');
-          await writeFile(unreadable, '!c\n');
-          chmodSync(unreadable, UNREADABLE);
+          const nested = path.join(repo, 'ab', '.gitignore');
+          await writeFile(nested, '!c\n');
+          lock(nested);
           const sut = isIgnored;
 
           // Act
@@ -103,12 +111,11 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
             await writeFile(path.join(repo, QUERY), 'mine\n');
             const nested = path.join(repo, 'ab', '.gitignore');
             await writeFile(nested, '!c\n');
-            chmodSync(nested, UNREADABLE);
+            lock(nested);
             return repo;
           };
           const peer = await buildTwin('peer');
           const ours = await buildTwin('ours');
-          unreadable = path.join(ours, 'ab', '.gitignore');
           const gitResult = tryRunGitWithExit(['-C', peer, 'checkout', 'other']);
           const repository = await openRepository({ cwd: ours });
           let error: unknown;
@@ -123,7 +130,7 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
           }
 
           // Assert
-          for (const dir of [peer, ours]) chmodSync(path.join(dir, 'ab', '.gitignore'), READABLE);
+          unlockAll();
           const branchOf = (dir: string): string =>
             git(dir, 'symbolic-ref', '--short', 'HEAD').trim();
           expect(gitResult.exitCode).toBe(0);

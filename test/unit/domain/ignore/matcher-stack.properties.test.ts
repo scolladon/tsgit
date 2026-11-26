@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { matches } from '../../../../src/domain/ignore/match.js';
 import {
   type IgnoreLevel,
+  matchBeneathChain,
   matchInStack,
   matchInStackVerbose,
+  parentDirectoryOf,
 } from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import { FilePath } from '../../../../src/domain/objects/index.js';
@@ -14,8 +16,7 @@ import {
   arbExcludedDirectoryCase,
   arbLevelsBeyondDirectory,
   arbStackWithoutExcludedLeadingDirectory,
-  judgeBeneathChain,
-  levelOf,
+  chainOver,
 } from './arbitraries.js';
 
 const arbRuleLine = fc
@@ -123,7 +124,7 @@ describe('matcher-stack properties', () => {
   });
 });
 
-describe('judgeBeneathChain properties', () => {
+describe('matchBeneathChain properties over a loaded stack', () => {
   describe('Given a path whose leading directory is excluded by a root rule', () => {
     describe('When the path is matched beneath its leading directories', () => {
       it('Then it is ignored by that rule whatever follows it', () => {
@@ -134,7 +135,13 @@ describe('judgeBeneathChain properties', () => {
         // Act + Assert
         fc.assert(
           fc.property(arbExcludedDirectoryCase(), (generated) => {
-            const result = judgeBeneathChain(generated.stack, generated.path, generated.isDir);
+            const chain = chainOver(generated.stack, parentDirectoryOf(generated.path));
+            const result = matchBeneathChain(
+              generated.stack,
+              generated.path,
+              generated.isDir,
+              chain,
+            );
             runs += 1;
             if (result.verdict === 'ignored') ignoredRuns += 1;
             expect(result.verdict).toBe('ignored');
@@ -151,8 +158,9 @@ describe('judgeBeneathChain properties', () => {
   describe('Given a stack in which no leading directory of the path is excluded', () => {
     describe('When the path is matched beneath its leading directories', () => {
       it('Then the result is the plain stack match of the full path', () => {
-        // Arrange + Act + Assert — the oracle answers ignored in 24% of runs
-        // (those are discarded; the rest exercise the full-path fallthrough).
+        // Arrange + Act + Assert — about 24% of draws are discarded (a leading
+        // directory is excluded); of the rest the oracle answers ignored in about
+        // 20% and unignored in about 20% (20 000 samples, three times).
         fc.assert(
           fc.property(arbStackWithoutExcludedLeadingDirectory(), ({ stack, path, isDir }) => {
             const prefixes = path.split('/').slice(0, -1);
@@ -167,7 +175,9 @@ describe('judgeBeneathChain properties', () => {
               ),
             );
 
-            const result = judgeBeneathChain(stack, path, isDir);
+            const chain = chainOver(stack, parentDirectoryOf(path));
+
+            const result = matchBeneathChain(stack, path, isDir, chain);
 
             expect(result).toEqual(matchInStackVerbose(stack, path, isDir));
           }),
@@ -189,76 +199,15 @@ describe('judgeBeneathChain properties', () => {
             ({ generated, levels }) => {
               const { stack, path, isDir } = generated;
 
-              const result = judgeBeneathChain([...stack, ...levels], path, isDir);
-              const expected = judgeBeneathChain(stack, path, isDir);
+              const widened = [...stack, ...levels];
+              const parent = parentDirectoryOf(path);
+
+              const result = matchBeneathChain(widened, path, isDir, chainOver(widened, parent));
+              const expected = matchBeneathChain(stack, path, isDir, chainOver(stack, parent));
 
               expect(result.verdict).toBe(expected.verdict);
               expect(result.level).toBe(stack[0]);
               expect(result.ruleIndex).toBe(expected.ruleIndex);
-            },
-          ),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
-
-  describe('Given levels ordered ancestor-before-descendant in any permutation', () => {
-    describe('When any list of paths is matched beneath its leading directories', () => {
-      const BASEDIRS = ['a', 'a/b', 'c', 'c/d'];
-      const PREFIXES = ['', ...BASEDIRS];
-      const MAX_QUERIES = 5;
-      const MAX_QUERY_SEGMENTS = 3;
-      const summarise = (stack: ReadonlyArray<IgnoreLevel>, path: FilePath, isDir: boolean) => {
-        const result = judgeBeneathChain(stack, path, isDir);
-        return {
-          verdict: result.verdict,
-          ruleIndex: result.ruleIndex,
-          basedir: result.level?.basedir,
-        };
-      };
-      const depthOf = (basedir: string): number => basedir.split('/').length;
-
-      it('Then the sibling order of levels does not change any answer', () => {
-        // Arrange + Act + Assert
-        fc.assert(
-          fc.property(
-            arbRuleLines,
-            fc.tuple(arbRuleLines, arbRuleLines, arbRuleLines, arbRuleLines),
-            fc.shuffledSubarray([0, 1, 2, 3], { minLength: 4, maxLength: 4 }),
-            fc
-              .array(
-                fc.tuple(
-                  fc.constantFrom(...PREFIXES),
-                  fc.array(arbLiteralPattern(), { minLength: 1, maxLength: MAX_QUERY_SEGMENTS }),
-                  fc.boolean(),
-                ),
-                { minLength: 1, maxLength: MAX_QUERIES },
-              )
-              .chain((queries) =>
-                fc.shuffledSubarray(queries, {
-                  minLength: queries.length,
-                  maxLength: queries.length,
-                }),
-              ),
-            (rootRules, perLevel, order, queries) => {
-              const levels = BASEDIRS.map((basedir, index) =>
-                levelOf(basedir, perLevel[index] as string[]),
-              );
-              const base = [levelOf('', rootRules), ...levels];
-              const permuted = [
-                levelOf('', rootRules),
-                ...order
-                  .map((index) => levels[index] as IgnoreLevel)
-                  .sort((left, right) => depthOf(left.basedir) - depthOf(right.basedir)),
-              ];
-
-              for (const [prefix, segments, isDir] of queries) {
-                const path = [prefix, ...segments]
-                  .filter((part) => part !== '')
-                  .join('/') as FilePath;
-                expect(summarise(permuted, path, isDir)).toEqual(summarise(base, path, isDir));
-              }
             },
           ),
           { numRuns: 100 },

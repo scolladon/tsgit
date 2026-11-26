@@ -208,6 +208,11 @@ const oversizedNestedRuleFile = (dir: string): void => {
   put(dir, 'ab/.gitignore', '#'.repeat(MAX_GITIGNORE_BYTES + 1));
 };
 
+const directoryAtNestedRuleFile = (dir: string): void => {
+  layAddedFile(dir);
+  mkdirSync(path.join(dir, 'ab', '.gitignore'));
+};
+
 const TRACKED = 'tracked\n';
 
 const trackedBelowDirectory = (dir: string, ignorecase: string, rules: string): void => {
@@ -378,6 +383,13 @@ const groupsFor = (ic: string): ReadonlyArray<Group> => [
     rules: [DIRECTORY_RULE],
     build: addedFile(false)(ic),
     lay: oversizedNestedRuleFile,
+    command: CHECKOUT_OTHER,
+  },
+  {
+    title: 'checkout with a directory standing at the rule file inside the excluded directory',
+    rules: [DIRECTORY_RULE],
+    build: addedFile(false)(ic),
+    lay: directoryAtNestedRuleFile,
     command: CHECKOUT_OTHER,
   },
   {

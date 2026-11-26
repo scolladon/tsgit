@@ -3,7 +3,6 @@ import fc from 'fast-check';
 import {
   chainExclusion,
   type IgnoreLevel,
-  matchBeneathChain,
   parentDirectoryOf,
   type VerboseMatch,
 } from '../../../../src/domain/ignore/matcher-stack.js';
@@ -192,7 +191,10 @@ export const arbStackWithoutExcludedLeadingDirectory = (): fc.Arbitrary<StackCas
       isDir,
     }));
 
-/** The first excluded directory on `directory`'s chain over a fully loaded stack. */
+/**
+ * Fixture: the chain a session would hand over for `directory` once every level is loaded —
+ * `chainExclusion` folded over its leading directories, root-first.
+ */
 export const chainOver = (
   stack: ReadonlyArray<IgnoreLevel>,
   directory: FilePath | '',
@@ -200,10 +202,3 @@ export const chainOver = (
   directory === ''
     ? undefined
     : chainExclusion(stack, directory, chainOver(stack, parentDirectoryOf(directory)));
-
-/** The whole leading-directory rule over a fully loaded stack. */
-export const judgeBeneathChain = (
-  stack: ReadonlyArray<IgnoreLevel>,
-  path: FilePath,
-  isDir: boolean,
-): VerboseMatch => matchBeneathChain(stack, path, isDir, chainOver(stack, parentDirectoryOf(path)));

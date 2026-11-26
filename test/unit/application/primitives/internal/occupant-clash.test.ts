@@ -937,8 +937,10 @@ describe('classifyOccupant beneath a directory the rules exclude', () => {
         expect(result).toEqual({ kind: 'clear' });
       });
     });
+  });
 
-    describe('When no rule excludes the directory above it', () => {
+  describe('Given a file standing where a leading directory is due and no ignore rule', () => {
+    describe('When classifying a path beneath it', () => {
       it('Then it is untracked at the file', async () => {
         // Arrange
         const ctx = createMemoryContext();

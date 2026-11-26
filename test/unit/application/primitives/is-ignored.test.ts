@@ -808,4 +808,56 @@ describe('isIgnored', () => {
       });
     });
   });
+
+  describe('Given rule files at three depths and paths each decided by a different one', () => {
+    const RULE_FILES = {
+      '.gitignore': 'ab/\n*.log\n',
+      'a/.gitignore': '!keep.log\nb/\n',
+      'a/c/.gitignore': '*.tmp\n',
+    } as const;
+    const rule = (basedir: string, line: number, pattern: string) => ({
+      ignored: true,
+      source: { kind: 'gitignore', basedir, line, pattern },
+    });
+    const NOT_IGNORED = { ignored: false };
+    const ANSWERS = [
+      { path: 'ab/c', answer: rule('', 1, 'ab/') },
+      { path: 'a/x.log', answer: rule('', 2, '*.log') },
+      { path: 'a/keep.log', answer: NOT_IGNORED },
+      { path: 'a/b/c', answer: rule('a', 2, 'b/') },
+      { path: 'a/c/t.tmp', answer: rule('a/c', 1, '*.tmp') },
+      { path: 'top.log', answer: rule('', 2, '*.log') },
+      { path: 'a/c/keep.log', answer: NOT_IGNORED },
+    ] as const;
+    const ORDERS = [
+      [0, 1, 2, 3, 4, 5, 6],
+      [6, 5, 4, 3, 2, 1, 0],
+      [3, 0, 6, 2, 5, 1, 4],
+      [4, 2, 0, 5, 3, 6, 1],
+    ] as const;
+
+    describe.each(ORDERS.map((order) => [order.join(' '), order] as const))(
+      'When isIgnored answers them in the order %s',
+      (_title, order) => {
+        it('Then every path gets its own answer whatever was asked before it', async () => {
+          // Arrange
+          const ctx = await seedRepo();
+          for (const [name, content] of Object.entries(RULE_FILES)) {
+            await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, content);
+          }
+          const asked = order.map((index) => ANSWERS[index]);
+          const sut = isIgnored;
+
+          // Act
+          const result = await sut(
+            ctx,
+            asked.map((entry) => ({ path: path(entry.path) })),
+          );
+
+          // Assert
+          expect(result).toEqual(asked.map((entry) => ({ path: entry.path, ...entry.answer })));
+        });
+      },
+    );
+  });
 });

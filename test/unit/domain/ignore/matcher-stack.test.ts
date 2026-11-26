@@ -10,7 +10,7 @@ import {
 } from '../../../../src/domain/ignore/matcher-stack.js';
 import { parseGitignore } from '../../../../src/domain/ignore/parse-gitignore.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
-import { judgeBeneathChain } from './arbitraries.js';
+import { chainOver } from './arbitraries.js';
 
 const level = (basedir: '' | string, source: string): IgnoreLevel => ({
   basedir: basedir as IgnoreLevel['basedir'],
@@ -469,7 +469,7 @@ describe('matchBeneathChain', () => {
   });
 });
 
-describe('the whole leading-directory rule over a loaded stack', () => {
+describe('matchBeneathChain over the chain of a loaded stack', () => {
   const ROOT = 0;
   const SECOND = 1;
   const rootOnly = (source: string): ReadonlyArray<IgnoreLevel> => [level('', source)];
@@ -644,10 +644,11 @@ describe('the whole leading-directory rule over a loaded stack', () => {
     describe('When the path is judged beneath its leading directories', () => {
       it('Then the verdict, level and rule are those of the deciding match', () => {
         // Arrange
-        const sut = judgeBeneathChain;
+        const chain = chainOver(stack, parentDirectoryOf(path(query)));
+        const sut = matchBeneathChain;
 
         // Act
-        const result = sut(stack, path(query), isDir);
+        const result = sut(stack, path(query), isDir, chain);
 
         // Assert
         expect(result.verdict).toBe(verdict);
