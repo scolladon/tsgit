@@ -21,7 +21,7 @@ import type { FilePath } from '../../src/domain/objects/object-id.js';
 import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const OVERSIZED_GITIGNORE = 'x'.repeat((1 << 20) + 1);
-// One byte over the size at which git itself gives up on a rule file.
+// A size at which git itself refuses a rule file.
 const OVERSIZED_FOR_GIT_BYTES = 100 * 1024 * 1024 + 1;
 const NEGATION = '!';
 const GITIGNORE_FIELDS = 4;
@@ -329,6 +329,16 @@ const writeSpellingRepo = async (root: string, ignoreCase: string): Promise<stri
   return repo;
 };
 
+/** Spellings of the work tree itself, then one path at its root. */
+const ROOT_SPELLINGS = ['.', 'sub/..', 'sub/../', 'top.log'] as const;
+const ROOT_RULES = [
+  { rule: '/*', gitIgnores: 1 },
+  { rule: '*', gitIgnores: ROOT_SPELLINGS.length },
+] as const;
+
+const writeRootRuleRepo = (root: string, ignoreCase: string, rule: string): Promise<string> =>
+  writeRepo(root, ignoreCase, row('root rule', { '.gitignore': `${rule}\n`, 'sub/keep': '' }, ''));
+
 const EXCLUDE_FILES_GIT_READS_FIRST = [
   { title: '.git/info/exclude', isConfigured: false },
   { title: 'the core.excludesFile file', isConfigured: true },
@@ -472,6 +482,57 @@ describe.skipIf(!GIT_AVAILABLE)('integration — isIgnored beneath an excluded d
         },
       );
     });
+
+    describe('When isIgnored is asked about an empty path', () => {
+      it.each([[['']], [['link/secret', '']], [['../x', '']]])(
+        'Then of %j the empty path refuses the call, as in git check-ignore',
+        async (queries) => {
+          // Arrange
+          const repo = await writeSpellingRepo(root, ignoreCase);
+
+          // Act
+          const result = await tsgitRefusal(repo, ...queries);
+
+          // Assert
+          const refusal = gitRefusal(repo, ...queries);
+          expect(refusal.exitCode).toBe(128);
+          expect(refusal.stderr).toContain('empty string is not a valid pathspec');
+          expect(result).toEqual({ code: 'EMPTY_PATHSPEC' });
+        },
+      );
+    });
+
+    describe.each(ROOT_RULES)(
+      'When the root .gitignore holds $rule and the path names the work tree itself or a path at its root',
+      ({ rule, gitIgnores }) => {
+        it.each(ROOT_SPELLINGS)(
+          'Then %s is answered as git check-ignore answers',
+          async (query) => {
+            // Arrange
+            const repo = await writeRootRuleRepo(root, ignoreCase, rule);
+            const sut = tsgitVerdict;
+
+            // Act
+            const result = await sut(repo, query, path.join(repo, '.git', EXCLUDES_FILE_NAME));
+
+            // Assert
+            expect(result).toEqual(gitVerdict(repo, query));
+          },
+        );
+
+        it('Then git itself ignores as many of those spellings as the rule can name', async () => {
+          // Arrange
+          const repo = await writeRootRuleRepo(root, ignoreCase, rule);
+          const sut = gitVerdict;
+
+          // Act
+          const result = ROOT_SPELLINGS.filter((query) => sut(repo, query).ignored);
+
+          // Assert
+          expect(result).toHaveLength(gitIgnores);
+        });
+      },
+    );
 
     describe('When a rule file is too large and the queried path lies beyond a symbolic link', () => {
       it.each(EXCLUDE_FILES_GIT_READS_FIRST)(

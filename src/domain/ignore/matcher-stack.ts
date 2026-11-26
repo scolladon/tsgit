@@ -65,6 +65,19 @@ export const matchInStackVerbose = (
   stack: ReadonlyArray<IgnoreLevel>,
   path: FilePath,
   isDir: boolean,
+): VerboseMatch => lastDecidingLevel(path === '' ? stack.map(basenameRulesOf) : stack, path, isDir);
+
+// git matches a rule holding a slash only against a path beneath its file's directory. The
+// empty path is beneath none, so only the rules matched by basename can name it.
+const basenameRulesOf = (level: IgnoreLevel): IgnoreLevel => ({
+  ...level,
+  rules: level.rules.filter((rule) => !rule.anchored),
+});
+
+const lastDecidingLevel = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
 ): VerboseMatch => {
   let result: VerboseMatch = { verdict: 'unset' };
   for (const level of stack) {

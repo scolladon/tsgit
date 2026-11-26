@@ -1064,7 +1064,7 @@ describe('isIgnored', () => {
       });
     });
 
-    describe.each([['../out/secret'], ['sub/../../x'], ['..']])(
+    describe.each([['../out/secret'], ['sub/../../x'], ['..'], ['/top.log'], ['/sub/x.log']])(
       'When isIgnored is asked about %s',
       (query) => {
         it('Then it refuses the path as one outside the repository', async () => {
@@ -1076,6 +1076,37 @@ describe('isIgnored', () => {
 
           // Assert
           expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: query });
+        });
+      },
+    );
+
+    describe('When isIgnored is asked about an absolute path inside the work tree', () => {
+      it('Then it refuses the path as one outside the repository', async () => {
+        // Arrange
+        const ctx = await seedSpellings();
+        const query = `${ctx.layout.workDir}/top.log`;
+        const sut = refusalOf;
+
+        // Act
+        const result = await sut([query]);
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: query });
+      });
+    });
+
+    describe.each([[['']], [['top.log', '']], [['link/secret', '']], [['../x', '']]] as const)(
+      'When isIgnored is asked about %j',
+      (queries) => {
+        it('Then the empty path refuses the call before any other query is looked at', async () => {
+          // Arrange
+          const sut = refusalOf;
+
+          // Act
+          const result = await sut(queries);
+
+          // Assert
+          expect(result).toEqual({ code: 'EMPTY_PATHSPEC' });
         });
       },
     );
@@ -1093,6 +1124,55 @@ describe('isIgnored', () => {
 
         // Assert
         expect(result).toEqual(refusal);
+      });
+    });
+  });
+
+  describe.each([
+    ['/*', false, { ignored: false }],
+    [
+      '*',
+      true,
+      { ignored: true, source: { kind: 'gitignore', basedir: '', line: 1, pattern: '*' } },
+    ],
+  ] as const)('Given a root .gitignore holding %s', (rule, isBasenameRule, rootAnswer) => {
+    describe.each([['.'], ['sub/..'], ['sub/../']])(
+      'When isIgnored is asked about %s, which names the work tree itself',
+      (query) => {
+        it(`Then it is ${isBasenameRule ? 'ignored: a rule without a slash names it' : 'not ignored: a rule holding a slash cannot name it'}`, async () => {
+          // Arrange
+          const ctx = await seedRepo();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, `${rule}\n`);
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/keep`, '');
+          const sut = isIgnored;
+
+          // Act
+          const result = await sut(ctx, [{ path: path(query), isDirectory: true }]);
+
+          // Assert
+          expect(result).toEqual([{ path: query, ...rootAnswer }]);
+        });
+      },
+    );
+
+    describe('When isIgnored is asked about a path at the root', () => {
+      it('Then the rule ignores it', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, `${rule}\n`);
+        const sut = isIgnored;
+
+        // Act
+        const result = await sut(ctx, [{ path: path('top.log') }]);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: 'top.log',
+            ignored: true,
+            source: { kind: 'gitignore', basedir: '', line: 1, pattern: rule },
+          },
+        ]);
       });
     });
   });

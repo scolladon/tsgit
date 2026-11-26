@@ -11,11 +11,16 @@
  *
  * Each query is parsed as git parses a `check-ignore` argument, after the
  * global excludes and `info/exclude` are read and before any `.gitignore`
- * is: the path is normalized (`.`, `..` and doubled separators), one that
- * leaves the repository or lies beyond a symbolic link refuses the call, and
- * the normalized path is the one judged. The result names the path as asked.
+ * is: an empty path refuses the call, the path is normalized (`.`, `..` and
+ * doubled separators), one that leaves the repository or lies beyond a
+ * symbolic link refuses the call, and the normalized path is the one judged.
+ * The result names the path as asked.
  */
-import { pathspecBeyondSymlink, pathspecOutsideRepo } from '../../domain/commands/error.js';
+import {
+  emptyPathspec,
+  pathspecBeyondSymlink,
+  pathspecOutsideRepo,
+} from '../../domain/commands/error.js';
 import { operationAborted } from '../../domain/error.js';
 import type { VerboseMatch } from '../../domain/ignore/matcher-stack.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
@@ -78,6 +83,8 @@ const toIgnoredMatch = (path: FilePath, match: VerboseMatch): IsIgnoredMatch => 
   };
 };
 
+const SEPARATOR = '/';
+
 /** A query with the normalized path git judges in its place. */
 interface ParsedQuery {
   readonly query: IsIgnoredQuery;
@@ -97,22 +104,29 @@ const liesBeyondSymlink = async (
   }
 };
 
+// A path is judged relative to the work tree: an absolute one is outside it, like one that
+// climbs above the root.
+const judgedPathOf = (path: FilePath): FilePath | undefined =>
+  path.startsWith(SEPARATOR) ? undefined : (normalizePathCopy(path) as FilePath | undefined);
+
 const parseQuery = async (
   scanner: LeadingPathScanner,
   query: IsIgnoredQuery,
 ): Promise<ParsedQuery> => {
-  const judged = normalizePathCopy(query.path) as FilePath | undefined;
+  const judged = judgedPathOf(query.path);
   if (judged === undefined) throw pathspecOutsideRepo(query.path);
   if (await liesBeyondSymlink(scanner, judged)) throw pathspecBeyondSymlink(query.path);
   return { query, judged };
 };
 
-// git parses every argument before it matches any: the first one it refuses, refuses the call.
+// git parses every argument before it matches any: an empty one refuses the call before the
+// others are looked at, then the first one it refuses does.
 const parseQueries = async (
   ctx: Context,
   queries: ReadonlyArray<IsIgnoredQuery>,
 ): Promise<ReadonlyArray<ParsedQuery>> => {
   const scanner = createLeadingPathScanner(ctx);
+  if (queries.some((query) => query.path === '')) throw emptyPathspec();
   const parsed: ParsedQuery[] = [];
   for (const query of queries) parsed.push(await parseQuery(scanner, query));
   return parsed;

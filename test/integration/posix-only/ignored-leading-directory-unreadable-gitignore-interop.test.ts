@@ -2,7 +2,8 @@
  * POSIX-only interop — a .gitignore inside an excluded directory that cannot be read (mode 000).
  * git never opens it, so `git check-ignore -v` still reports the excluding rule; `isIgnored`
  * must report the same without failing. The same holds when the excluded directory itself
- * cannot be read: nothing beneath it is examined.
+ * cannot be read: nothing beneath it is examined. An absolute path outside the repository is
+ * refused by both.
  *
  * @proves
  *   surface:        isIgnored, repo.checkout
@@ -16,6 +17,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../../src/adapters/node/node-adapter.js';
 import { isIgnored } from '../../../src/application/primitives/is-ignored.js';
+import type { TsgitError } from '../../../src/domain/error.js';
 import type { FilePath } from '../../../src/domain/objects/object-id.js';
 import { openRepository } from '../../../src/index.node.js';
 import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from '../interop-helpers.js';
@@ -28,6 +30,7 @@ const TRAVERSABLE = 0o755;
 const GITIGNORE_FIELDS = 4;
 const QUERY = 'ab/c';
 const QUERY_BENEATH_LOCKED_DIRECTORY = 'locked/sub/x';
+const ABSOLUTE_QUERY_OUTSIDE = '/top.log';
 
 const gitVerbose = (repo: string, query: string = QUERY): string => {
   const { stdout, stderr, exitCode } = tryRunGitWithExit(
@@ -116,6 +119,45 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
           expect(`.gitignore:${source?.line}:${source?.pattern}`).toBe(
             gitVerbose(repo, QUERY_BENEATH_LOCKED_DIRECTORY),
           );
+        });
+      });
+
+      describe('When isIgnored is asked about an absolute path outside the repository', () => {
+        it('Then it refuses the path as git check-ignore does', async () => {
+          // Arrange
+          const repo = path.join(root, 'repo');
+          runGit(['init', '-q', '-b', 'main', repo]);
+          git(repo, 'config', 'core.ignorecase', ignoreCase);
+          await writeFile(path.join(repo, '.gitignore'), '*.log\n');
+          const sut = isIgnored;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(createNodeContext({ workDir: repo }), [
+              { path: ABSOLUTE_QUERY_OUTSIDE as FilePath },
+            ]);
+            expect.unreachable('isIgnored did not refuse');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const refusal = tryRunGitWithExit([
+            '-C',
+            repo,
+            'check-ignore',
+            '-v',
+            '--no-index',
+            '--',
+            ABSOLUTE_QUERY_OUTSIDE,
+          ]);
+          expect(refusal.exitCode).toBe(128);
+          expect(refusal.stderr).toContain(`'${ABSOLUTE_QUERY_OUTSIDE}' is outside repository`);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'PATHSPEC_OUTSIDE_REPO',
+            path: ABSOLUTE_QUERY_OUTSIDE,
+          });
         });
       });
 

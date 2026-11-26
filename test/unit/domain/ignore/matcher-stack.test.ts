@@ -26,6 +26,13 @@ const kindLevel = (kind: NonNullable<IgnoreLevel['kind']>, source: string): Igno
   kind,
 });
 const path = (s: string): FilePath => s as FilePath;
+/** What a verbose match reports of its deciding rule when nothing matched. */
+const UNSET_FIELDS = {
+  kind: undefined,
+  basedir: undefined,
+  line: undefined,
+  pattern: undefined,
+};
 
 describe('matchInStack', () => {
   describe('Given a stack of ignore levels, a path, and an isDir flag', () => {
@@ -217,6 +224,100 @@ describe('matchInStackVerbose', () => {
         // Assert
         expect(result.verdict).toBe('ignored');
         expect(result.level?.kind).toBe('info');
+      });
+    });
+  });
+
+  describe('Given the empty path, which is beneath no rule file', () => {
+    const decidingRule = (stack: ReadonlyArray<IgnoreLevel>, isDir: boolean) => {
+      const sut = matchInStackVerbose;
+      const result = sut(stack, path(''), isDir);
+      const rule = result.level?.rules[result.ruleIndex ?? Number.NaN];
+      return {
+        verdict: result.verdict,
+        kind: result.level?.kind,
+        basedir: result.level?.basedir,
+        line: rule?.lineNumber,
+        pattern: rule?.pattern,
+      };
+    };
+    const UNSET = { verdict: 'unset' };
+
+    describe.each([
+      {
+        label: 'a rule holding a slash does not match it',
+        stack: [kindLevel('gitignore', '/*\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a directory-only rule holding a slash does not match it',
+        stack: [kindLevel('gitignore', '/*/\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a rule matched by basename matches it',
+        stack: [kindLevel('gitignore', '*\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'a later rule holding a slash does not override a basename rule',
+        stack: [kindLevel('gitignore', '*\n/*\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'a later negation holding a slash does not re-include it',
+        stack: [kindLevel('gitignore', '*\n!/*\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
+        label: 'the deciding rule keeps its own line after a rule holding a slash',
+        stack: [kindLevel('info', '/x\n*\n')],
+        expected: { verdict: 'ignored', kind: 'info', basedir: '', line: 2, pattern: '*' },
+      },
+      {
+        label: 'a later level decides over an earlier one',
+        stack: [kindLevel('global', '*\n'), kindLevel('gitignore', '/*\n!*\n')],
+        expected: { verdict: 'unignored', kind: 'gitignore', basedir: '', line: 2, pattern: '!*' },
+      },
+    ])('When matched against $stack.length level(s)', ({ label, stack, expected }) => {
+      it(`Then ${label}`, () => {
+        // Arrange
+        const sut = decidingRule;
+
+        // Act
+        const result = sut(stack, true);
+
+        // Assert
+        expect(result).toEqual({ ...UNSET_FIELDS, ...expected });
+      });
+    });
+
+    describe('When matched through the plain verdict', () => {
+      it('Then a rule holding a slash leaves it unset', () => {
+        // Arrange
+        const sut = matchInStack;
+
+        // Act
+        const result = sut([level('', '/*\n')], path(''), true);
+
+        // Assert
+        expect(result).toBe('unset');
+      });
+    });
+  });
+
+  describe('Given a path ending at the directory of a nested rule file', () => {
+    describe('When matched', () => {
+      it('Then a rule holding a slash in that file still matches it', () => {
+        // Arrange
+        const nested = level('a', '/*\n');
+        const sut = matchInStackVerbose;
+
+        // Act
+        const result = sut([nested], path('a/'), true);
+
+        // Assert
+        expect(result).toEqual({ verdict: 'ignored', level: nested, ruleIndex: 0 });
       });
     });
   });

@@ -187,6 +187,37 @@ describe('matchBeneathChain properties over a loaded stack', () => {
     });
   });
 
+  describe('Given root rules that match by basename or hold a slash, and the empty path', () => {
+    describe('When matched', () => {
+      it('Then the verdict is the one the rules without a slash give', () => {
+        // Arrange
+        const arbRootRule = fc.constantFrom('*', '/*', '!*', '!/*', '**', '/**', 'a', '/a', '*/');
+        const arbRootRules = fc.array(arbRootRule, { minLength: 0, maxLength: 5 });
+        let decidedRuns = 0;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbRootRules, fc.boolean(), (lines, isDir) => {
+            const basenameLines = lines.filter((line) => !line.replace(/\/$/, '').includes('/'));
+            const stack = [{ basedir: '', rules: parseGitignore(lines.join('\n')) }] as const;
+
+            const result = matchInStackVerbose(stack, '' as FilePath, isDir);
+            const expected = matches(
+              parseGitignore(basenameLines.join('\n')),
+              '' as FilePath,
+              isDir,
+            );
+
+            if (result.verdict !== 'unset') decidedRuns += 1;
+            expect(result.verdict).toBe(expected);
+          }),
+          { numRuns: 100 },
+        );
+        expect(decidedRuns).toBeGreaterThan(0);
+      });
+    });
+  });
+
   describe('Given an excluded leading directory and levels beneath it or unrelated to it', () => {
     describe('When the path is matched beneath its leading directories', () => {
       it('Then those levels never change the answer', () => {
