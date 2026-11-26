@@ -554,6 +554,16 @@ The caps sit within about 100 B of the measurement.
 The caps are raised once, after review, on a clean build (`rm -rf dist .wireit`), in a
 `chore(size)` commit.
 
+Measured after review, on a clean build:
+
+| row | measured | cap before | cap after |
+|---|---|---|---|
+| Full library | 434.56 kB | 434.5 kB | 434.6 kB |
+| Chunks: domain | 130 803 B | 130.8 kB | 130.9 kB |
+
+Every other row stays under its cap. The packed tarball is 1 590 956 B, under its 1554 KiB
+cap, which does not move.
+
 ### 9. Docs to update (documentation phase)
 
 - `docs/use/primitives/is-ignored.md` Behaviour:
@@ -699,6 +709,35 @@ of 1.32 and 2.02: the session answering a walk costs at most 1.7 times the floor
 
 The landed session against main's predicate, in the one-process comparison above: 0.92 to 0.93
 times main two levels deep, 0.73 to 0.74 times main five levels deep, two runs, same counts.
+
+### 11. What review changed
+
+Four dimensions, one round, then one fix-delta cycle for the tests dimension. No verdict of
+any matrix moved.
+
+- **The chain is settled in a loop.** The session of §10 resolved a directory's chain by
+  recursion on its leading directories, one frame per segment before anything was evaluated.
+  `isIgnored` on a path of 20 000 directories threw `RangeError: Maximum call stack size
+  exceeded`, where main raised the typed `PATH_TOO_LONG` and git answers at once when a root
+  rule excludes the first segment. `settleChain` now walks up to the nearest directory whose
+  chain is known, then settles the missing ones root-first, storing each promise as it is
+  created; `resolveChain` takes the chain above as an argument. A walk never met the recursion:
+  it asks top-down, so each chain found its parent settled.
+- **One memo, not two.** `buildIgnoreEvaluator` kept a per-directory rule cache. The session is
+  its only caller and asks once per directory, so the cache could not hit; `loadDirRules` is now
+  a plain read.
+- **Order independence is pinned at the session.** The fourth property (levels permuted,
+  ancestor before descendant) compared stacks that differ only in the order of unrelated
+  directories, through a pure function, and 1 % of its queries got a verdict other than
+  `unset`: it could not fail. It is removed. Four batch orders over seven paths, with literal
+  answers, pin R5 where the memo lives.
+- **The second property's rates** (20 000 samples, three times): about 24 % of draws are
+  discarded because a leading directory is excluded; of the rest the oracle answers `ignored`
+  in about 20 % and `unignored` in about 20 %.
+- **A pin was missing.** Matrix E row X3 now has its checkout row.
+- **Known equivalents, left unmarked.** `rules.length > 0` forced true, and `>` turned into
+  `>=`, only push an empty level, which matches nothing. Each shares its line with a killed
+  mutant, so the line carries no suppression.
 
 ## Decision candidates
 
