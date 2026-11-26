@@ -766,6 +766,49 @@ changed ranges of the three source files.
   type-checks. A `.gitignore` that exists and holds no rule pushes an empty level, as the
   root file already did.
 
+### 13. What impact triage folded (ADR-1279)
+
+Three observations were deferred with proofs and re-verified by the triage against git 2.56.1,
+on the branch and on main, both `core.ignorecase` values. Two are below the filing bar and are
+rows of `docs/known-divergences.md`: an unreadable `.gitignore` in a directory no rule excludes
+(ADR-1277), and a `core.excludesFile` outside the repository (the lexical read posture of
+ADR-625). The third is folded here.
+
+**The row.** `link` is a symbolic link to a directory that holds `.gitignore`: `secret`.
+
+| query | git 2.56.1 `check-ignore -v [--no-index]` | tsgit before the fold |
+|---|---|---|
+| `link/secret`, link to a directory outside the repository | exit 128, `pathspec 'link/secret' is beyond a symbolic link` | ignored, `source` basedir `link` |
+| `link/secret`, link to a directory inside the repository | exit 128, the same message | ignored |
+| `link` itself | answered (a link is a leaf like any other) | answered |
+
+**git's rule, from the source (v2.56.1).** `builtin/check-ignore.c:92-97` parses the arguments
+with `PATHSPEC_SYMLINK_LEADING_PATH`. `pathspec.c:660-663` dies with that message when
+`has_symlink_leading_path` holds for an argument. `symlinks.c:210-218`: it holds when a leading
+component is a symbolic link, by `lstat` only; the last component is not looked at, and a
+component that cannot be `lstat`ed ends the scan as "not a link". All arguments are parsed
+before any is matched, so the refusal comes before any rule file is read. The check is in
+`check-ignore`'s argument parsing, not in `is_excluded`: the walk and the overwrite pre-flights
+do not get it.
+
+**The fold.** In `isIgnored`, after the abort check and the empty-list return and before the
+session is created: one leading-path scanner for the call (`createLeadingPathScanner`, the one
+behind `add`'s `PATHSPEC_BEYOND_SYMLINK`), every query tested through `beyondSymlink` in query
+order, and `pathspecBeyondSymlink(query.path)` thrown for the first hit. No rule file is read
+for a refused call. Nothing else changes: the session, the predicate and the probe are
+untouched.
+
+**Breaking.** A call that returned a verdict now throws. D-3 marks the change `!`; §7's "no
+returning call starts throwing" held until this fold and no longer does. The signature and the
+result type are unchanged, and `PATHSPEC_BEYOND_SYMLINK` already exists.
+
+**Tests.** Unit (memory adapter): a link to a directory outside the work tree, a link to a
+directory inside it, a dangling link, a link two levels up the path, a link as the last
+component (answered), a refused query after an answerable one (nothing is answered, the error
+names the refused path), and the error's `.data` (`code`, `path`). Interop, both
+`core.ignorecase` values, git's exit code and message as the expectation: the outside link, the
+inside link, a link with no `.gitignore` behind it, and the link queried as itself.
+
 ## Decision candidates
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
