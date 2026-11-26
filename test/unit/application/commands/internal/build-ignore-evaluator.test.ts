@@ -5,6 +5,7 @@ import {
   buildRepoIgnorePredicate,
 } from '../../../../../src/application/commands/internal/build-ignore-evaluator.js';
 import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
+import { MAX_GITIGNORE_BYTES } from '../../../../../src/application/primitives/types.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 
 afterEach(() => __resetConfigCacheForTests());
@@ -342,6 +343,106 @@ describe('buildRepoIgnorePredicate', () => {
         expect(nested).toHaveLength(1);
         expect(nested[0]?.endsWith('/a/.gitignore')).toBe(true);
         expect(lstatGitignorePaths.some((p) => p.includes('foo.txt'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a rule excluding the directory holding the path', () => {
+    describe('When called for a file beneath the directory with root `ab`', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When called for a file beneath the directory with root `ab/`', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When called for a file beneath the directory with root `ab/` and a negation of the file', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n!ab/c\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When called for a file beneath the directory with root `ab/` and a nested negation', () => {
+      it('Then returns true', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ab/.gitignore`, '!c\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the nested rule file beneath the directory is oversized', () => {
+      it('Then returns true without reading it', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/ab/.gitignore`,
+          new Uint8Array(MAX_GITIGNORE_BYTES + 1).fill(0x23),
+        );
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const result = await sut('ab/c' as FilePath, false);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the file is asked before its directory with a nested negation', () => {
+      it('Then both are ignored', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ab/.gitignore`, '!c\n');
+        const sut = await buildRepoIgnorePredicate(ctx);
+
+        // Act
+        const file = await sut('ab/c' as FilePath, false);
+        const directory = await sut('ab' as FilePath, true);
+
+        // Assert
+        expect(file).toBe(true);
+        expect(directory).toBe(true);
       });
     });
   });
