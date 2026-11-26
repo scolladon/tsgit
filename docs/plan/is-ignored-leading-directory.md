@@ -939,6 +939,98 @@ Mutation hot spots this part owns and the rows that kill them:
 
 `perf(ignore): keep one outcome per directory chain in the ignore session`
 
+## Part 6 — isIgnored refuses a path beyond a symbolic link (ADR-1279, D-5, D-3)
+
+Added after impact triage: a proven refusal mismatch in the function this change rewrote
+(design §13). This part adds behaviour: a call that returned now throws.
+
+### Context
+
+Files this part edits:
+- `src/application/primitives/is-ignored.ts`
+- `test/unit/application/primitives/is-ignored.test.ts`
+- `test/integration/is-ignored-leading-directory-interop.test.ts`
+
+is-ignored.ts today: `isIgnored(ctx, queries)` checks `ctx.signal?.aborted`, returns `[]` for
+an empty list, then `const session = await createIgnoreSession(ctx)` and, per query, an abort
+check, `session.match(query.path, query.isDirectory === true)` and `toIgnoredMatch`. Add,
+between the empty-list return and the session, a refusal of every query beyond a symbolic link:
+
+```ts
+// git parses every argument before it matches any: the first one beyond a symbolic link refuses the call.
+const refuseBeyondSymlink = async (ctx: Context, queries: ReadonlyArray<IsIgnoredQuery>): Promise<void> => {
+  const scanner = createLeadingPathScanner(ctx);
+  for (const query of queries) {
+    if (await beyondSymlink(scanner, query.path)) throw pathspecBeyondSymlink(query.path);
+  }
+};
+```
+
+called as `await refuseBeyondSymlink(ctx, queries);`. Imports, all existing:
+`createLeadingPathScanner` and `beyondSymlink` from ./internal/symlinked-leading-path.js
+(`beyondSymlink(scanner, target): Promise<boolean>` wraps `scanner.hasSymlinkedLeadingPath` and
+reads a path the file system cannot name as "not a link"); `pathspecBeyondSymlink(path)` from
+../../domain/commands/error.js (`{ code: 'PATHSPEC_BEYOND_SYMLINK', path }`). Read-only models:
+src/application/commands/internal/resolve-pathspec.ts (`assertNoSymlinkedLeadingPath`, the same
+three calls for `add`), test/unit/application/primitives/internal/symlinked-leading-path.test.ts
+(how a memory-adapter test lays a link: `await ctx.fs.symlink(target, absoluteLinkPath)`).
+Update the module header of is-ignored.ts with one sentence: a query beyond a symbolic link is
+refused before any rule file is read. No signature, type or export changes; nothing is added to
+any barrel.
+
+Unit test file: helpers `path(p)`, `seedRepo()`; errors are asserted by try/catch on
+`(caught as TsgitError).data`. New rows go in one
+`describe('Given a query whose leading directory is a symbolic link')` family.
+
+Interop file (is-ignored-leading-directory-interop.test.ts): rows are compared through
+`gitCheckIgnore` (exit 0 or 1; any other exit throws today). The refusal rows need git's exit
+128 and its stderr: add a second small helper beside it that returns `{ exitCode, stderr }`
+for `check-ignore -v --no-index -- <query>` through `tryRunGitWithExit`, and a separate
+`describe` under the existing `describe.each(['false', 'true'])('Given core.ignorecase is %s')`
+wrapper. Lay links with `symlinkSync(target, path)` from node:fs, as
+test/integration/checkout-leading-symlink-interop.test.ts does. No raw control characters in
+the source; `file <path>` must say text.
+
+Mutation hot spots this part owns:
+- the `if (await beyondSymlink(...))` guard (forced true: every call with a query throws, so
+  every existing row fails; forced false: the refusal rows fail);
+- the loop (a body emptied or a loop skipped: the refusal rows fail);
+- the call site (removed: the refusal rows fail);
+- order: the refused-after-answerable row proves nothing is answered and that the error names
+  the refused path, not the first query.
+
+### TDD steps
+
+1. RED unit rows (run them, see them fail: today each returns a verdict instead of throwing):
+   - a link `link` → a directory outside the work tree holding `.gitignore` `secret`; query
+     `link/secret` → throws, `data.code === 'PATHSPEC_BEYOND_SYMLINK'`, `data.path === 'link/secret'`;
+   - a link → a directory inside the work tree (`real`, holding `.gitignore` `secret`); query
+     `link/secret` → the same throw;
+   - a dangling link `gone` → nothing; query `gone/x` → the same throw, `data.path === 'gone/x'`;
+   - a real directory `a` holding a link `a/link`; query `a/link/deep/x` → throws with that path;
+   - queries `[top.log, link/secret]` with root `.gitignore` `*.log` → throws, `data.path`
+     is `link/secret` (the second query), and no result is returned.
+2. GREEN: `refuseBeyondSymlink` and its call.
+3. GUARD rows (pass before and after): the link queried as itself (`link`, and `a/link`) is
+   answered, not refused; a query with no leading directory is answered; an empty query list
+   returns `[]` when the work tree holds a link.
+4. RED→GREEN interop rows (both `core.ignorecase` values; git's exit code 128 and a stderr
+   containing `is beyond a symbolic link` are the expectation, tsgit must throw
+   `PATHSPEC_BEYOND_SYMLINK` with the queried path): a link to a directory outside the
+   repository, a link to a directory inside it, a link to a directory holding no `.gitignore`.
+   GUARD interop row: the link queried as itself — git exits 0 or 1 and tsgit returns the
+   matching verdict. Write these before step 2 if you prefer one GREEN for all; either way run
+   them red first.
+5. REFACTOR: every function under 20 lines; the header sentence.
+
+### Gate
+
+`npx vitest run test/unit/application/primitives/is-ignored.test.ts test/unit/application/commands/internal/build-ignore-evaluator.test.ts test/unit/application/primitives/index.test.ts test/unit/repository/repository.test.ts test/integration/is-ignored-leading-directory-interop.test.ts test/integration/glob-bracket-class-interop.test.ts test/integration/glob-double-star-interop.test.ts test/integration/gitignore-end-to-end.test.ts && ./node_modules/.bin/vitest run --project posix-integration test/integration/posix-only/ignored-leading-directory-unreadable-gitignore-interop.test.ts && ./node_modules/.bin/vitest run --project parity && npm run check:types && ./node_modules/.bin/biome check src/application/primitives/is-ignored.ts test/unit/application/primitives/is-ignored.test.ts test/integration/is-ignored-leading-directory-interop.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+
+### Commit
+
+`fix(ignore)!: refuse a path beyond a symbolic link in isIgnored as git check-ignore does`
+
 ## Notes for later phases (not parts)
 
 - **Documentation phase** (design §9): docs/use/primitives/is-ignored.md (leading-directory rule,
