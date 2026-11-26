@@ -853,9 +853,11 @@ The second review round found nothing in the fix. Its probes pinned three more i
 same parse, folded with it (ADR-1280): an empty query (git refuses it before any other
 argument), an absolute query (the normalization had dropped its leading slash; git refuses
 one outside the work tree), and a query that normalizes to the empty path. For the last one
-git matches only the rules without a slash (`match_pathname` returns early when the path is
-not beneath the rule file's directory), so `.` is not ignored under `/*` and is ignored
-under `*`; `matchInStackVerbose` now filters the rules that way for the empty path alone.
+git matches only the rules holding no slash at all (`match_pathname` returns early when the
+path is not beneath the rule file's directory, and a directory-only rule needs a path it can
+stat as a directory), so `.` is not ignored under `/*` or `*/` and is ignored under `*`;
+`matchInStackVerbose` now filters the rules that way for the empty path alone. The
+directory-only half came from the third review round.
 An absolute query inside the work tree is the one row left diverging, by decision.
 
 ## Decision candidates

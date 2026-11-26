@@ -34,6 +34,7 @@ and `/anchored`; `link` is a symbolic link to `real/`, which holds `.gitignore`:
 | `/top.log` (absolute, outside the work tree) | exit 128, `is outside repository` | answered as typed |
 | `<work tree>/top.log` (absolute, inside it) | answered as `top.log` | answered as typed |
 | `.`, `sub/..` with a root rule `/*` | not ignored | `.` ignored by `/*` |
+| `.`, `sub/..` with a root rule `*/` or `**/` | not ignored | ignored when asked as a directory |
 | `.`, `sub/..` with a root rule `*` | `.gitignore:1:*` | ignored by `*` |
 
 ## Options considered
@@ -62,8 +63,9 @@ An empty path refuses the whole call before any other query is looked at, as git
 
 A query that normalizes to the empty path (`.`, `sub/..`) names the work tree itself. git's
 `match_pathname` needs a path beneath the rule file's directory, so a rule holding a slash
-never matches it; a rule without one is matched by basename and can. `matchInStackVerbose`
-applies that to the empty path only: a path ending at a nested rule file's directory (`a/`
+never matches it, and a directory-only rule (`*/`) needs a path git can stat as a directory,
+which the empty path is not. A rule holding no slash at all is matched by basename and can
+match. `matchInStackVerbose` applies that to the empty path only: a path ending at a nested rule file's directory (`a/`
 against `a/.gitignore`) still matches that file's rules, as in git.
 
 **One divergence, deliberate.** An absolute query is refused whether or not it lies inside the
