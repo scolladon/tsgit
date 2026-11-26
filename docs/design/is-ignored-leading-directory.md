@@ -543,6 +543,10 @@ threw (`CHECKOUT_OVERWRITE_DIRTY`, `WORKING_TREE_DIRTY`, `STASH_APPLY_WOULD_OVER
 throwing: the rule reads only files today's code also reads, and fewer of them. D-6 settles it as a plain
 `fix(ignore): …`, without `!`. D-3's case does not occur.
 
+This held for the leading-directory rule. The fold of §13 adds one call that returned and now
+throws (`isIgnored` on a path beyond a symbolic link), so the change as shipped is
+`fix(ignore)!: …` under D-3.
+
 ### 8. Size note
 
 The caps sit within about 100 B of the measurement.

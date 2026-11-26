@@ -24,7 +24,7 @@ values, on this branch and on main:
 component that is a symbolic link, whatever it points at. The last component may be a link.
 Every argument is parsed before any is matched.
 
-`add`, `stash` and `mv` already refuse such a path with `PATHSPEC_BEYOND_SYMLINK`. `isIgnored`
+`add` and `stash push` already refuse such a path with `PATHSPEC_BEYOND_SYMLINK`. `isIgnored`
 did not. The refusal belongs to `isIgnored` alone: the walk and the overwrite pre-flights ask
 git's `is_excluded`, which has no such check, and handle a symlinked leading directory in their
 own way.
