@@ -1130,6 +1130,8 @@ describe('isIgnored', () => {
 
   describe.each([
     ['/*', false, { ignored: false }],
+    ['*/', false, { ignored: false }],
+    ['**/', false, { ignored: false }],
     [
       '*',
       true,
@@ -1139,7 +1141,7 @@ describe('isIgnored', () => {
     describe.each([['.'], ['sub/..'], ['sub/../']])(
       'When isIgnored is asked about %s, which names the work tree itself',
       (query) => {
-        it(`Then it is ${isBasenameRule ? 'ignored: a rule without a slash names it' : 'not ignored: a rule holding a slash cannot name it'}`, async () => {
+        it(`Then it is ${isBasenameRule ? 'ignored: a rule holding no slash names it' : 'not ignored: a rule holding a slash cannot name it'}`, async () => {
           // Arrange
           const ctx = await seedRepo();
           await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, `${rule}\n`);
@@ -1155,20 +1157,21 @@ describe('isIgnored', () => {
       },
     );
 
-    describe('When isIgnored is asked about a path at the root', () => {
+    describe('When isIgnored is asked about a directory at the root', () => {
       it('Then the rule ignores it', async () => {
         // Arrange
         const ctx = await seedRepo();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, `${rule}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/keep`, '');
         const sut = isIgnored;
 
         // Act
-        const result = await sut(ctx, [{ path: path('top.log') }]);
+        const result = await sut(ctx, [{ path: path('sub'), isDirectory: true }]);
 
         // Assert
         expect(result).toEqual([
           {
-            path: 'top.log',
+            path: 'sub',
             ignored: true,
             source: { kind: 'gitignore', basedir: '', line: 1, pattern: rule },
           },

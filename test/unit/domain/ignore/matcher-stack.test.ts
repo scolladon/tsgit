@@ -255,6 +255,21 @@ describe('matchInStackVerbose', () => {
         expected: UNSET,
       },
       {
+        label: 'a directory-only rule without a slash does not match it',
+        stack: [kindLevel('gitignore', '*/\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a directory-only double-star rule does not match it',
+        stack: [kindLevel('gitignore', '**/\n')],
+        expected: UNSET,
+      },
+      {
+        label: 'a later directory-only rule does not override a basename rule',
+        stack: [kindLevel('gitignore', '*\n!*/\n')],
+        expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },
+      },
+      {
         label: 'a rule matched by basename matches it',
         stack: [kindLevel('gitignore', '*\n')],
         expected: { verdict: 'ignored', kind: 'gitignore', basedir: '', line: 1, pattern: '*' },

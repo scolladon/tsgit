@@ -329,11 +329,13 @@ const writeSpellingRepo = async (root: string, ignoreCase: string): Promise<stri
   return repo;
 };
 
-/** Spellings of the work tree itself, then one path at its root. */
-const ROOT_SPELLINGS = ['.', 'sub/..', 'sub/../', 'top.log'] as const;
+/** Spellings of the work tree itself, then a file and a directory at its root. */
+const ROOT_SPELLINGS = ['.', 'sub/..', 'sub/../', 'top.log', 'sub'] as const;
 const ROOT_RULES = [
-  { rule: '/*', gitIgnores: 1 },
+  { rule: '/*', gitIgnores: 2 },
   { rule: '*', gitIgnores: ROOT_SPELLINGS.length },
+  { rule: '*/', gitIgnores: 1 },
+  { rule: '**/', gitIgnores: 1 },
 ] as const;
 
 const writeRootRuleRepo = (root: string, ignoreCase: string, rule: string): Promise<string> =>

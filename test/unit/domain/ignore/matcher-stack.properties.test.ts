@@ -187,9 +187,9 @@ describe('matchBeneathChain properties over a loaded stack', () => {
     });
   });
 
-  describe('Given root rules that match by basename or hold a slash, and the empty path', () => {
+  describe('Given root rules with and without a slash, and the empty path', () => {
     describe('When matched', () => {
-      it('Then the verdict is the one the rules without a slash give', () => {
+      it('Then the verdict is the one the rules holding no slash at all give', () => {
         // Arrange
         const arbRootRule = fc.constantFrom('*', '/*', '!*', '!/*', '**', '/**', 'a', '/a', '*/');
         const arbRootRules = fc.array(arbRootRule, { minLength: 0, maxLength: 5 });
@@ -198,7 +198,7 @@ describe('matchBeneathChain properties over a loaded stack', () => {
         // Act + Assert
         fc.assert(
           fc.property(arbRootRules, fc.boolean(), (lines, isDir) => {
-            const basenameLines = lines.filter((line) => !line.replace(/\/$/, '').includes('/'));
+            const basenameLines = lines.filter((line) => !line.includes('/'));
             const stack = [{ basedir: '', rules: parseGitignore(lines.join('\n')) }] as const;
 
             const result = matchInStackVerbose(stack, '' as FilePath, isDir);
