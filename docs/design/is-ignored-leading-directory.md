@@ -684,8 +684,21 @@ for itself before it is stored, and every row fails on a stack overflow. Each `?
 whole class of rows when it becomes `&&`. `Math.max` turned into `Math.min` makes every path
 root-level. `rules.length > 0` stays as §4 has it.
 
-**Gate.** The bench pair is measured again on the new session. The defect its gate guards is
-now the session it replaces, at 2.02 to 2.21 times the twin.
+**Gate.** The bench pair measured again on the landed chain session (same machine, load 5.5 to
+5.8, means in ms):
+
+| run | session row | floor twin | ratio |
+|---|---|---|---|
+| 1 | 21.4 | 17.0 | 1.26 |
+| 2 | 21.4 | 16.6 | 1.29 |
+| 3 | 21.6 | 16.4 | 1.32 |
+
+The defect the gate guards is now the session this one replaces, which did the leading
+directories of every entry again: 2.02 to 2.21 times the twin. The gate is 1.7, the midpoint
+of 1.32 and 2.02: the session answering a walk costs at most 1.7 times the floor twin.
+
+The landed session against main's predicate, in the one-process comparison above: 0.92 to 0.93
+times main two levels deep, 0.73 to 0.74 times main five levels deep, two runs, same counts.
 
 ## Decision candidates
 
