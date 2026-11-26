@@ -568,6 +568,17 @@ Measured after review, on a clean build:
 Every other row stays under its cap. The packed tarball is 1 590 956 B, under its 1554 KiB
 cap, which does not move.
 
+Measured again after the fold of §13 and its review, on a clean build:
+
+| row | measured | cap before | cap after |
+|---|---|---|---|
+| Browser bundle (no-build) | 374.88 kB | 374.7 kB | 374.9 kB |
+| Full library | 434.63 kB | 434.6 kB | 434.7 kB |
+| Chunks: primitives | 120.62 kB | 120.4 kB | 120.7 kB |
+| packed tarball | 1 591 687 B | 1554 KiB | 1555 KiB |
+
+The growth is the query parse in `isIgnored` and the standard-excludes split in the evaluator.
+
 ### 9. Docs to update (documentation phase)
 
 - `docs/use/primitives/is-ignored.md` Behaviour:
