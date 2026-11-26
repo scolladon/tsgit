@@ -835,7 +835,8 @@ the first match.
 ```
 abort check → empty list returns
 readStandardExcludes        config, core.excludesFile, info/exclude
-parseQueries                per query, in order: normalize → PATHSPEC_OUTSIDE_REPO
+parseQueries                any empty query → EMPTY_PATHSPEC; then per query, in order:
+                            absolute or climbing above the root → PATHSPEC_OUTSIDE_REPO
                             → scan the normalized path → PATHSPEC_BEYOND_SYMLINK
 createIgnoreSession(standard)   root .gitignore, then the per-directory chain
 match the normalized path; report the path as asked
@@ -847,6 +848,15 @@ probe call both without it and are unchanged. A denied `lstat` is read as "not a
 `isIgnored` only. Rows: 11 spellings judged on the normalized path, the refusals beyond a
 link and outside the repository, both argument orders, the three oversized files, and the
 mode-000 directory (POSIX-only), each against git under both `core.ignorecase` values.
+
+The second review round found nothing in the fix. Its probes pinned three more inputs of the
+same parse, folded with it (ADR-1280): an empty query (git refuses it before any other
+argument), an absolute query (the normalization had dropped its leading slash; git refuses
+one outside the work tree), and a query that normalizes to the empty path. For the last one
+git matches only the rules without a slash (`match_pathname` returns early when the path is
+not beneath the rule file's directory), so `.` is not ignored under `/*` and is ignored
+under `*`; `matchInStackVerbose` now filters the rules that way for the empty path alone.
+An absolute query inside the work tree is the one row left diverging, by decision.
 
 ## Decision candidates
 
