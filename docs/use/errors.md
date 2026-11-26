@@ -129,7 +129,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_FILE_MODE` | `value` | Mode bits do not match any recognised git file mode. |
 | `PATHSPEC_BEYOND_SYMLINK` | `path` | `add`, `stash push` or `isIgnored` refused a path whose leading directory is a symbolic link (fires for an intra-repo link target too — shape-based, not containment-based). |
 | `PATHSPEC_NO_MATCH` | `pattern`, `patterns` | A positive pathspec matched nothing. `patterns` is every unmatched positive pathspec in command-line order (`checkout` lists all; `add` and `rm` stop at the first), `pattern` is `patterns[0]`. |
-| `PATHSPEC_OUTSIDE_REPO` | `path` | Pattern resolved to a path outside `workDir`, a path given to `isIgnored` climbs above the repository root, or (under Windows path syntax only) a pathspec or a working-tree entry name holds `\`. On a POSIX host `\` is a matching escape in a pathspec and a legal file-name byte. |
+| `PATHSPEC_OUTSIDE_REPO` | `path` | Pattern resolved to a path outside `workDir`, a path given to `isIgnored` climbs above the repository root or is absolute, or (under Windows path syntax only) a pathspec or a working-tree entry name holds `\`. On a POSIX host `\` is a matching escape in a pathspec and a legal file-name byte. |
 | `SPARSE_PATTERN_FILE_TOO_LARGE` | `path, size, limit` | `.git/info/sparse-checkout` exceeds the cap. |
 | `TREE_CYCLE_DETECTED` | `path` | Recursing into a tree formed a cycle (gitlink loop). |
 | `TREE_DEPTH_EXCEEDED` | `depth` | Tree recursion exceeded `core.maxTreeDepth` — read from the repository-local config only (never `~/.gitconfig` or any other scope), defaulting to 2048 when unset, and honoured unclamped at any configured value. |
@@ -167,7 +167,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `CHERRY_PICK_MERGE_NO_MAINLINE` | `commit` | `cherryPick` of a merge commit (≥2 parents) without a chosen mainline (`-m`). |
 | `REVERT_MERGE_NO_MAINLINE` | `commit` | `revert` of a merge commit (≥2 parents) without a chosen mainline (`-m`). |
 | `EMPTY_COMMIT_MESSAGE` | — | `commit({ message: '' })`. |
-| `EMPTY_PATHSPEC` | — | Path-based command called with empty `paths` and no bulk flag. |
+| `EMPTY_PATHSPEC` | — | Path-based command called with empty `paths` and no bulk flag, or `isIgnored` given an empty path. |
 | `INVALID_COMMIT` | `reason` | Commit object failed validation. Also raised by [`updateRef`](primitives/update-ref.md) — and so by every command that writes a ref through it, [`tag.create`](commands/tag.md) and [`clone`](commands/clone.md) included — for a new target that hashes correctly but fails git's own `parse_commit_buffer` acceptance, checked after the hash and before the compare-and-swap. Git's acceptance is transcribed as-is and nothing stricter is added, so a commit git tolerates (no author line, a tree id naming no tree) is tolerated here too. |
 | `INVALID_IDENTITY` | `reason` | Author / committer identity malformed. |
 | `INVALID_OPTION` | `option, reason` | Caller passed an incompatible option combination. |
