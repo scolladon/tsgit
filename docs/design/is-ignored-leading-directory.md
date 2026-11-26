@@ -871,6 +871,22 @@ stat as a directory), so `.` is not ignored under `/*` or `*/` and is ignored un
 directory-only half came from the third review round.
 An absolute query inside the work tree is the one row left diverging, by decision.
 
+**Validation of the fold.** One narrowed mutation bucket at concurrency 1 (five suites, 266
+tests in the dry run) over the lines the fold changed in `is-ignored.ts`,
+`ignore-evaluator.ts`, `fs-probes.ts` and `matcher-stack.ts`:
+
+| mutants | killed | rejected by the type checker | timed out | survived | ignored |
+|---|---|---|---|---|---|
+| 69 | 37 | 30 | 2 | 0 | 4 |
+
+The two timeouts (`path === ''` forced true, and negated, in `matchInStackVerbose`) and the
+four static mutants the run ignores were applied by hand in a throwaway copy under a watchdog:
+all six fail between 4 and 126 tests.
+
+The empty-path branch is the fold's only change on the walk. The walk predicate was timed
+alone, in one process, against the tree before it: 20 220 entries, the same count ignored by
+both, three runs at each of two depths, ratios between 0.991 and 1.008.
+
 ## Decision candidates
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
