@@ -29,6 +29,7 @@ interface IsIgnoredMatch {
 - Each leading directory of a path is tested root-first, as a directory, against the rule files above it; the first one a rule excludes decides, as in git. The path is then ignored and `source` names that directory's rule, not a rule on the path itself.
 - Nothing at or beneath an excluded directory is read: a negation beneath it, or a `.gitignore` inside it, cannot re-include the path. A `.gitignore` inside an excluded directory is never opened, so one that is oversized, unreadable or a directory cannot make the call throw.
 - Rule files are read on demand: only the `.gitignore` files on the chain above the first excluded directory are opened.
+- A path whose leading directory is a symbolic link is refused, as `git check-ignore` refuses it (`pathspec '<path>' is beyond a symbolic link`): the call throws `PATHSPEC_BEYOND_SYMLINK`. Every query is checked before any is matched, so a refused call reads no rule file and returns no partial result. The link may point anywhere, inside the repository or outside it, or at nothing. A link that is the last component of the path is answered like any other path.
 - A leading directory is tested as a directory whatever stands at that path on disk. The query's own `isDirectory` is still the caller's declaration.
 - `source.pattern` is the rule line as written, after git's trailing-space trim, with `!`, `/` and `\` escapes kept, as `git check-ignore -v` prints it.
 - Patterns are git's wildmatch with `WM_PATHNAME` (`[…]` sets, `\` escapes, a byte-wise `?`), and matching honours `core.ignorecase` (ASCII case folding). A pattern git cannot parse matches nothing. In `.gitattributes`, a line whose pattern starts with `!` is ignored; write a literal leading `!` as `\!`.
@@ -51,6 +52,7 @@ With `build/` in the root `.gitignore`, `build/keep.js` is ignored and `source.p
 ## Throws
 
 - `OPERATION_ABORTED` — `ctx.signal` is aborted at entry or between queries.
+- `PATHSPEC_BEYOND_SYMLINK { path }` — a leading directory of a queried path is a symbolic link. `path` is the first such query, in query order. Nothing is answered.
 
 ## See also
 
