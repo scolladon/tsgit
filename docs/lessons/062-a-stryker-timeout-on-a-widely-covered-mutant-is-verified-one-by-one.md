@@ -9,10 +9,12 @@ evidence:
   - src/application/primitives/compare-working-tree-entry.ts:354
   - src/application/primitives/internal/is-entry-stat-clean.ts:74
   - stryker.config.mjs:65
+  - test/unit/application/primitives/is-ignored.test.ts:722-744
+  - src/application/primitives/internal/ignore-evaluator.ts:72
 source: { run: whole-second-stat-match, phase: validation, date: 2026-11-25 }
 status: active
 supersedes: []
-last-verified: 2026-11-25
+last-verified: 2026-11-26
 ---
 # 062 — A Stryker timeout on a widely covered mutant is verified one by one
 
@@ -41,6 +43,7 @@ Apply each exact replacement in a throwaway copy and run the narrowed include un
 Triage a passing one as a survivor: kill it, remove its guard, or record the proof of equivalence.
 Report the score with the timeouts split out: killed by the run, killed by hand, survived, equivalent.
 Scope the post-triage run to the files the triage changed, so it does not pay for the timeouts again.
+End the watchdog's whole process group: a vitest killed alone leaves its workers running at full load.
 
 ## Evidence
 
@@ -50,3 +53,9 @@ makes it always false was reported Timeout and passes every unit test.
 mutants timed out; each fails tests within seconds by hand.
 `stryker.config.mjs:65` — `timeoutMS: 60000` and `timeoutFactor: 2`, the budget those runs
 exceeded.
+
+Refreshed 2026-11-26: `test/unit/application/primitives/is-ignored.test.ts:722-744` — a row over a
+path 20 000 directories deep. With it in the covering set, nine mutants that never exclude or
+always load (for one, `src/application/primitives/internal/ignore-evaluator.ts:72` forced true)
+read 20 000 rule files and were reported Timeout. Applied by hand with that row set aside, seven
+fail 4 to 95 tests in two seconds and two loop forever.
