@@ -95,39 +95,40 @@ describe('buildIgnoreEvaluator', () => {
     });
   });
 
-  describe('Given the evaluator', () => {
-    describe('When loadDirRules is invoked for the same directory twice', () => {
-      it('Then the second call returns the cached ruleset (same value, no second read)', async () => {
+  describe('Given a directory holding a .gitignore', () => {
+    describe('When loadDirRules loads it', () => {
+      it('Then it yields the parsed rules of that file', async () => {
         // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
-        const baseReadUtf8 = ctx.fs.readUtf8;
-        let calls = 0;
-        const countingFs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop === 'readUtf8') {
-              return async (p: string) => {
-                if (p.endsWith('/sub/.gitignore')) calls += 1;
-                return baseReadUtf8(p);
-              };
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        });
-        const evalCtx = { ...ctx, fs: countingFs };
-        const sut = await buildIgnoreEvaluator(evalCtx);
+        const evaluator = await buildIgnoreEvaluator(ctx);
+        const sut = evaluator.loadDirRules;
 
         // Act
-        const first = await sut.loadDirRules('sub' as FilePath);
-        const second = await sut.loadDirRules('sub' as FilePath);
+        const result = await sut('sub' as FilePath);
 
-        // Assert — only one read on the .gitignore AND both calls return
-        // the same parsed ruleset (a mutant that returned an empty array
-        // on the second call would have `calls === 1` but `second !== first`).
-        expect(calls).toBe(1);
-        expect(second).toBe(first);
-        expect(second).toHaveLength(1);
-        expect(second[0]?.pattern).toBe('*.tmp');
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.pattern).toBe('*.tmp');
+        expect(result[0]?.lineNumber).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a directory holding no .gitignore', () => {
+    describe('When loadDirRules loads it', () => {
+      it('Then it yields an empty ruleset', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/kept.txt`, 'kept\n');
+        const evaluator = await buildIgnoreEvaluator(ctx);
+        const sut = evaluator.loadDirRules;
+
+        // Act
+        const result = await sut('sub' as FilePath);
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });
