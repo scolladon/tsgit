@@ -3,6 +3,12 @@ import {
   type IgnoreRuleset,
   matchInStack,
 } from '../../../domain/ignore/index.js';
+import {
+  directoryExclusion,
+  leadingDirectoriesOf,
+  matchBeneathLeadingDirectories,
+  type VerboseMatch,
+} from '../../../domain/ignore/matcher-stack.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -45,6 +51,70 @@ export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluato
     return loaded;
   };
   return { base, loadDirRules };
+};
+
+/** One ignore judgement for a command: rules read lazily, one verdict per leading directory. */
+export interface IgnoreSession {
+  /** git's verdict for one path, with the rule that decided it. */
+  readonly match: (path: FilePath, isDirectory: boolean) => Promise<VerboseMatch>;
+}
+
+interface SessionState {
+  readonly evaluator: IgnoreEvaluator;
+  readonly stack: IgnoreLevel[];
+  readonly entered: Map<FilePath, Promise<VerboseMatch | undefined>>;
+  readonly resolved: Map<FilePath, VerboseMatch | undefined>;
+}
+
+const pushDirRules = async (state: SessionState, directory: FilePath): Promise<void> => {
+  const rules = await state.evaluator.loadDirRules(directory);
+  if (rules.length > 0) state.stack.push({ basedir: directory, rules, kind: 'gitignore' });
+};
+
+const enterDirectory = async (
+  state: SessionState,
+  directory: FilePath,
+): Promise<VerboseMatch | undefined> => {
+  const exclusion = directoryExclusion(state.stack, directory);
+  if (exclusion === undefined) await pushDirRules(state, directory);
+  state.resolved.set(directory, exclusion);
+  return exclusion;
+};
+
+const rememberEntry = (
+  state: SessionState,
+  directory: FilePath,
+): Promise<VerboseMatch | undefined> => {
+  const entry = enterDirectory(state, directory);
+  state.entered.set(directory, entry);
+  return entry;
+};
+
+const exclusionOf = (state: SessionState, directory: FilePath): Promise<VerboseMatch | undefined> =>
+  state.entered.get(directory) ?? rememberEntry(state, directory);
+
+const settleLeadingDirectories = async (state: SessionState, path: FilePath): Promise<void> => {
+  for (const directory of leadingDirectoriesOf(path)) {
+    if ((await exclusionOf(state, directory)) !== undefined) return;
+  }
+};
+
+export const createIgnoreSession = async (ctx: Context): Promise<IgnoreSession> => {
+  const evaluator = await buildIgnoreEvaluator(ctx);
+  const state: SessionState = {
+    evaluator,
+    stack: [...evaluator.base],
+    entered: new Map(),
+    resolved: new Map(),
+  };
+  return {
+    match: async (path, isDirectory) => {
+      await settleLeadingDirectories(state, path);
+      return matchBeneathLeadingDirectories(state.stack, path, isDirectory, (directory) =>
+        state.resolved.get(directory),
+      );
+    },
+  };
 };
 
 /**

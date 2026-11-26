@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { isIgnored } from '../../../../src/application/primitives/is-ignored.js';
+import { MAX_GITIGNORE_BYTES } from '../../../../src/application/primitives/types.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 
@@ -402,6 +403,356 @@ describe('isIgnored', () => {
 
         // Assert
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
+  type ExpectedSource = {
+    readonly kind: 'global' | 'info' | 'gitignore';
+    readonly basedir: string;
+    readonly line: number;
+    readonly pattern: string;
+  };
+
+  interface LeadingDirectoryRow {
+    readonly title: string;
+    /** Keys are work-tree relative; a `.git/` prefix addresses the git directory. */
+    readonly files: Readonly<Record<string, string>>;
+    readonly directories?: ReadonlyArray<string>;
+    readonly global?: string;
+    readonly query: string;
+    readonly isDirectory?: boolean;
+    readonly expected: ExpectedSource | undefined;
+    readonly expectedFolded?: ExpectedSource | undefined;
+  }
+
+  const gi = (basedir: string, line: number, pattern: string): ExpectedSource => ({
+    kind: 'gitignore',
+    basedir,
+    line,
+    pattern,
+  });
+
+  const LEADING_DIRECTORY_ROWS: ReadonlyArray<LeadingDirectoryRow> = [
+    {
+      title: 'a directory rule without a slash excludes a file beneath it',
+      files: { '.gitignore': 'ab\n' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab'),
+    },
+    {
+      title: 'a directory rule without a slash matches the directory itself',
+      files: { '.gitignore': 'ab\n' },
+      query: 'ab',
+      expected: gi('', 1, 'ab'),
+    },
+    {
+      title: 'a directory-only rule excludes a file beneath it',
+      files: { '.gitignore': 'ab/\n' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a directory-only rule matches the directory queried as a directory',
+      files: { '.gitignore': 'ab/\n' },
+      query: 'ab',
+      isDirectory: true,
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a directory-only rule excludes a path two levels beneath it',
+      files: { '.gitignore': 'ab/\n' },
+      query: 'ab/c/d',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a negation beneath an excluded directory cannot re-include a path',
+      files: { '.gitignore': 'ab/\n!ab/c\n' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a nested negation cannot re-include a path beneath an excluded directory',
+      files: { '.gitignore': 'ab/\n', 'ab/.gitignore': '!c\n' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a nested negation cannot re-include the nested .gitignore itself',
+      files: { '.gitignore': 'ab/\n', 'ab/.gitignore': '!c\n' },
+      query: 'ab/.gitignore',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a directory-only rule excludes a path beneath a missing directory',
+      files: { '.gitignore': 'ab/\n' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a directory-only rule does not match a missing path queried as a file',
+      files: { '.gitignore': 'ab/\n' },
+      query: 'ab',
+      expected: undefined,
+    },
+    {
+      title: 'a nested directory-only rule excludes the path beneath it',
+      files: { '.gitignore': 'x/y/\n' },
+      query: 'x/y/z/w',
+      expected: gi('', 1, 'x/y/'),
+    },
+    {
+      title: 'a nested directory-only rule excludes the directory beneath it',
+      files: { '.gitignore': 'x/y/\n' },
+      query: 'x/y/z',
+      expected: gi('', 1, 'x/y/'),
+    },
+    {
+      title: 'a nested directory-only rule leaves a sibling alone',
+      files: { '.gitignore': 'x/y/\n' },
+      query: 'x/q',
+      expected: undefined,
+    },
+    {
+      title: 'a negation of the directory itself keeps the path',
+      files: { '.gitignore': 'ab/\n!ab/\n' },
+      query: 'ab/c',
+      expected: undefined,
+    },
+    {
+      title: 'a wildcard excludes a path whose directory is only re-included afterwards',
+      files: { '.gitignore': '*\n!ab/\n' },
+      query: 'ab/c',
+      expected: gi('', 1, '*'),
+    },
+    {
+      title: 'the directory rule wins over a later file rule',
+      files: { '.gitignore': 'ab\n*.log\n' },
+      query: 'ab/x.log',
+      expected: gi('', 1, 'ab'),
+    },
+    {
+      title: 'a nested .gitignore excludes a directory beneath it',
+      files: { 'a/.gitignore': 'b/\n' },
+      query: 'a/b/c',
+      expected: gi('a', 1, 'b/'),
+    },
+    {
+      title: 'info/exclude excludes a path beneath a directory',
+      files: { '.git/info/exclude': 'ab/\n' },
+      query: 'ab/c',
+      expected: { kind: 'info', basedir: '', line: 1, pattern: 'ab/' },
+    },
+    {
+      title: 'a rule folds case only under core.ignorecase',
+      files: { '.gitignore': 'AB/\n' },
+      query: 'ab/c',
+      expected: undefined,
+      expectedFolded: gi('', 1, 'AB/'),
+    },
+    {
+      title: 'a nested negation re-includes a directory the root rule excluded',
+      files: { '.gitignore': 'a/b/\n', 'a/.gitignore': '!b/\n' },
+      query: 'a/b/c',
+      expected: undefined,
+    },
+    {
+      title: 'an excluded directory hides a nested re-inclusion of its subdirectory',
+      files: { '.gitignore': 'a/\n', 'a/.gitignore': '!b/\n!b/c\n' },
+      query: 'a/b/c',
+      expected: gi('', 1, 'a/'),
+    },
+    {
+      title: 'a re-included child of a wildcard directory rule stays included',
+      files: { '.gitignore': 'ab/*\n!ab/c\n' },
+      query: 'ab/c',
+      expected: undefined,
+    },
+    {
+      title: 'a sibling of a re-included child stays excluded',
+      files: { '.gitignore': 'ab/*\n!ab/d\n' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab/*'),
+    },
+    {
+      title: 'a file standing where the excluded directory should be still excludes beneath it',
+      files: { '.gitignore': 'ab/\n', ab: 'f' },
+      query: 'ab/c',
+      expected: gi('', 1, 'ab/'),
+    },
+    {
+      title: 'a file is not matched by a directory-only rule',
+      files: { '.gitignore': 'ab/\n', ab: 'f' },
+      query: 'ab',
+      expected: undefined,
+    },
+    {
+      title: 'a double-star directory rule excludes a path beneath a nested match',
+      files: { '.gitignore': '**/build/\n' },
+      query: 'p/build/o/f',
+      expected: gi('', 1, '**/build/'),
+    },
+    {
+      title: 'a double-star directory rule matches the directory queried as a directory',
+      files: { '.gitignore': '**/build/\n' },
+      query: 'p/build',
+      isDirectory: true,
+      expected: gi('', 1, '**/build/'),
+    },
+    {
+      title: 'the global excludes file excludes a path beneath a directory',
+      files: {},
+      global: 'ab/\n',
+      query: 'ab/c',
+      expected: { kind: 'global', basedir: '', line: 1, pattern: 'ab/' },
+    },
+  ];
+
+  const writeRow = async (
+    ctx: Awaited<ReturnType<typeof seedRepo>>,
+    row: LeadingDirectoryRow,
+    ignoreCase: string,
+  ): Promise<void> => {
+    const excludes =
+      row.global === undefined ? '' : `\texcludesfile = ${ctx.layout.gitDir}/global-excludes\n`;
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[core]\n\tignorecase = ${ignoreCase}\n${excludes}`,
+    );
+    if (row.global !== undefined)
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/global-excludes`, row.global);
+    for (const [name, content] of Object.entries(row.files)) {
+      const target = name.startsWith('.git/')
+        ? `${ctx.layout.gitDir}/${name.slice('.git/'.length)}`
+        : `${ctx.layout.workDir}/${name}`;
+      await ctx.fs.writeUtf8(target, content);
+    }
+  };
+
+  const TOO_LARGE = 'x'.repeat(MAX_GITIGNORE_BYTES + 1);
+
+  describe.each(['false', 'true'])('Given core.ignorecase is %s', (ignoreCase) => {
+    describe('When isIgnored is asked about a path beneath its rule files', () => {
+      it.each(LEADING_DIRECTORY_ROWS)('Then $title', async (row) => {
+        // Arrange
+        const ctx = await seedRepo();
+        await writeRow(ctx, row, ignoreCase);
+        const sut = isIgnored;
+        const expected =
+          ignoreCase === 'true' && 'expectedFolded' in row ? row.expectedFolded : row.expected;
+
+        // Act
+        const [result] = await sut(ctx, [
+          { path: path(row.query), isDirectory: row.isDirectory === true },
+        ]);
+
+        // Assert
+        expect(result?.ignored).toBe(expected !== undefined);
+        expect(result?.source).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a rule excluding ab and a .gitignore inside ab that cannot be read as rules', () => {
+    describe.each([
+      ['an oversized .gitignore', 'ab/.gitignore', 'ab/c', TOO_LARGE, false],
+      ['a directory standing at .gitignore', 'ab/.gitignore', 'ab/c', '', true],
+      [
+        'an oversized .gitignore in a deeper directory',
+        'ab/x/.gitignore',
+        'ab/x/y',
+        TOO_LARGE,
+        false,
+      ],
+    ])('And %s', (_title, unreadable, query, content, isDirectoryAtPath) => {
+      describe('When isIgnored is asked about a path beneath ab', () => {
+        it('Then the excluded directory decides and nothing is read', async () => {
+          // Arrange
+          const ctx = await seedRepo();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ab/\n');
+          const target = `${ctx.layout.workDir}/${unreadable}`;
+          if (isDirectoryAtPath) await ctx.fs.mkdir(target);
+          else await ctx.fs.writeUtf8(target, content);
+          const sut = isIgnored;
+
+          // Act
+          const [result] = await sut(ctx, [{ path: path(query) }]);
+
+          // Assert
+          expect(result?.ignored).toBe(true);
+          expect(result?.source).toEqual({
+            kind: 'gitignore',
+            basedir: '',
+            line: 1,
+            pattern: 'ab/',
+          });
+        });
+      });
+    });
+  });
+
+  describe('Given a .gitignore inside a directory that no rule excludes and that is over the size limit', () => {
+    describe('When isIgnored is asked about a path beneath it', () => {
+      it('Then it throws GITIGNORE_FILE_TOO_LARGE with the file and its size', async () => {
+        // Arrange
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ab/.gitignore`, TOO_LARGE);
+        const sut = isIgnored;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, [{ path: path('ab/c') }]);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data as unknown as Record<string, unknown>;
+        expect(data.code).toBe('GITIGNORE_FILE_TOO_LARGE');
+        expect(data.path).toBe('.gitignore');
+        expect(data.size).toBe(MAX_GITIGNORE_BYTES + 1);
+        expect(data.limit).toBe(MAX_GITIGNORE_BYTES);
+      });
+    });
+  });
+
+  describe('Given queries about the same paths in opposite orders', () => {
+    describe.each([
+      [
+        'a directory excluded by the root rule',
+        { '.gitignore': 'ab/\n' },
+        ['ab/c', 'ab'],
+        [false, true],
+      ],
+      [
+        'nested rules at two depths',
+        { 'a/.gitignore': '*.log\n', 'a/b/.gitignore': '!keep.log\n' },
+        ['a/x.log', 'a/b/keep.log', 'a/b/c.log'],
+        [false, false, false],
+      ],
+    ] as const)('And %s', (_title, files, paths, directoryFlags) => {
+      describe('When isIgnored answers them', () => {
+        it('Then each path gets the same verdict and source in either order', async () => {
+          // Arrange
+          const ctx = await seedRepo();
+          for (const [name, content] of Object.entries(files)) {
+            await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, content);
+          }
+          const queries = paths.map((p, i) => ({
+            path: path(p),
+            isDirectory: directoryFlags[i] === true,
+          }));
+          const sut = isIgnored;
+
+          // Act
+          const forward = await sut(ctx, queries);
+          const backward = await sut(ctx, [...queries].reverse());
+
+          // Assert
+          expect([...backward].reverse()).toEqual(forward);
+        });
       });
     });
   });
