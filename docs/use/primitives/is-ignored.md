@@ -26,7 +26,10 @@ interface IsIgnoredMatch {
 - One result per input, in input order.
 - `source` is populated only when `ignored === true` (matches `git check-ignore -v`'s output rule). A negated rule (`!keep.log`) makes the path NOT ignored and omits `source`.
 - `kind` distinguishes the three sources whose `basedir` is the empty string at the repo root: global excludes file, `.git/info/exclude`, and the repo-root `.gitignore`.
-- Per-directory `.gitignore` files are loaded lazily — only those on the ancestor chain of a queried path are read.
+- Each leading directory of a path is tested root-first, as a directory, against the rule files above it; the first one a rule excludes decides, as in git. The path is then ignored and `source` names that directory's rule, not a rule on the path itself.
+- Nothing at or beneath an excluded directory is read: a negation beneath it, or a `.gitignore` inside it, cannot re-include the path. A `.gitignore` inside an excluded directory is never opened, so one that is oversized, unreadable or a directory cannot make the call throw.
+- Rule files are read on demand: only the `.gitignore` files on the chain above the first excluded directory are opened.
+- A leading directory is tested as a directory whatever stands at that path on disk. The query's own `isDirectory` is still the caller's declaration.
 - `source.pattern` is the rule line as written, after git's trailing-space trim, with `!`, `/` and `\` escapes kept, as `git check-ignore -v` prints it.
 - Patterns are git's wildmatch with `WM_PATHNAME` (`[…]` sets, `\` escapes, a byte-wise `?`), and matching honours `core.ignorecase` (ASCII case folding). A pattern git cannot parse matches nothing. In `.gitattributes`, a line whose pattern starts with `!` is ignored; write a literal leading `!` as `\!`.
 - `isDirectory` defaults to `false`; pass `true` to match directory-only rules like `build/`.
@@ -42,6 +45,8 @@ for (const m of matches) {
   if (m.ignored) console.log(`${m.path} — ignored by ${m.source?.pattern}`);
 }
 ```
+
+With `build/` in the root `.gitignore`, `build/keep.js` is ignored and `source.pattern` is `build/`, even when `build/.gitignore` holds `!keep.js`.
 
 ## Throws
 
