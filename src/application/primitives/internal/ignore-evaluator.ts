@@ -48,7 +48,7 @@ export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluato
   return { base, loadDirRules };
 };
 
-/** One ignore judgement for a command: rules read lazily, one verdict per leading directory. */
+/** One ignore judgement for a command: rules read lazily, one outcome per directory chain. */
 export interface IgnoreSession {
   /** git's verdict for one path, with the rule that decided it. */
   readonly match: (path: FilePath, isDirectory: boolean) => Promise<VerboseMatch>;
