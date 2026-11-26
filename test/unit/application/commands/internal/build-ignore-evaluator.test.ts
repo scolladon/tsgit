@@ -5,6 +5,10 @@ import {
   buildRepoIgnorePredicate,
 } from '../../../../../src/application/commands/internal/build-ignore-evaluator.js';
 import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
+import {
+  createIgnoreSession,
+  readStandardExcludes,
+} from '../../../../../src/application/primitives/internal/ignore-evaluator.js';
 import { MAX_GITIGNORE_BYTES } from '../../../../../src/application/primitives/types.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 
@@ -58,6 +62,93 @@ describe('buildIgnoreEvaluator', () => {
         expect(sut.base[0]?.rules[0]?.pattern).toBe('*.swp');
         expect(sut.base[1]?.rules[0]?.pattern).toBe('*.tmp');
         expect(sut.base[2]?.rules[0]?.pattern).toBe('*.log');
+      });
+    });
+
+    describe('When the standard excludes are read on their own', () => {
+      it('Then they hold the global level, then the info level, and no root level', async () => {
+        // Arrange
+        const ctx = await seed('/repo/home');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.tmp\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n  excludesFile = ~/global\n',
+        );
+        await ctx.fs.writeUtf8('/repo/home/global', '*.swp\n');
+        const sut = readStandardExcludes;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.caseFold).toBe(false);
+        expect(
+          result.levels.map((level) => [level.kind, level.basedir, level.rules[0]?.pattern]),
+        ).toEqual([
+          ['global', '', '*.swp'],
+          ['info', '', '*.tmp'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given core.ignorecase true', () => {
+    describe('When the standard excludes are read', () => {
+      it('Then they carry the case-folding choice', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  ignorecase = true\n');
+        const sut = readStandardExcludes;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ caseFold: true, levels: [] });
+      });
+    });
+  });
+
+  describe('Given standard excludes read before info/exclude and the root .gitignore changed', () => {
+    describe('When the evaluator is built over them', () => {
+      it('Then it keeps them as read and adds the root .gitignore as it now is', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.tmp\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        const standard = await readStandardExcludes(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.changed\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.now\n');
+        const sut = buildIgnoreEvaluator;
+
+        // Act
+        const result = await sut(ctx, standard);
+
+        // Assert
+        expect(result.base.map((level) => [level.kind, level.rules[0]?.pattern])).toEqual([
+          ['info', '*.tmp'],
+          ['gitignore', '*.now'],
+        ]);
+        expect(standard.levels).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given handed-in standard excludes that fold case where the config does not', () => {
+    describe('When a session over them matches a path differing from a root rule by case', () => {
+      it('Then the handed-in choice decides and the path is ignored', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.LOG\n');
+        const sut = createIgnoreSession;
+
+        // Act
+        const session = await sut(ctx, { caseFold: true, levels: [] });
+        const result = await session.match('x.log' as FilePath, false);
+
+        // Assert
+        expect(result.verdict).toBe('ignored');
       });
     });
   });

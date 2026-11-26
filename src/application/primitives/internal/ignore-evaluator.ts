@@ -23,19 +23,35 @@ export interface IgnoreEvaluator {
   readonly loadDirRules: (dir: FilePath | '') => Promise<IgnoreRuleset | undefined>;
 }
 
+/** What git reads at setup, before it looks at any path: the global excludes, then `info/exclude`. */
+export interface StandardExcludes {
+  readonly caseFold: boolean;
+  readonly levels: ReadonlyArray<IgnoreLevel>;
+}
+
+export const readStandardExcludes = async (ctx: Context): Promise<StandardExcludes> => {
+  const caseFold = (await readConfig(ctx)).core?.ignoreCase === true;
+  const levels: IgnoreLevel[] = [];
+  const global = await readGlobalExcludes(ctx, { caseFold });
+  if (global !== undefined) levels.push({ basedir: '', rules: global, kind: 'global' });
+  const info = await readInfoExclude(ctx, { caseFold });
+  if (info !== undefined) levels.push({ basedir: '', rules: info, kind: 'info' });
+  return { caseFold, levels };
+};
+
 /**
  * Build an `IgnoreEvaluator` from the four repository-wide ignore sources.
  * Per-directory `.gitignore` files are NOT loaded eagerly —
  * the ignore session loads them on demand, one leading directory at a
  * time, so nothing at or beneath an excluded directory is ever read.
+ * A caller that already read the standard excludes hands them in.
  */
-export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluator> => {
-  const caseFold = (await readConfig(ctx)).core?.ignoreCase === true;
-  const base: IgnoreLevel[] = [];
-  const global = await readGlobalExcludes(ctx, { caseFold });
-  if (global !== undefined) base.push({ basedir: '', rules: global, kind: 'global' });
-  const info = await readInfoExclude(ctx, { caseFold });
-  if (info !== undefined) base.push({ basedir: '', rules: info, kind: 'info' });
+export const buildIgnoreEvaluator = async (
+  ctx: Context,
+  standard?: StandardExcludes,
+): Promise<IgnoreEvaluator> => {
+  const { caseFold, levels } = standard ?? (await readStandardExcludes(ctx));
+  const base = [...levels];
   const root = await readGitignore(ctx, '', { caseFold });
   if (root !== undefined) base.push({ basedir: '', rules: root, kind: 'gitignore' });
   const loadDirRules = (dir: FilePath | ''): Promise<IgnoreRuleset | undefined> =>
@@ -101,8 +117,11 @@ const settleChain = (state: SessionState, directory: FilePath): ChainOutcome => 
 const chainOf = (state: SessionState, directory: FilePath | ''): ChainOutcome =>
   state.chains.get(directory) ?? settleChain(state, directory as FilePath);
 
-export const createIgnoreSession = async (ctx: Context): Promise<IgnoreSession> => {
-  const evaluator = await buildIgnoreEvaluator(ctx);
+export const createIgnoreSession = async (
+  ctx: Context,
+  standard?: StandardExcludes,
+): Promise<IgnoreSession> => {
+  const evaluator = await buildIgnoreEvaluator(ctx, standard);
   const state: SessionState = {
     evaluator,
     stack: [...evaluator.base],

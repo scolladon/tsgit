@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   isAbsent,
   isPathTooLong,
+  isPermissionDenied,
   lstatIfPresent,
   lstatIfReachable,
   readUtf8IfPresent,
@@ -352,6 +353,27 @@ describe('isPathTooLong', () => {
       it(`Then it is ${expected ? 'a name-too-long fault' : 'not a name-too-long fault'}`, () => {
         // Arrange
         const sut = isPathTooLong;
+
+        // Act
+        const result = sut(error);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('isPermissionDenied', () => {
+  describe.each([
+    { refusal: 'PERMISSION_DENIED', error: permissionDenied('/repo/x'), expected: true },
+    { refusal: 'FILE_NOT_FOUND', error: fileNotFound('/repo/x'), expected: false },
+    { refusal: 'no code', error: new Error('PERMISSION_DENIED'), expected: false },
+  ])('Given a refusal carrying $refusal', ({ error, expected }) => {
+    describe('When classified', () => {
+      it(`Then it is ${expected ? 'a denied permission' : 'not a denied permission'}`, () => {
+        // Arrange
+        const sut = isPermissionDenied;
 
         // Act
         const result = sut(error);

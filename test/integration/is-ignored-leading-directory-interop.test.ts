@@ -10,7 +10,7 @@
  *   interopSurface: isIgnored
  */
 import { lstatSync, symlinkSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, truncate, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,6 +21,8 @@ import type { FilePath } from '../../src/domain/objects/object-id.js';
 import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const OVERSIZED_GITIGNORE = 'x'.repeat((1 << 20) + 1);
+// One byte over the size at which git itself gives up on a rule file.
+const OVERSIZED_FOR_GIT_BYTES = 100 * 1024 * 1024 + 1;
 const NEGATION = '!';
 const GITIGNORE_FIELDS = 4;
 const EXCLUDES_FILE_NAME = 'global-excludes';
@@ -260,18 +262,21 @@ interface GitRefusal {
   readonly stderr: string;
 }
 
-const gitRefusal = (repo: string, query: string): GitRefusal => {
+const gitRefusal = (repo: string, ...queries: ReadonlyArray<string>): GitRefusal => {
   const { stderr, exitCode } = tryRunGitWithExit(
-    ['-C', repo, 'check-ignore', '-v', '--no-index', '--', query],
+    ['-C', repo, 'check-ignore', '-v', '--no-index', '--', ...queries],
     {},
   );
   return { exitCode, stderr };
 };
 
-const tsgitRefusal = async (repo: string, query: string): Promise<unknown> => {
+const tsgitRefusal = async (repo: string, ...queries: ReadonlyArray<string>): Promise<unknown> => {
   const sut = isIgnored;
   try {
-    await sut(createNodeContext({ workDir: repo }), [{ path: query as FilePath }]);
+    await sut(
+      createNodeContext({ workDir: repo }),
+      queries.map((query) => ({ path: query as FilePath })),
+    );
   } catch (caught) {
     return (caught as TsgitError).data;
   }
@@ -294,6 +299,40 @@ const layLink = async (root: string, repo: string, target: (typeof LINK_TARGETS)
   }
   symlinkSync(directory, path.join(repo, 'link'));
 };
+
+/** A root rule file, a rule file behind a link, a file and a directory: one fixture for every spelling. */
+const SPELLING_FILES = {
+  '.gitignore': '*.log\n/anchored\n',
+  'real/.gitignore': 'secret\n',
+  file: '',
+  'sub/keep': '',
+} as const;
+
+const SPELLINGS = [
+  './top.log',
+  'sub/../top.log',
+  'sub//x.log',
+  'sub/./x.log',
+  'sub/../anchored',
+  'sub/anchored',
+  'link/../top.log',
+  'link/../secret',
+  '.',
+  'sub/..',
+  'sub/../',
+] as const;
+const SPELLINGS_GIT_IGNORES = 6;
+
+const writeSpellingRepo = async (root: string, ignoreCase: string): Promise<string> => {
+  const repo = await writeRepo(root, ignoreCase, row('spellings', SPELLING_FILES, ''));
+  symlinkSync(path.join(repo, 'real'), path.join(repo, 'link'));
+  return repo;
+};
+
+const EXCLUDE_FILES_GIT_READS_FIRST = [
+  { title: '.git/info/exclude', isConfigured: false },
+  { title: 'the core.excludesFile file', isConfigured: true },
+] as const;
 
 describe.skipIf(!GIT_AVAILABLE)('integration — isIgnored beneath an excluded directory', () => {
   let root: string;
@@ -344,6 +383,135 @@ describe.skipIf(!GIT_AVAILABLE)('integration — isIgnored beneath an excluded d
           expect(result).toMatchObject({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'link/secret' });
         },
       );
+    });
+
+    describe('When isIgnored is asked about a path spelled with dot, dot-dot or doubled separators', () => {
+      it.each(SPELLINGS)('Then %s is answered as git check-ignore answers', async (query) => {
+        // Arrange
+        const repo = await writeSpellingRepo(root, ignoreCase);
+        const sut = tsgitVerdict;
+
+        // Act
+        const result = await sut(repo, query, path.join(repo, '.git', EXCLUDES_FILE_NAME));
+
+        // Assert
+        expect(result).toEqual(gitVerdict(repo, query));
+      });
+
+      it('Then git itself ignores some of those spellings and not others', async () => {
+        // Arrange
+        const repo = await writeSpellingRepo(root, ignoreCase);
+        const sut = gitVerdict;
+
+        // Act
+        const result = SPELLINGS.filter((query) => sut(repo, query).ignored);
+
+        // Assert
+        expect(result).toHaveLength(SPELLINGS_GIT_IGNORES);
+      });
+
+      it.each(['missing/../link/secret', 'file/../link/secret'])(
+        'Then %s is refused as beyond a symbolic link, as git check-ignore refuses it',
+        async (query) => {
+          // Arrange
+          const repo = await writeSpellingRepo(root, ignoreCase);
+
+          // Act
+          const result = await tsgitRefusal(repo, query);
+
+          // Assert
+          const refusal = gitRefusal(repo, query);
+          expect(refusal.exitCode).toBe(128);
+          expect(refusal.stderr).toContain(`pathspec '${query}' is beyond a symbolic link`);
+          expect(result).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: query });
+        },
+      );
+
+      it.each(['../out/secret', 'sub/../../x'])(
+        'Then %s is refused as outside the repository, as git check-ignore refuses it',
+        async (query) => {
+          // Arrange
+          const repo = await writeSpellingRepo(root, ignoreCase);
+
+          // Act
+          const result = await tsgitRefusal(repo, query);
+
+          // Assert
+          const refusal = gitRefusal(repo, query);
+          expect(refusal.exitCode).toBe(128);
+          expect(refusal.stderr).toContain(`'${query}' is outside repository`);
+          expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: query });
+        },
+      );
+
+      it.each([
+        {
+          queries: ['../x', 'link/secret'],
+          message: "'../x' is outside repository",
+          refusal: { code: 'PATHSPEC_OUTSIDE_REPO', path: '../x' },
+        },
+        {
+          queries: ['link/secret', '../x'],
+          message: "pathspec 'link/secret' is beyond a symbolic link",
+          refusal: { code: 'PATHSPEC_BEYOND_SYMLINK', path: 'link/secret' },
+        },
+      ])(
+        'Then of $queries the first refused one decides, as in git check-ignore',
+        async ({ queries, message, refusal }) => {
+          // Arrange
+          const repo = await writeSpellingRepo(root, ignoreCase);
+
+          // Act
+          const result = await tsgitRefusal(repo, ...queries);
+
+          // Assert
+          const gitAnswer = gitRefusal(repo, ...queries);
+          expect(gitAnswer.exitCode).toBe(128);
+          expect(gitAnswer.stderr).toContain(message);
+          expect(result).toEqual(refusal);
+        },
+      );
+    });
+
+    describe('When a rule file is too large and the queried path lies beyond a symbolic link', () => {
+      it.each(EXCLUDE_FILES_GIT_READS_FIRST)(
+        'Then $title refuses first, as in git check-ignore',
+        async ({ isConfigured }) => {
+          // Arrange
+          const repo = await writeSpellingRepo(root, ignoreCase);
+          const oversized = isConfigured
+            ? path.join(repo, '.git', EXCLUDES_FILE_NAME)
+            : path.join(repo, '.git', 'info', 'exclude');
+          await mkdir(path.dirname(oversized), { recursive: true });
+          await writeFile(oversized, '');
+          await truncate(oversized, OVERSIZED_FOR_GIT_BYTES);
+          if (isConfigured) git(repo, 'config', 'core.excludesFile', oversized);
+
+          // Act
+          const result = await tsgitRefusal(repo, 'link/secret');
+
+          // Assert
+          const refusal = gitRefusal(repo, 'link/secret');
+          expect(refusal.exitCode).toBe(128);
+          expect(refusal.stderr).toContain('as an exclude file');
+          expect(result).toMatchObject({ code: 'GITIGNORE_FILE_TOO_LARGE' });
+        },
+      );
+
+      it('Then an oversized root .gitignore does not: the link refuses, as in git check-ignore', async () => {
+        // Arrange
+        const repo = await writeSpellingRepo(root, ignoreCase);
+        await writeFile(path.join(repo, '.gitignore'), OVERSIZED_GITIGNORE);
+
+        // Act
+        const result = await tsgitRefusal(repo, 'link/secret');
+
+        // Assert
+        const refusal = gitRefusal(repo, 'link/secret');
+        expect(refusal.exitCode).toBe(128);
+        expect(refusal.stderr).toContain("pathspec 'link/secret' is beyond a symbolic link");
+        expect(result).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: 'link/secret' });
+      });
     });
 
     describe('When isIgnored is asked about the symbolic link itself', () => {

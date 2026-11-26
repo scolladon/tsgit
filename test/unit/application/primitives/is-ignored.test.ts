@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { isIgnored } from '../../../../src/application/primitives/is-ignored.js';
 import { MAX_GITIGNORE_BYTES } from '../../../../src/application/primitives/types.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 
 afterEach(() => __resetConfigCacheForTests());
@@ -956,20 +956,207 @@ describe('isIgnored', () => {
       });
     });
 
-    describe('When the query list is empty', () => {
-      it('Then it returns no match', async () => {
+    describe.each([
+      ['an oversized info/exclude', 'info', 'GITIGNORE_FILE_TOO_LARGE'],
+      ['an oversized global excludes file', 'global', 'GITIGNORE_FILE_TOO_LARGE'],
+      ['an oversized root .gitignore', 'root', 'PATHSPEC_BEYOND_SYMLINK'],
+    ] as const)('When the repository also holds %s', (_title, oversized, code) => {
+      it('Then the file git reads before its arguments refuses first, and the root file does not', async () => {
         // Arrange
-        const ctx = await seedRepo();
+        const ctx = await seedRepo('/repo/home');
         const work = ctx.layout.workDir;
+        const OVERSIZED_FILES = {
+          info: `${ctx.layout.gitDir}/info/exclude`,
+          global: '/repo/home/.gitignore_global',
+          root: `${work}/.gitignore`,
+        };
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n  excludesFile = ~/.gitignore_global\n',
+        );
+        await ctx.fs.writeUtf8(OVERSIZED_FILES[oversized], TOO_LARGE);
         await ctx.fs.writeUtf8(`${work}/real/file`, '');
         await ctx.fs.symlink(`${work}/real`, `${work}/link`);
+
+        // Act
+        const result = await refusalOf(ctx, ['link/secret']);
+
+        // Assert
+        expect(result).toMatchObject({ code });
+      });
+    });
+  });
+
+  describe('Given a root .gitignore, a .gitignore behind a symbolic link, a file and a directory', () => {
+    const seedSpellings = async () => {
+      const ctx = await seedRepo();
+      const work = ctx.layout.workDir;
+      await ctx.fs.writeUtf8(`${work}/.gitignore`, '*.log\n/anchored\n');
+      await ctx.fs.writeUtf8(`${work}/real/.gitignore`, 'secret\n');
+      await ctx.fs.writeUtf8(`${work}/file`, '');
+      await ctx.fs.writeUtf8(`${work}/sub/keep`, '');
+      await ctx.fs.symlink(`${work}/real`, `${work}/link`);
+      return ctx;
+    };
+    const refusalOf = async (queries: ReadonlyArray<string>): Promise<unknown> => {
+      const ctx = await seedSpellings();
+      const sut = isIgnored;
+      try {
+        await sut(
+          ctx,
+          queries.map((query) => ({ path: path(query) })),
+        );
+      } catch (caught) {
+        return (caught as TsgitError).data;
+      }
+      return expect.unreachable('isIgnored did not refuse');
+    };
+    const BY_LOG_RULE = {
+      ignored: true,
+      source: { kind: 'gitignore', basedir: '', line: 1, pattern: '*.log' },
+    };
+    const BY_ANCHORED_RULE = {
+      ignored: true,
+      source: { kind: 'gitignore', basedir: '', line: 2, pattern: '/anchored' },
+    };
+    const NOT_IGNORED = { ignored: false };
+
+    describe.each([
+      ['./top.log', BY_LOG_RULE],
+      ['sub/../top.log', BY_LOG_RULE],
+      ['sub//x.log', BY_LOG_RULE],
+      ['sub/./x.log', BY_LOG_RULE],
+      ['sub/../anchored', BY_ANCHORED_RULE],
+      ['sub/anchored', NOT_IGNORED],
+      ['link/../top.log', BY_LOG_RULE],
+      ['link/../secret', NOT_IGNORED],
+      ['.', NOT_IGNORED],
+      ['sub/..', NOT_IGNORED],
+      ['sub/../', NOT_IGNORED],
+    ])('When isIgnored is asked about %s', (query, answer) => {
+      it('Then it judges the normalized path and reports the path as asked', async () => {
+        // Arrange
+        const ctx = await seedSpellings();
         const sut = isIgnored;
 
         // Act
-        const result = await sut(ctx, []);
+        const result = await sut(ctx, [{ path: path(query) }]);
 
         // Assert
-        expect(result).toEqual([]);
+        expect(result).toEqual([{ path: query, ...answer }]);
+      });
+    });
+
+    describe.each([
+      ['missing/../link/secret'],
+      ['file/../link/secret'],
+      ['missing/./../link/secret'],
+    ])('When isIgnored is asked about %s', (query) => {
+      it('Then it refuses the path as one beyond a symbolic link', async () => {
+        // Arrange
+        const sut = refusalOf;
+
+        // Act
+        const result = await sut([query]);
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_BEYOND_SYMLINK', path: query });
+      });
+    });
+
+    describe.each([['../out/secret'], ['sub/../../x'], ['..']])(
+      'When isIgnored is asked about %s',
+      (query) => {
+        it('Then it refuses the path as one outside the repository', async () => {
+          // Arrange
+          const sut = refusalOf;
+
+          // Act
+          const result = await sut([query]);
+
+          // Assert
+          expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: query });
+        });
+      },
+    );
+
+    describe.each([
+      [['../x', 'link/secret'], { code: 'PATHSPEC_OUTSIDE_REPO', path: '../x' }],
+      [['link/secret', '../x'], { code: 'PATHSPEC_BEYOND_SYMLINK', path: 'link/secret' }],
+    ] as const)('When isIgnored is asked about %j', (queries, refusal) => {
+      it('Then the first refused query, in query order, decides the refusal', async () => {
+        // Arrange
+        const sut = refusalOf;
+
+        // Act
+        const result = await sut(queries);
+
+        // Assert
+        expect(result).toEqual(refusal);
+      });
+    });
+  });
+
+  describe('Given a rule excluding a directory whose content the file system refuses to examine', () => {
+    const seedLocked = async (refusal: (refused: string) => TsgitError) => {
+      const ctx = await seedRepo();
+      const work = ctx.layout.workDir;
+      await ctx.fs.writeUtf8(`${work}/.gitignore`, 'locked/\n');
+      await ctx.fs.writeUtf8(`${work}/locked/sub/x`, '');
+      const fs = new Proxy(ctx.fs, {
+        get(target, prop, receiver) {
+          if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+          return async (examined: string) => {
+            if (examined === `${work}/locked/sub`) throw refusal(examined);
+            return target.lstat(examined);
+          };
+        },
+      });
+      return { ...ctx, fs };
+    };
+
+    describe('When the refusal is a denied permission', () => {
+      it('Then the directory is not taken for a symbolic link and its rule decides', async () => {
+        // Arrange
+        const ctx = await seedLocked(permissionDenied);
+        const sut = isIgnored;
+
+        // Act
+        const result = await sut(ctx, [{ path: path('locked/sub/x') }]);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: 'locked/sub/x',
+            ignored: true,
+            source: { kind: 'gitignore', basedir: '', line: 1, pattern: 'locked/' },
+          },
+        ]);
+      });
+    });
+
+    describe('When the refusal is anything else', () => {
+      it('Then the refusal is raised as it came', async () => {
+        // Arrange
+        const ctx = await seedLocked(
+          (refused) => new TsgitError({ code: 'DIRECTORY_NOT_EMPTY', path: refused }),
+        );
+        const sut = isIgnored;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, [{ path: path('locked/sub/x') }]);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'DIRECTORY_NOT_EMPTY',
+          path: `${ctx.layout.workDir}/locked/sub`,
+        });
       });
     });
   });

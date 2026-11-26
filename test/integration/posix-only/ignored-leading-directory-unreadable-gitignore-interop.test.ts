@@ -1,7 +1,8 @@
 /**
  * POSIX-only interop — a .gitignore inside an excluded directory that cannot be read (mode 000).
  * git never opens it, so `git check-ignore -v` still reports the excluding rule; `isIgnored`
- * must report the same without failing.
+ * must report the same without failing. The same holds when the excluded directory itself
+ * cannot be read: nothing beneath it is examined.
  *
  * @proves
  *   surface:        isIgnored, repo.checkout
@@ -23,13 +24,15 @@ import { listing } from '../occupant-displacement-fixtures.js';
 const IS_ROOT = process.getuid?.() === 0;
 const UNREADABLE = 0o000;
 const READABLE = 0o644;
+const TRAVERSABLE = 0o755;
 const GITIGNORE_FIELDS = 4;
 const QUERY = 'ab/c';
+const QUERY_BENEATH_LOCKED_DIRECTORY = 'locked/sub/x';
 
-const gitVerbose = (repo: string): string => {
+const gitVerbose = (repo: string, query: string = QUERY): string => {
   const { stdout, stderr, exitCode } = tryRunGitWithExit(
     ['-C', repo, 'check-ignore', '-v', '-z', '--stdin', '--no-index'],
-    { input: `${QUERY}\0` },
+    { input: `${query}\0` },
   );
   if (exitCode !== 0) throw new Error(`git check-ignore failed (${exitCode}): ${stderr}`);
   const fields = stdout.split('\0').filter((field) => field !== '');
@@ -42,13 +45,15 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
   'integration — an unreadable .gitignore inside an excluded directory',
   () => {
     let root: string;
-    let locked: string[] = [];
-    const lock = (file: string): void => {
-      chmodSync(file, UNREADABLE);
-      locked.push(file);
+    let locked: Array<{ readonly target: string; readonly restored: number }> = [];
+    const lock = (target: string, restored: number = READABLE): void => {
+      chmodSync(target, UNREADABLE);
+      locked.push({ target, restored });
     };
     const unlockAll = (): void => {
-      for (const file of locked) if (existsSync(file)) chmodSync(file, READABLE);
+      for (const { target, restored } of locked) {
+        if (existsSync(target)) chmodSync(target, restored);
+      }
     };
 
     beforeEach(async () => {
@@ -85,6 +90,32 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)(
           const source = result?.source;
           expect(result?.ignored).toBe(true);
           expect(`.gitignore:${source?.line}:${source?.pattern}`).toBe(gitVerbose(repo));
+        });
+      });
+
+      describe('When isIgnored is asked about a path beneath an excluded directory that cannot be read', () => {
+        it('Then it reports the excluding rule as git check-ignore does', async () => {
+          // Arrange
+          const repo = path.join(root, 'repo');
+          runGit(['init', '-q', '-b', 'main', repo]);
+          git(repo, 'config', 'core.ignorecase', ignoreCase);
+          await writeFile(path.join(repo, '.gitignore'), 'locked/\n');
+          await mkdir(path.join(repo, 'locked', 'sub'), { recursive: true });
+          await writeFile(path.join(repo, QUERY_BENEATH_LOCKED_DIRECTORY), '');
+          lock(path.join(repo, 'locked'), TRAVERSABLE);
+          const sut = isIgnored;
+
+          // Act
+          const [result] = await sut(createNodeContext({ workDir: repo }), [
+            { path: QUERY_BENEATH_LOCKED_DIRECTORY as FilePath },
+          ]);
+
+          // Assert
+          const source = result?.source;
+          expect(result?.ignored).toBe(true);
+          expect(`.gitignore:${source?.line}:${source?.pattern}`).toBe(
+            gitVerbose(repo, QUERY_BENEATH_LOCKED_DIRECTORY),
+          );
         });
       });
 
