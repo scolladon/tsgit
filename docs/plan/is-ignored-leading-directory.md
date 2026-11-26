@@ -31,6 +31,7 @@ Four parts, one commit each, every commit green on its own gate:
 | 2 | One ignore session behind the per-path primitive | the per-path primitive answers as `git check-ignore` (Matrices A, E) | R1, R2, R3, R4, R5, R8 | Matrix A (28 rows), X1, X3, posix X2 |
 | 3 | The shared predicate runs on the session | every overwrite pre-flight reads an occupant under an excluded directory as ignored (Matrices B, C, D, F); walk callers unchanged | R4, R6, R7, R8 | Matrices B, C, D, F, checkout X1, posix checkout X2, merge.abort and rebase.skip pins |
 | 4 | Bench pair for the session | none (bench rows; the ratio is measured and handed back) | R7 cost half (ADR-1273) | none |
+| 5 | One outcome per directory chain (added after the measurement, ADR-1278) | none (same verdicts; the session remembers per chain, a path asks only its parent) | R7 cost half | none (every interop row is a GUARD) |
 
 **Ordering argument.** Part 1 lands the verdict as pure functions so Parts 2 and 3 only wire
 loading. Part 2 builds the session and moves only `isIgnored` onto it: the predicate (and so every
@@ -749,6 +750,194 @@ them in the design:
 ### Commit
 
 `test(bench): time the ignore session against a same-process floor twin`
+
+## Part 5 — One outcome per directory chain in the session (R7 cost half; ADR-1278, ADR-1273)
+
+Added after Parts 1–4 landed: the session of Part 2 costs 1.37 to 1.63 times main's predicate
+on a walk (design §10). This part changes how the session remembers, not what it answers:
+every existing unit, property and interop row is a GUARD and must stay green unchanged, apart
+from the rows of the two functions it replaces.
+
+### Context
+
+Files this part edits:
+- `src/domain/ignore/matcher-stack.ts`
+- `src/application/primitives/internal/ignore-evaluator.ts`
+- `test/unit/domain/ignore/matcher-stack.test.ts`
+- `test/unit/domain/ignore/matcher-stack.properties.test.ts`
+- `test/unit/domain/ignore/arbitraries.ts`
+- `test/unit/application/primitives/is-ignored.test.ts`
+
+Read-only and unchanged: src/application/primitives/is-ignored.ts (it only calls
+`session.match`), test/bench/ignore-leading-directory.bench.ts (re-measured, not edited), every
+interop file, build-ignore-evaluator.test.ts, occupant-clash.test.ts, apply-changeset.test.ts.
+
+matcher-stack.ts today exports (Part 1) `leadingDirectoriesOf(path)`,
+`directoryExclusion(stack, directory)` and
+`matchBeneathLeadingDirectories(stack, path, isDir, exclusionOf)`. Keep `directoryExclusion`
+as it is. Add, exactly (design §10):
+
+```ts
+/** The directory holding `path`, or `''` for a root-level path. */
+export const parentDirectoryOf = (path: FilePath): FilePath | '' =>
+  path.slice(0, Math.max(path.lastIndexOf('/'), 0)) as FilePath | '';
+
+/** git's prep_exclude step: an excluded chain above decides, else the directory's own test. */
+export const chainExclusion = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath,
+  above: VerboseMatch | undefined,
+): VerboseMatch | undefined => above ?? directoryExclusion(stack, directory);
+
+/** git's last_matching_pattern: the exclusion of the leading chain decides, else the full path. */
+export const matchBeneathChain = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
+  chain: VerboseMatch | undefined,
+): VerboseMatch => chain ?? matchInStackVerbose(stack, path, isDir);
+```
+
+Then delete `leadingDirectoriesOf` and `matchBeneathLeadingDirectories` (no src importer may
+remain; `npm run check:dead-code` proves it). Still exported from matcher-stack.ts only, never
+from src/domain/ignore/index.ts.
+
+ignore-evaluator.ts today (Part 2 and 3): `IgnoreSession`, `SessionState { evaluator, stack,
+entered, resolved }`, helpers `pushDirRules`, `enterDirectory`, `rememberEntry`, `exclusionOf`,
+`settleLeadingDirectories`, then `createIgnoreSession` and `buildRepoIgnorePredicate`. Change
+to (names fixed; each helper under 20 lines; `IgnoreSession`, `pushDirRules`,
+`buildRepoIgnorePredicate` and `buildIgnoreEvaluator` unchanged):
+
+```ts
+type ChainOutcome = Promise<VerboseMatch | undefined>;
+
+interface SessionState {
+  readonly evaluator: IgnoreEvaluator;
+  readonly stack: IgnoreLevel[];
+  /** The first excluded directory on each directory's chain, root-first; the root has none. */
+  readonly chains: Map<FilePath | '', ChainOutcome>;
+}
+
+const resolveChain = async (state: SessionState, directory: FilePath): ChainOutcome => {
+  const above = await chainOf(state, parentDirectoryOf(directory));
+  const exclusion = chainExclusion(state.stack, directory, above);
+  if (exclusion === undefined) await pushDirRules(state, directory);
+  return exclusion;
+};
+
+const rememberChain = (state: SessionState, directory: FilePath): ChainOutcome => {
+  const chain = resolveChain(state, directory);
+  state.chains.set(directory, chain);
+  return chain;
+};
+
+const chainOf = (state: SessionState, directory: FilePath | ''): ChainOutcome =>
+  state.chains.get(directory) ?? rememberChain(state, directory as FilePath);
+```
+
+`createIgnoreSession` builds `chains: new Map([['', Promise.resolve(undefined)]])` and its
+`match` is
+`async (path, isDirectory) => matchBeneathChain(state.stack, path, isDirectory, await chainOf(state, parentDirectoryOf(path)))`.
+`enterDirectory`, `rememberEntry`, `exclusionOf`, `settleLeadingDirectories`, `entered` and
+`resolved` are deleted. `resolveChain` and `chainOf` call each other: declare them as `const`
+arrow functions in the order above (the call happens after both are initialised); if biome's
+`noInvalidUseBeforeDefine` objects, write `resolveChain` and `rememberChain` as hoisted
+`function` declarations instead, keeping the bodies. An async return type must be spelled
+`Promise<VerboseMatch | undefined>` if TypeScript refuses the alias on an `async` function.
+
+Why the `await chainOf(parent)` comes before the test: the parent's promise settles after the
+parent's rules are pushed, so the directory is tested against every level above it, and an
+excluded chain reads nothing at or beneath its first excluded directory.
+
+Test helpers that exist: matcher-stack.test.ts has `level`, `path`, `foldedLevel`, `kindLevel`
+and three describes from Part 1 (`leadingDirectoriesOf` 3 rows, `directoryExclusion` 5 rows,
+`matchBeneathLeadingDirectories` 18 rows with `exclusionOf = (d) => directoryExclusion(stack, d)`).
+arbitraries.ts exports `arbGitignoreRules`, `levelOf`, `arbExcludedDirectoryCase`,
+`arbLevelsBeyondDirectory`, `arbStackWithoutExcludedLeadingDirectory`. The four properties in
+matcher-stack.properties.test.ts call `matchBeneathLeadingDirectories`.
+
+Add to arbitraries.ts one pure composition of the three domain functions, used by the unit
+rows and the properties in place of the deleted function (nothing but the domain functions
+inside it):
+
+```ts
+/** The first excluded directory on `directory`'s chain over a fully loaded stack. */
+export const chainOver = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  directory: FilePath | '',
+): VerboseMatch | undefined =>
+  directory === ''
+    ? undefined
+    : chainExclusion(stack, directory, chainOver(stack, parentDirectoryOf(directory)));
+
+/** The whole leading-directory rule over a fully loaded stack. */
+export const judgeBeneathChain = (
+  stack: ReadonlyArray<IgnoreLevel>,
+  path: FilePath,
+  isDir: boolean,
+): VerboseMatch => matchBeneathChain(stack, path, isDir, chainOver(stack, parentDirectoryOf(path)));
+```
+
+Mutation hot spots this part owns and the rows that kill them:
+- `Math.max` → `Math.min` (every path root-level) and the `0` literal: the `a/b/c` → `a/b` row
+  and every nested row.
+- `above ?? directoryExclusion(...)` → `&&`: the directory-excluded row with `above` undefined.
+  The "first exclusion wins" row (`above` defined AND the directory itself excluded by another
+  rule: the result is `above` by identity) kills a swapped-operand form.
+- `chain ?? matchInStackVerbose(...)` → `&&`: any full-path row with no chain.
+- `exclusion === undefined` in `resolveChain`: forced true reads the excluded directory's own
+  `.gitignore` (the oversized `ab/.gitignore` row); forced false never loads a nested rule file
+  (the `a/.gitignore` rows).
+- `state.chains.get(directory) ?? rememberChain(...)` → `&&`: a new directory yields no
+  outcome, so every excluded-directory row fails.
+- The root's seeded entry (`['', …]`): emptied or renamed, the root's chain asks for itself
+  before it is stored and every row throws a stack overflow.
+- `rules.length > 0`: unchanged from Part 2 (no comment).
+
+### TDD steps
+
+1. RED `parentDirectoryOf` (matcher-stack.test.ts, new `describe('parentDirectoryOf')`,
+   `it.each`): `a` → `''`, `a/b` → `a`, `a/b/c` → `a/b`. Fails: the import is `undefined`.
+   GREEN: add the function.
+2. RED `chainExclusion` (new describe, one `it` each): `above` defined and the directory not
+   excluded → `above` by identity; `above` defined and the directory excluded by another rule →
+   still `above` by identity; `above` undefined and root `ab/` → the `ab/` match for `ab`;
+   `above` undefined and root `ab/` then `!ab/` → `undefined`. GREEN: add the function.
+3. RED `matchBeneathChain` (new describe): a chain given and root `ab/`, `!ab/c` → the chain by
+   identity for `ab/c`; no chain and root `*.log` → ignored for `x.log`; no chain and root
+   `ab/*`, `!ab/c` → `unignored` with rule index 1 for `ab/c`; no chain and no rule → `unset`.
+   GREEN: add the function.
+4. GUARD: add `chainOver` and `judgeBeneathChain` to arbitraries.ts; move the 18 rows of the
+   `matchBeneathLeadingDirectories` describe onto `judgeBeneathChain(stack, path, isDir)`
+   (retitle the describe by behaviour: the whole leading-directory rule over a loaded stack),
+   same expectations (verdict, level by identity, rule index). They pass on the code of steps
+   1–3.
+5. GUARD: the four properties call `judgeBeneathChain` in place of
+   `matchBeneathLeadingDirectories`; same generators, same assertions, the recorded oracle rate
+   stays as measured in Part 1. Prove red-capability once with a temporary edit (make
+   `chainExclusion` ignore `above`: the excluded-directory property fails for a query two
+   levels beneath the directory), reverted.
+6. REFACTOR the session onto the chain memo (the code above). Every suite named in the gate is
+   a GUARD and stays green unchanged. Add one GUARD row to is-ignored.test.ts beside the
+   existing oversized-file rows: root `ab/`, an oversized `.gitignore` at `ab/x`, at `ab/x/y`
+   and at `ab/x/y/z`, query `ab/x/y/z/w` → ignored by `.gitignore` line 1 `ab/`, no throw.
+7. Delete `leadingDirectoriesOf` and `matchBeneathLeadingDirectories` with the
+   `leadingDirectoriesOf` describe; `npm run check:dead-code` and
+   `command grep -rn "leadingDirectoriesOf\|matchBeneathLeadingDirectories" src test` (no hit).
+8. Measure (quiet machine first: `uptime` load average below 16 and no foreign
+   `stryker`/`vitest` run): three runs of
+   `./node_modules/.bin/vitest bench --run --config vitest.bench.config.ts test/bench/ignore-leading-directory.bench.ts`,
+   each to its own scratch file; per run, ratio = session row mean / floor twin mean. Hand back
+   the three pairs of means, the three ratios and `uptime` at start and end. The session sets
+   the gate against the first session's 2.02 to 2.21.
+
+### Gate
+
+`npx vitest run test/unit/domain/ignore test/unit/application/primitives/is-ignored.test.ts test/unit/application/commands/internal/build-ignore-evaluator.test.ts test/unit/application/primitives/internal/occupant-clash.test.ts test/unit/application/primitives/apply-changeset.test.ts test/integration/is-ignored-leading-directory-interop.test.ts test/integration/ignored-leading-directory-occupant-interop.test.ts test/integration/gitignore-end-to-end.test.ts && ./node_modules/.bin/vitest run --project posix-integration test/integration/posix-only/ignored-leading-directory-unreadable-gitignore-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/ignore/matcher-stack.ts src/application/primitives/internal/ignore-evaluator.ts test/unit/domain/ignore/matcher-stack.test.ts test/unit/domain/ignore/matcher-stack.properties.test.ts test/unit/domain/ignore/arbitraries.ts test/unit/application/primitives/is-ignored.test.ts && npm run check:spelling && npm run check:test-pyramid && npm run check:dead-code`
+
+### Commit
+
+`perf(ignore): keep one outcome per directory chain in the ignore session`
 
 ## Notes for later phases (not parts)
 
