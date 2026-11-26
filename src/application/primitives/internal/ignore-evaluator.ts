@@ -25,9 +25,8 @@ export interface IgnoreEvaluator {
 /**
  * Build an `IgnoreEvaluator` from the four repository-wide ignore sources.
  * Per-directory `.gitignore` files are NOT loaded eagerly —
- * the caller (typically `buildRepoIgnorePredicate`) loads them on
- * demand during the walk, so subtrees pruned by a parent rule are
- * never read.
+ * the ignore session loads them on demand, one leading directory at a
+ * time, so nothing at or beneath an excluded directory is ever read.
  */
 export const buildIgnoreEvaluator = async (ctx: Context): Promise<IgnoreEvaluator> => {
   const caseFold = (await readConfig(ctx)).core?.ignoreCase === true;
