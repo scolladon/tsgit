@@ -144,6 +144,55 @@ describe('checkout createBranch', () => {
       });
     });
   });
+
+  describe('Given HEAD as the new branch name and detach', () => {
+    describe('When checkout runs', () => {
+      it('Then it refuses the name before the detach conflict', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { createBranch: { name: 'HEAD' }, detach: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'branch name must not be HEAD',
+        });
+      });
+    });
+  });
+
+  describe('Given an existing branch name and detach', () => {
+    describe('When checkout runs', () => {
+      it('Then it refuses the existing branch before the detach conflict and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { createBranch: { name: 'main' }, detach: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'BRANCH_EXISTS',
+          name: 'refs/heads/main',
+        });
+        expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
+      });
+    });
+  });
 });
 
 describe('checkout createBranch with no start point on a born HEAD', () => {
@@ -329,6 +378,24 @@ describe('checkout from an unborn HEAD with no start point', () => {
           option: 'createBranch',
           reason: 'cannot be combined with detach',
         });
+        expect(await headFile(ctx)).toBe(before);
+      });
+    });
+
+    describe('When checkout creates HEAD with detach', () => {
+      it('Then it refuses the name before the detach conflict and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seedUnborn();
+        const before = await headFile(ctx);
+        const sut = checkout;
+
+        // Act
+        const result = await dataOf(() =>
+          sut(ctx, { detach: true, createBranch: { name: 'HEAD' } }),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'INVALID_REF', reason: 'branch name must not be HEAD' });
         expect(await headFile(ctx)).toBe(before);
       });
     });

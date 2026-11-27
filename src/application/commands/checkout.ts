@@ -204,12 +204,15 @@ const headCheckoutLabel = (head: HeadState, oldOid: ObjectId): string =>
     ? head.target.slice(HEADS_PREFIX.length)
     : oldOid;
 
-/** git refuses `-b` with `--detach`, and an existing branch name, before the work tree moves. */
+/**
+ * git judges a new branch in its own order before the work tree moves: the name's validity,
+ * then a branch already carrying it, and only then the `--detach` conflict.
+ */
 const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<void> => {
   if (opts.createBranch === undefined) return;
-  if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
   const name = newBranchRef(opts.createBranch.name);
   if (await refResolvesForReading(ctx, name)) throw branchExists(name);
+  if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
 };
 
 const createRequestedBranch = async (
