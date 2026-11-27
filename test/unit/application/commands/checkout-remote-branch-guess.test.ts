@@ -110,6 +110,11 @@ describe('checkout remote-branch guess', () => {
 
         // Assert
         expect(result).toMatchObject({ branch: FEAT, id: second, detached: false });
+        expect(result.createdBranch).toEqual({
+          name: FEAT,
+          id: second,
+          upstream: { remote: 'origin', merges: [FEAT], rebase: false },
+        });
         expect(await headFile(ctx)).toBe('ref: refs/heads/feat\n');
         expect(await branchSection(ctx, 'feat')).toBe(FEAT_SECTION);
         expect(await lastReflogMessage(ctx, FEAT)).toBe(

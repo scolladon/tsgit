@@ -58,7 +58,7 @@ import {
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTreeWithLossyBytes } from '../primitives/walk-tree.js';
-import { type BranchTrack, branchCreate } from './branch.js';
+import { type BranchCreateResult, type BranchTrack, branchCreate } from './branch.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -114,6 +114,12 @@ export interface CheckoutResult {
   readonly id: ObjectId;
   readonly detached: boolean;
   readonly changedPaths: number;
+  /**
+   * The branch this checkout created — by `createBranch`, or by git's guess of a
+   * local branch from a remote-tracking ref — and the upstream it recorded.
+   * Absent when no branch ref was written, an unborn `createBranch` included.
+   */
+  readonly createdBranch?: BranchCreateResult;
 }
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
@@ -290,11 +296,10 @@ const createRequestedBranch = async (
   ctx: Context,
   opts: CheckoutSwitchOptions,
   startPoint: string,
-): Promise<RefName | undefined> => {
+): Promise<BranchCreateResult | undefined> => {
   const request = opts.createBranch;
   if (request === undefined) return undefined;
-  const created = await branchCreate(ctx, { ...request, startPoint });
-  return created.name;
+  return branchCreate(ctx, { ...request, startPoint });
 };
 
 interface HeadMove {
@@ -453,7 +458,7 @@ const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<Checkou
   // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
   const created = await createRequestedBranch(ctx, opts, finish.arg);
   const stays = staysOnHead(opts, finish.branchRef);
-  const attached = stays ? attachedBranch(priorHead) : (created ?? finish.branchRef);
+  const attached = stays ? attachedBranch(priorHead) : (created?.name ?? finish.branchRef);
   if (!stays) await moveHeadForSwitch(ctx, finish, attached);
   await removeBranchState(ctx, 'announce');
   // post-checkout fires after the worktree + HEAD are updated; a branch checkout flags `1`.
@@ -463,6 +468,7 @@ const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<Checkou
     id: oid,
     detached: attached === undefined,
     changedPaths: finish.changedPaths,
+    ...(created === undefined ? {} : { createdBranch: created }),
   };
 };
 

@@ -65,6 +65,7 @@ describe('checkout createBranch', () => {
           id: first,
           detached: false,
           changedPaths: 1,
+          createdBranch: { name: 'refs/heads/topic', id: first },
         });
         expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/topic\n');
         expect(await readText(ctx, `${ctx.layout.gitDir}/refs/heads/topic`)).toBe(`${first}\n`);
@@ -85,11 +86,19 @@ describe('checkout createBranch', () => {
         const sut = checkout;
 
         // Act
-        await sut(ctx, { rev: 'other', createBranch: { name: 't2', track: 'direct' } });
+        const result = await sut(ctx, {
+          rev: 'other',
+          createBranch: { name: 't2', track: 'direct' },
+        });
 
         // Assert
         const config = await readText(ctx, `${ctx.layout.gitDir}/config`);
         expect(config).toContain('[branch "t2"]\n\tremote = .\n\tmerge = refs/heads/other\n');
+        expect(result.createdBranch?.upstream).toEqual({
+          remote: '.',
+          merges: ['refs/heads/other'],
+          rebase: false,
+        });
       });
     });
   });
@@ -265,6 +274,7 @@ describe('checkout createBranch from an unborn HEAD', () => {
           id: second,
           detached: false,
           changedPaths: 0,
+          createdBranch: { name: 'refs/heads/x', id: second },
         });
         expect(await readText(ctx, `${ctx.layout.gitDir}/refs/heads/x`)).toBe(`${second}\n`);
         expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/x\n');

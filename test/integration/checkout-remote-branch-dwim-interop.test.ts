@@ -12,13 +12,15 @@
  *   unique:         a checkout that creates or guesses a branch refuses and lands as git does
  *   interopSurface: checkout
  */
-import { appendFile, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import type { BranchCreateResult } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { TsgitError } from '../../src/domain/error.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -120,6 +122,41 @@ const stageLocalFile: Step = async (dir) => {
   git(dir, 'add', 'f.txt');
 };
 
+const writeWorkFile =
+  (relative: string): Step =>
+  async (dir) => {
+    const file = path.join(dir, relative);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'local\n');
+  };
+
+const danglingLink =
+  (relative: string): Step =>
+  (dir) =>
+    symlink('missing', path.join(dir, relative));
+
+/** Lists `[remote "origin"]` after every other remote: its section is rewritten at the end. */
+const originLast: Step = (dir) => {
+  const url = git(dir, 'config', 'remote.origin.url').trim();
+  git(dir, 'config', '--remove-section', 'remote.origin');
+  git(dir, 'config', 'remote.origin.url', url);
+  git(dir, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*');
+};
+
+const SYMLINKS_AVAILABLE = process.platform !== 'win32';
+
+const ambiguous = (name: string, remotes: ReadonlyArray<string>) => ({
+  exit: FATAL_EXIT,
+  line: `'${name}' matched multiple (${remotes.length}) remote tracking branches`,
+  data: { code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS', name, remotes },
+});
+
+const pathOrTracking = (name: string) => ({
+  exit: FATAL_EXIT,
+  line: `'${name}' could be both a local file and a tracking branch.`,
+  data: { code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name },
+});
+
 const reflogTop = (dir: string, ref: string): string | undefined => {
   const run = tryRunGitWithExit(['-C', dir, 'log', '-g', '--format=%gs', ref]);
   return run.exitCode === 0 ? run.stdout.split('\n')[0] : undefined;
@@ -139,6 +176,28 @@ const stateOf = async (dir: string, name: string): Promise<unknown> => {
     heads: headsOf(dir),
     status: git(dir, 'status', '--porcelain'),
   };
+};
+
+const HEADS_PREFIX = 'refs/heads/';
+const CREATION_LINE =
+  /^(Switched to a new branch '.*'|branch '.*' set up to track '.*'( by rebasing)?\.)$/;
+
+const shortBranchOf = (ref: string): string => ref.slice(HEADS_PREFIX.length);
+
+/** The lines git announces a branch creation with, in stdout-then-stderr order. */
+const gitCreationLines = (run: { stdout: string; stderr: string }): ReadonlyArray<string> =>
+  `${run.stdout}\n${run.stderr}`.split('\n').filter((line) => CREATION_LINE.test(line));
+
+/** git's creation lines, rebuilt from the structured result tsgit returns. */
+const rebuiltCreationLines = (created: BranchCreateResult | undefined): ReadonlyArray<string> => {
+  if (created === undefined) return [];
+  const name = shortBranchOf(created.name);
+  const switched = `Switched to a new branch '${name}'`;
+  const upstream = created.upstream;
+  if (upstream === undefined) return [switched];
+  const tracked = `${upstream.remote}/${shortBranchOf(upstream.merges[0] ?? '')}`;
+  const mode = upstream.rebase ? ' by rebasing' : '';
+  return [`branch '${name}' set up to track '${tracked}'${mode}.`, switched];
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -167,6 +226,9 @@ describe.skipIf(!GIT_AVAILABLE)(
       otherUp = path.join(scratch, 'otherUp');
       cloneOf(up, otherUp);
       git(otherUp, 'branch', 'only-other', 'origin/feat');
+      // A clone carries only the default branch locally: `feat` must be made a branch of
+      // `otherUp` for both remotes of `baseTwo` to carry it.
+      git(otherUp, 'branch', 'feat', 'origin/feat');
       baseOne = path.join(scratch, 'baseOne');
       cloneOf(up, baseOne);
       baseTwo = path.join(scratch, 'baseTwo');
@@ -518,6 +580,13 @@ describe.skipIf(!GIT_AVAILABLE)(
             name: 'feat',
           },
           {
+            label: 'a file of that name one directory down',
+            slug: 'f3',
+            base: 'one',
+            setup: [writeWorkFile('sub/feat')],
+            name: 'feat',
+          },
+          {
             label: 'the remote-tracking spelling',
             slug: 'r8',
             base: 'one',
@@ -547,11 +616,12 @@ describe.skipIf(!GIT_AVAILABLE)(
               const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', name], {
                 env: IDENTITY_ENV,
               });
-              await sut(ctx, { rev: name });
+              const result = await sut(ctx, { rev: name });
 
               // Assert
               expect(peerRun.exitCode).toBe(0);
               expect(await stateOf(ours, name)).toEqual(await stateOf(peer, name));
+              expect(rebuiltCreationLines(result.createdBranch)).toEqual(gitCreationLines(peerRun));
             });
           },
         );
@@ -568,11 +638,12 @@ describe.skipIf(!GIT_AVAILABLE)(
             const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', '-f', 'feat'], {
               env: IDENTITY_ENV,
             });
-            await sut(ctx, { rev: 'feat', force: true });
+            const result = await sut(ctx, { rev: 'feat', force: true });
 
             // Assert
             expect(peerRun.exitCode).toBe(0);
             expect(await stateOf(ours, 'feat')).toEqual(await stateOf(peer, 'feat'));
+            expect(rebuiltCreationLines(result.createdBranch)).toEqual(gitCreationLines(peerRun));
           });
         });
 
@@ -690,6 +761,131 @@ describe.skipIf(!GIT_AVAILABLE)(
             line: 'Your local changes to the following files would be overwritten by checkout',
             data: { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: ['f.txt'], untracked: [] },
           },
+          {
+            label: 'a name two remotes carry and no default remote',
+            slug: 'r2',
+            base: 'two',
+            setup: [],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'a name two remotes carry with the ambiguity advice off',
+            slug: 'r2n',
+            base: 'two',
+            setup: [gitStep('config', 'advice.checkoutAmbiguousRemoteBranchName', 'false')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'a name two remotes carry, origin configured last',
+            slug: 'r18',
+            base: 'two',
+            setup: [originLast],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['other', 'origin']),
+          },
+          {
+            label: 'a name two remotes carry and a default remote naming none',
+            slug: 'r3x',
+            base: 'two',
+            setup: [gitStep('config', 'checkout.defaultRemote', 'nope')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'a name two remotes carry and a default remote in another case',
+            slug: 'r28',
+            base: 'two',
+            setup: [gitStep('config', 'checkout.defaultRemote', 'OTHER')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'two remotes fetching into one namespace and no default remote',
+            slug: 'r17b',
+            base: 'two',
+            setup: [gitStep('config', 'remote.other.fetch', '+refs/heads/*:refs/remotes/origin/*')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'a file of that name and a name two remotes carry',
+            slug: 'f1',
+            base: 'two',
+            setup: [writeWorkFile('feat')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'a name two remotes carry alongside detach',
+            slug: 'a22d',
+            base: 'two',
+            setup: [],
+            gitArgs: ['--detach', 'feat'],
+            opts: { rev: 'feat', detach: true },
+            ...ambiguous('feat', ['origin', 'other']),
+          },
+          {
+            label: 'an untracked file of that name',
+            slug: 'r6',
+            base: 'one',
+            setup: [writeWorkFile('feat')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...pathOrTracking('feat'),
+          },
+          {
+            label: 'a directory of that name',
+            slug: 'r32',
+            base: 'one',
+            setup: [writeWorkFile('feat/x')],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            ...pathOrTracking('feat'),
+          },
+          ...(SYMLINKS_AVAILABLE
+            ? [
+                {
+                  label: 'a dangling symbolic link of that name',
+                  slug: 'f2',
+                  base: 'one',
+                  setup: [danglingLink('feat')],
+                  gitArgs: ['feat'],
+                  opts: { rev: 'feat' },
+                  ...pathOrTracking('feat'),
+                } satisfies GuessRefusalRow,
+              ]
+            : []),
+          {
+            label: 'a tracked file a remote-tracking ref also names',
+            slug: 'p4',
+            base: 'one',
+            setup: [
+              writeWorkFile('g.txt'),
+              gitStep('add', 'g.txt'),
+              gitStep('update-ref', 'refs/remotes/origin/g.txt', 'origin/feat'),
+            ],
+            gitArgs: ['g.txt'],
+            opts: { rev: 'g.txt' },
+            ...pathOrTracking('g.txt'),
+          },
+          {
+            label: 'a file of that name alongside detach',
+            slug: 'a22e',
+            base: 'one',
+            setup: [writeWorkFile('feat')],
+            gitArgs: ['--detach', 'feat'],
+            opts: { rev: 'feat', detach: true },
+            ...pathOrTracking('feat'),
+          },
         ] satisfies ReadonlyArray<GuessRefusalRow>)('When both tools check out $label', (row) => {
           it('Then both refuse with the same reason and leave the same HEAD and branches', async () => {
             // Arrange
@@ -710,6 +906,32 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(peerRun.exitCode).toBe(row.exit);
             expect(peerRun.stderr).toContain(row.line);
             expect(result).toEqual(row.data);
+            expect(await headBytes(ours)).toBe(await headBytes(peer));
+            expect(headsOf(ours)).toBe(headsOf(peer));
+          });
+        });
+
+        describe('When both tools check out, from a subdirectory, a name a file there carries', () => {
+          it('Then both refuse the name as a file and a tracking branch', async () => {
+            // Arrange
+            const { peer, ours } = await casePair('f3b', baseOne, ignoreCase);
+            await writeWorkFile('sub/feat')(peer);
+            await writeWorkFile('sub/feat')(ours);
+            const repo = await openRepository({ cwd: path.join(ours, 'sub') });
+            const sut = repo.checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', path.join(peer, 'sub'), 'checkout', 'feat'], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut({ rev: 'feat' }));
+            await repo.dispose();
+
+            // Assert
+            const expected = pathOrTracking('feat');
+            expect(peerRun.exitCode).toBe(expected.exit);
+            expect(peerRun.stderr).toContain(expected.line);
+            expect(result).toEqual(expected.data);
             expect(await headBytes(ours)).toBe(await headBytes(peer));
             expect(headsOf(ours)).toBe(headsOf(peer));
           });
