@@ -208,6 +208,48 @@ describe('checkout of a switch target git cannot switch to', () => {
     });
   });
 
+  describe('Given a name no revision answers, a branch to create and detach', () => {
+    describe('When checkout switches to it', () => {
+      it('Then it refuses the start point before the path argument to detach', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        const result = await refusal(
+          sut(ctx, { rev: 'nope', detach: true, createBranch: { name: 'x' } }),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_START_POINT_NOT_COMMIT',
+          revision: 'nope',
+          branch: 'x',
+        });
+      });
+    });
+  });
+
+  describe('Given a switch argument outside the work tree', () => {
+    describe.each([
+      { label: 'while creating a branch', opts: { rev: '../zz', createBranch: { name: 'x' } } },
+      { label: 'while detaching', opts: { rev: '../zz', detach: true } },
+    ])('When checkout switches to it $label', ({ opts }) => {
+      it('Then it refuses the pathspec before the switch options and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        const result = await refusal(sut(ctx, opts));
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '../zz' });
+        expect(await readHeadFile(ctx)).toBe(HEAD_ON_MAIN);
+      });
+    });
+  });
+
   describe('Given a dirty tracked path and detach', () => {
     describe('When checkout switches to the path', () => {
       it('Then it refuses naming the path and leaves the file dirty', async () => {

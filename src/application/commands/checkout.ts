@@ -174,10 +174,12 @@ const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId 
 
 /**
  * A switch argument no revision answers: git hands it to `checkout_paths` as the caller spelled
- * it, and restores what it matches from the index. `-b` refuses first, naming a start point no
- * branch can come from, then `--detach`, which takes no path argument.
+ * it, and restores what it matches from the index. `parse_pathspec` refuses an argument it cannot
+ * read first; then `-b` refuses, naming a start point no branch can come from, then `--detach`,
+ * which takes no path argument.
  */
 const unresolvedSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<CheckoutResult> => {
+  resolveCommandPathspec(ctx, [opts.rev]);
   if (opts.createBranch !== undefined) {
     throw checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
   }
