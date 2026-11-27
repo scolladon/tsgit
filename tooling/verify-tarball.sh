@@ -572,7 +572,14 @@ done
 # refusals, the root-path rule of the matcher) — runtime code in every
 # distribution form, none removable without dropping the behaviour. The
 # evaluator's own rule cache and both ancestor walks it replaces paid part of it back.
-SIZE_CAP=$((1555 * 1024))
+# Raised 1555 -> 1557 KiB by the remote-branch guess of checkout: the measured pack
+# landed at 1 594 156 B, 1 836 B over the old cap, attributable to the guess module
+# (the remote walk in config order, the default remote, the wildcard gate, the
+# file-or-branch and ambiguous refusals), the checkout.guess line-order gate, the
+# path fall-through of a switch argument and the reported created branch —
+# runtime code in every distribution form, none removable without dropping the
+# behaviour.
+SIZE_CAP=$((1557 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
