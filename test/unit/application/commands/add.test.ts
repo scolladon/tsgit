@@ -2509,7 +2509,7 @@ describe('add', () => {
         const index = await readIndex(enrichedCtx);
         const entry = index.entries.find((e) => e.path === 'a.y');
         expect(entry).toBeDefined();
-        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        const blob = await readBlob(enrichedCtx, entry?.id as ObjectId);
         expect(dec(blob.content)).toBe('HELLO WORLD');
         expect(result.added).toEqual(['a.y']);
       });
@@ -2616,7 +2616,7 @@ describe('add', () => {
         const index = await readIndex(enrichedCtx);
         const entry = index.entries.find((e) => e.path === 'a.y');
         expect(entry).toBeDefined();
-        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        const blob = await readBlob(enrichedCtx, entry?.id as ObjectId);
         expect(dec(blob.content)).toBe('Hello World');
         expect(result.added).toEqual(['a.y']);
       });
@@ -2645,7 +2645,7 @@ describe('add', () => {
         const index = await readIndex(enrichedCtx);
         const entry = index.entries.find((e) => e.path === 'link.y');
         expect(entry).toBeDefined();
-        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        const blob = await readBlob(enrichedCtx, entry?.id as ObjectId);
         expect(dec(blob.content)).toBe('target.txt');
         // Runner was NOT called for the symlink
         expect(runner.calls.length).toBe(0);
@@ -2673,7 +2673,7 @@ describe('add', () => {
         const index = await readIndex(ctx);
         const entry = index.entries.find((e) => e.path === 'a.y');
         expect(entry).toBeDefined();
-        const blob = await readBlob(ctx, entry!.id as ObjectId);
+        const blob = await readBlob(ctx, entry?.id as ObjectId);
         expect(dec(blob.content)).toBe('Hello World');
         expect(result.added).toEqual(['a.y']);
       });
@@ -2700,7 +2700,7 @@ describe('add', () => {
         const index = await readIndex(enrichedCtx);
         const entry = index.entries.find((e) => e.path === 'a.y');
         expect(entry).toBeDefined();
-        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        const blob = await readBlob(enrichedCtx, entry?.id as ObjectId);
         expect(dec(blob.content)).toBe('HELLO WORLD');
         expect(result.added).toEqual(['a.y']);
       });
@@ -3745,7 +3745,7 @@ describe('add renormalize option', () => {
     });
   });
 
-  describe('Given a tracked file gone from the worktree', () => {
+  describe('Given a tracked file gone from the worktree and the index lock taken for the refusal', () => {
     describe('When add renormalize "." refuses', () => {
       it('Then the index lock is released', async () => {
         // Arrange
