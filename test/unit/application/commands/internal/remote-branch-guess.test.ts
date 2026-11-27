@@ -55,14 +55,17 @@ const seed = async (config: string, refs: ReadonlyArray<string>): Promise<Seeded
 const lastLineOf = async (ctx: Context, configPath: string, text: string): Promise<number> =>
   (await ctx.fs.readUtf8(configPath)).split('\n').lastIndexOf(text) + 1;
 
-const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+const thrownBy = async (run: () => Promise<unknown>): Promise<TsgitError | undefined> => {
   try {
     await run();
   } catch (error) {
-    return (error as TsgitError).data;
+    return error as TsgitError;
   }
   return undefined;
 };
+
+const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> =>
+  (await thrownBy(run))?.data;
 
 const ORIGIN_FEAT = 'refs/remotes/origin/feat';
 const OTHER_FEAT = 'refs/remotes/other/feat';
@@ -410,18 +413,193 @@ describe('parseRemoteBranch', () => {
     });
   });
 
-  describe('Given two remotes carrying the name and no default remote', () => {
+  describe('Given a name no remote carries', () => {
     describe('When the branch is parsed', () => {
       it('Then nothing is returned', async () => {
         // Arrange
+        const { ctx } = await seed(ORIGIN, [ORIGIN_FEAT]);
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await sut(ctx, 'missing');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given two remotes carrying the name and no default remote', () => {
+    describe('When the branch is parsed', () => {
+      it('Then it refuses the ambiguous name with both remotes in config order', async () => {
+        // Arrange
         const { ctx } = await seed(`${ORIGIN}${OTHER}`, [ORIGIN_FEAT, OTHER_FEAT]);
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await thrownBy(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result?.data).toEqual({
+          code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS',
+          name: 'feat',
+          remotes: ['origin', 'other'],
+        });
+        expect(result?.message).toBe(
+          "CHECKOUT_REMOTE_BRANCH_AMBIGUOUS: 'feat' matched multiple (2) remote tracking branches",
+        );
+      });
+    });
+  });
+
+  describe('Given two remotes carrying the name, the second remote configured first', () => {
+    describe('When the branch is parsed', () => {
+      it('Then it refuses with the remotes in config order', async () => {
+        // Arrange
+        const { ctx } = await seed(`${OTHER}${ORIGIN}`, [ORIGIN_FEAT, OTHER_FEAT]);
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS',
+          name: 'feat',
+          remotes: ['other', 'origin'],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a remote no match comes from', value: 'nope' },
+    { label: 'the default remote spelled in another case', value: 'OTHER' },
+  ])('Given two remotes carrying the name and $label as default remote', ({ value }) => {
+    describe('When the branch is parsed', () => {
+      it('Then it refuses the ambiguous name', async () => {
+        // Arrange
+        const config = `${ORIGIN}${OTHER}[checkout]\n\tdefaultRemote = ${value}\n`;
+        const { ctx } = await seed(config, [ORIGIN_FEAT, OTHER_FEAT]);
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS',
+          name: 'feat',
+          remotes: ['origin', 'other'],
+        });
+      });
+    });
+  });
+
+  describe('Given one remote carrying the name and an untracked file of that name', () => {
+    describe('When the branch is parsed', () => {
+      it('Then it refuses the name as both a file and a tracking branch', async () => {
+        // Arrange
+        const { ctx } = await seed(ORIGIN, [ORIGIN_FEAT]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feat`, 'feat');
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await thrownBy(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result?.data).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'feat' });
+        expect(result?.message).toBe(
+          "CHECKOUT_PATH_OR_TRACKING_BRANCH: 'feat' could be both a local file and a tracking branch.",
+        );
+      });
+    });
+  });
+
+  describe('Given one remote carrying the name and a directory of that name', () => {
+    describe('When the branch is parsed', () => {
+      it('Then it refuses the name as both a file and a tracking branch', async () => {
+        // Arrange
+        const { ctx } = await seed(ORIGIN, [ORIGIN_FEAT]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feat/x`, 'x');
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'feat' });
+      });
+    });
+  });
+
+  describe('Given one remote carrying the name and a file of that name under a subdirectory', () => {
+    describe('When the branch is parsed from that subdirectory', () => {
+      it('Then it refuses the name as both a file and a tracking branch', async () => {
+        // Arrange
+        const { ctx } = await seed(ORIGIN, [ORIGIN_FEAT]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/feat`, 'feat');
+        const fromSub: Context = { ...ctx, cwd: `${ctx.layout.workDir}/sub` };
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await refusalOf(() => sut(fromSub, 'feat'));
+
+        // Assert
+        expect(result).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'feat' });
+      });
+    });
+
+    describe('When the branch is parsed from the top of the work tree', () => {
+      it('Then the chosen ref is returned', async () => {
+        // Arrange
+        const { ctx, id } = await seed(ORIGIN, [ORIGIN_FEAT]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/feat`, 'feat');
         const sut = parseRemoteBranch;
 
         // Act
         const result = await sut(ctx, 'feat');
 
         // Assert
+        expect(result).toEqual({ ref: ORIGIN_FEAT, id });
+      });
+    });
+  });
+
+  describe('Given a file of the name and no remote carrying it', () => {
+    describe('When the branch is parsed', () => {
+      it('Then nothing is returned', async () => {
+        // Arrange
+        const { ctx } = await seed(ORIGIN, [ORIGIN_FEAT]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/missing`, 'missing');
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await sut(ctx, 'missing');
+
+        // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a file of the name and two remotes carrying it', () => {
+    describe('When the branch is parsed', () => {
+      it('Then it refuses the ambiguous name', async () => {
+        // Arrange
+        const { ctx } = await seed(`${ORIGIN}${OTHER}`, [ORIGIN_FEAT, OTHER_FEAT]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feat`, 'feat');
+        const sut = parseRemoteBranch;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS',
+          name: 'feat',
+          remotes: ['origin', 'other'],
+        });
       });
     });
   });

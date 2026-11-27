@@ -3,12 +3,17 @@
  * bare name maps onto when no revision answers it. Stateless; reads config and
  * refs only, and only on the miss path its caller decides.
  */
-import { configMissingValue } from '../../../domain/commands/error.js';
+import {
+  checkoutPathOrTrackingBranch,
+  checkoutRemoteBranchAmbiguous,
+  configMissingValue,
+} from '../../../domain/commands/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { hasGlobSpecial } from '../../../domain/pathspec/wildcard.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry, parseGitBoolean, readConfig } from '../../primitives/config-read.js';
+import { checkFilename } from './misspelt-revision.js';
 import { findTrackingRef } from './remote-tracking-ref.js';
 import { resolveRevisionExpression } from './revision-expression.js';
 import { resolveRevisionName } from './revision-name.js';
@@ -96,13 +101,22 @@ export const uniqueTrackingName = async (
 /**
  * git's `parse_remote_branch`, behind `parse_branchname_arg`'s `no_wildcard` gate: a name holding
  * a wildcard is never guessed, so nothing — not even the default remote — is read for it.
+ * The file check needs a chosen ref, as git's does, so a file with several matching remotes
+ * reports the ambiguity, and the work tree is probed only once a ref was found.
  */
 export const parseRemoteBranch = async (
   ctx: Context,
   name: string,
 ): Promise<GuessedBranch | undefined> => {
   if (hasGlobSpecial(name)) return undefined;
-  return (await uniqueTrackingName(ctx, name)).chosen;
+  const { chosen, remotes } = await uniqueTrackingName(ctx, name);
+  if (chosen !== undefined && (await checkFilename(ctx, name))) {
+    throw checkoutPathOrTrackingBranch(name);
+  }
+  if (chosen === undefined && remotes.length > 1) {
+    throw checkoutRemoteBranchAmbiguous(name, remotes);
+  }
+  return chosen;
 };
 
 /**

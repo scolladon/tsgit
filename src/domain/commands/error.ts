@@ -237,6 +237,13 @@ export type CommandError =
       readonly remotes: ReadonlyArray<string>;
     }
   | {
+      readonly code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS';
+      readonly name: string;
+      /** Every remote whose tracking ref resolves, in config order. */
+      readonly remotes: ReadonlyArray<string>;
+    }
+  | { readonly code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH'; readonly name: string }
+  | {
       readonly code: 'TRACKING_INHERIT_REBASE_MULTIPLE';
       readonly merges: ReadonlyArray<RefName>;
     }
@@ -1039,6 +1046,16 @@ export const checkoutDetachPathArgument = (argument: string): TsgitError =>
 
 export const trackingAmbiguous = (ref: RefName, remotes: ReadonlyArray<string>): TsgitError =>
   new TsgitError({ code: 'TRACKING_AMBIGUOUS', ref, remotes });
+
+/** git checkout's remote-branch guess: several remotes carry the name and no default remote picks one. */
+export const checkoutRemoteBranchAmbiguous = (
+  name: string,
+  remotes: ReadonlyArray<string>,
+): TsgitError => new TsgitError({ code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS', name, remotes });
+
+/** git checkout's remote-branch guess: the name it would guess also names a path. */
+export const checkoutPathOrTrackingBranch = (name: string): TsgitError =>
+  new TsgitError({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name });
 
 export const trackingInheritRebaseMultiple = (merges: ReadonlyArray<RefName>): TsgitError =>
   new TsgitError({ code: 'TRACKING_INHERIT_REBASE_MULTIPLE', merges });

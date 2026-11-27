@@ -74,7 +74,7 @@ const spellingOf = (arg: string): FilenameSpelling => {
  * `prefix_filename` leaves where it stands; a bare magic prefix always does,
  * and an empty name at the top never does.
  */
-const checkFilename = async (ctx: Context, arg: string): Promise<boolean> => {
+export const checkFilename = async (ctx: Context, arg: string): Promise<boolean> => {
   const { rest, magic, fromTop } = spellingOf(arg);
   if (magic && rest === '') return true;
   if (gitPathSyntaxOf(ctx).isAbsolute(rest)) return probeFilename(ctx, rest);
