@@ -496,6 +496,7 @@ describe('checkout remote-branch guess', () => {
 
         // Assert
         expect(result).toMatchObject({ branch: 'refs/heads/side', detached: false });
+        expect(result).not.toHaveProperty('createdBranch');
       });
     });
 

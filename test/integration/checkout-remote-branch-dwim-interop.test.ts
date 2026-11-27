@@ -105,6 +105,7 @@ interface GuessRefusalRow {
   readonly exit: number;
   readonly line: string;
   readonly data: object;
+  readonly hints?: ReadonlyArray<string>;
 }
 
 const gitStep =
@@ -198,11 +199,28 @@ const originLast: Step = (dir) => {
 
 const SYMLINKS_AVAILABLE = process.platform !== 'win32';
 
+/** git's ambiguity refusal, and the remotes its advice lists one per `hint:` line. */
 const ambiguous = (name: string, remotes: ReadonlyArray<string>) => ({
   exit: FATAL_EXIT,
   line: `'${name}' matched multiple (${remotes.length}) remote tracking branches`,
   data: { code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS', name, remotes },
+  hints: remotes,
 });
+
+const outsideRepository = (path: string) => ({
+  exit: FATAL_EXIT,
+  line: `'${path}' is outside repository`,
+  data: { code: 'PATHSPEC_OUTSIDE_REPO', path },
+});
+
+/** A name longer than the file system lets either tool stat. */
+const TOO_LONG = 'x'.repeat(300);
+
+const ADVICE_REMOTE = /^hint: {3}(\S+)$/;
+
+/** The remotes git's ambiguity advice names, in the order it prints them. */
+const adviceRemotesOf = (stderr: string): ReadonlyArray<string> =>
+  stderr.split('\n').flatMap((line) => ADVICE_REMOTE.exec(line)?.[1] ?? []);
 
 const pathOrTracking = (name: string) => ({
   exit: FATAL_EXIT,
@@ -883,6 +901,7 @@ describe.skipIf(!GIT_AVAILABLE)(
               ref: 'refs/remotes/origin/feat',
               remotes: ['origin', 'other'],
             },
+            hints: ['origin', 'other'],
           },
           {
             label: 'a staged file the guessed branch would overwrite',
@@ -912,6 +931,56 @@ describe.skipIf(!GIT_AVAILABLE)(
             gitArgs: ['feat'],
             opts: { rev: 'feat' },
             ...ambiguous('feat', ['origin', 'other']),
+            hints: [],
+          },
+          {
+            label: 'a name no revision answers, a branch to create and detach',
+            slug: 'b4',
+            base: 'one',
+            setup: [],
+            gitArgs: ['-b', 'x', '--detach', 'nowhere'],
+            opts: { rev: 'nowhere', createBranch: { name: 'x' }, detach: true },
+            ...startPointNotCommit('nowhere', 'x'),
+          },
+          {
+            label: 'a path outside the work tree and a branch to create',
+            slug: 's12a',
+            base: 'one',
+            setup: [],
+            gitArgs: ['-b', 'x', '../zz'],
+            opts: { rev: '../zz', createBranch: { name: 'x' } },
+            ...outsideRepository('../zz'),
+          },
+          {
+            label: 'a path outside the work tree and detach',
+            slug: 's12b',
+            base: 'one',
+            setup: [],
+            gitArgs: ['--detach', '../zz'],
+            opts: { rev: '../zz', detach: true },
+            ...outsideRepository('../zz'),
+          },
+          {
+            label: 'a name too long to stat, with the guess off',
+            slug: 's5',
+            base: 'one',
+            setup: [],
+            gitArgs: ['--no-guess', TOO_LONG],
+            opts: { rev: TOO_LONG, guess: false },
+            exit: FATAL_EXIT,
+            line: `fatal: failed to stat '${TOO_LONG}'`,
+            data: expect.objectContaining({ code: 'PATH_TOO_LONG' }),
+          },
+          {
+            label: 'a name too long to stat, while detaching',
+            slug: 's5d',
+            base: 'one',
+            setup: [],
+            gitArgs: ['--detach', TOO_LONG],
+            opts: { rev: TOO_LONG, detach: true },
+            exit: FATAL_EXIT,
+            line: `fatal: failed to stat '${TOO_LONG}'`,
+            data: expect.objectContaining({ code: 'PATH_TOO_LONG' }),
           },
           {
             label: 'a name two remotes carry, origin configured last',
@@ -1160,30 +1229,35 @@ describe.skipIf(!GIT_AVAILABLE)(
             line: "error: path 'g.txt' is unmerged",
             data: { code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['g.txt'] },
           },
-        ] satisfies ReadonlyArray<GuessRefusalRow>)('When both tools check out $label', (row) => {
-          it('Then both refuse with the same reason and leave the same HEAD and branches', async () => {
-            // Arrange
-            const { peer, ours, ctx } = await casePair(row.slug, baseOf(row.base), ignoreCase);
-            for (const step of row.setup) {
-              await step(peer);
-              await step(ours);
-            }
-            const sut = checkout;
+        ] satisfies ReadonlyArray<GuessRefusalRow>)(
+          'When both tools check out $label',
+          (row: GuessRefusalRow) => {
+            it('Then both refuse with the same reason and leave the same HEAD and branches', async () => {
+              // Arrange
+              const { peer, ours, ctx } = await casePair(row.slug, baseOf(row.base), ignoreCase);
+              for (const step of row.setup) {
+                await step(peer);
+                await step(ours);
+              }
+              const sut = checkout;
 
-            // Act
-            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...row.gitArgs], {
-              env: IDENTITY_ENV,
+              // Act
+              const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...row.gitArgs], {
+                env: IDENTITY_ENV,
+              });
+              const result = await refusalOf(() => sut(ctx, row.opts));
+
+              // Assert
+              expect(peerRun.exitCode).toBe(row.exit);
+              expect(peerRun.stderr).toContain(row.line);
+              expect(adviceRemotesOf(peerRun.stderr)).toEqual(row.hints ?? []);
+              expect(result).toEqual(row.data);
+              expect(await headBytes(ours)).toBe(await headBytes(peer));
+              expect(headsOf(ours)).toBe(headsOf(peer));
+              expect(git(ours, 'status', '--porcelain')).toBe(git(peer, 'status', '--porcelain'));
             });
-            const result = await refusalOf(() => sut(ctx, row.opts));
-
-            // Assert
-            expect(peerRun.exitCode).toBe(row.exit);
-            expect(peerRun.stderr).toContain(row.line);
-            expect(result).toEqual(row.data);
-            expect(await headBytes(ours)).toBe(await headBytes(peer));
-            expect(headsOf(ours)).toBe(headsOf(peer));
-          });
-        });
+          },
+        );
 
         describe('When both tools check out, from a subdirectory, a name a file there carries', () => {
           it('Then both refuse the name as a file and a tracking branch', async () => {
