@@ -4744,6 +4744,8 @@ describe('add against a held index.lock', () => {
   });
 
   describe.each([
+    { label: 'no pathspec', paths: [], opts: {} },
+    { label: 'no pathspec to renormalize', paths: [], opts: { renormalize: true } },
     { label: 'an empty pathspec', paths: [''], opts: {} },
     { label: 'a pathspec outside the repository', paths: ['../x'], opts: {} },
     { label: 'an empty pathspec to renormalize', paths: [''], opts: { renormalize: true } },

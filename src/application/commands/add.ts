@@ -277,7 +277,6 @@ const addInScope = async (
       ? addRenormalized(ctx, [WHOLE_TREE_PATHSPEC], scope)
       : addAll(ctx, opts.force === true ? NEVER_IGNORED : undefined, scope);
   }
-  if (paths.length === 0) throw emptyPathspec();
   if (opts.renormalize === true) return addRenormalized(ctx, paths, scope);
   return dispatchPathspec(ctx, paths, opts, scope);
 };
@@ -302,6 +301,11 @@ const dispatchPathspec = async (
   }
 };
 
+/** git's `cmd_add` reports "Nothing specified" only once it holds the index lock. */
+const refuseNoPathspec = (paths: ReadonlyArray<string>): void => {
+  if (paths.length === 0) throw emptyPathspec();
+};
+
 /** A command's context together with the index lock it already holds. */
 interface HeldIndex {
   readonly ctx: Context;
@@ -315,6 +319,7 @@ const stageUnderLock = async (
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const { ctx } = held;
+  refuseNoPathspec(paths);
   const resolved = resolveCommandPathspec(ctx, paths);
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   const walks = resolved.hasGlob || holdsExclusion(resolved.matcher);
@@ -1070,6 +1075,7 @@ const renormalizeUnderLock = async (
   paths: ReadonlyArray<string>,
   scope: ConversionScope,
 ): Promise<AddResult> => {
+  refuseNoPathspec(paths);
   const { matcher, positives, symlinkScanTargets } = resolveCommandPathspec(ctx, paths);
   await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
   const { entries } = await readIndexOrEmpty(ctx);
