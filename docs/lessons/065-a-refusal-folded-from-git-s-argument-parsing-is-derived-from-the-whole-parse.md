@@ -13,7 +13,7 @@ evidence:
 source: { run: is-ignored-leading-directory, phase: review, date: 2026-11-26 }
 status: active
 supersedes: []
-last-verified: 2026-11-26
+last-verified: 2026-11-27
 ---
 # 065 — A refusal folded from git's argument parsing is derived from the whole parse
 
@@ -40,6 +40,7 @@ Before the design, read the whole parsing function and its callers in git's sour
 Pin one row per step against git, and one row per pair of steps for their order.
 Pin the degenerate outputs of every transform on the way: the empty path, an absolute path, a trailing separator.
 Ask which spelling the code after the parse receives, the typed one or the transformed one, and pin a row where the two differ.
+Walk outward too: what the builtin's wrapper and config callback run first, and the steps inside each function the path calls.
 Fold the sequence whole, or leave the refusal out.
 
 ## Evidence
@@ -53,3 +54,4 @@ root path under four rules.
 paragraph after it: what each round found.
 `docs/adr/1280-is-ignored-judges-the-normalized-spelling-of-a-query.md` — the ruling the rounds
 led to.
+`docs/design/checkout-remote-branch-dwim.md` — "What review folded": the checkout guess listed seventeen steps of `parse_branchname_arg` and the functions it calls, and review still found four outside that list — `check_filename` run eagerly, `parse_pathspec` before the `-b` and `--detach` refusals, `setup_work_tree` in `run_builtin` before the config callback, and `for_each_remote` reading every remote key through `remote.c`'s `handle_config`.
