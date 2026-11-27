@@ -518,7 +518,7 @@ describe('checkout', () => {
     });
   });
 
-  describe('Given an index.lock already on disk', () => {
+  describe('Given an index.lock holding other bytes already on disk', () => {
     describe('When path-restore from the default (index) source', () => {
       it('Then refuses with RESOURCE_LOCKED and leaves the lock intact', async () => {
         // Arrange
