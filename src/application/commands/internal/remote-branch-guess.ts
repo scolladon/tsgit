@@ -6,16 +6,20 @@
 import {
   checkoutPathOrTrackingBranch,
   checkoutRemoteBranchAmbiguous,
+  configBadBooleanValue,
   configMissingValue,
 } from '../../../domain/commands/error.js';
+import type { TsgitError } from '../../../domain/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { hasGlobSpecial } from '../../../domain/pathspec/wildcard.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
 import {
+  findFirstInvalidBooleanInSection,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findLastEntry,
+  type InvalidBooleanEntry,
   parseGitBoolean,
   readConfig,
   type ValuelessEntry,
@@ -66,30 +70,54 @@ const REMOTE_STRING_KEYS: ReadonlyArray<string> = [
   'vcs',
   'serveroption',
 ];
+/** The boolean keys the same reader parses with `git_config_bool`, dying on a value no boolean reads. */
+const REMOTE_BOOLEAN_KEYS: ReadonlyArray<string> = [
+  'mirror',
+  'skipdefaultupdate',
+  'skipfetchall',
+  'prune',
+  'prunetags',
+];
 const BRANCH_STRING_KEYS: ReadonlyArray<string> = ['remote', 'merge', 'pushremote'];
 const URL_REWRITE_KEYS: ReadonlyArray<string> = ['insteadof', 'pushinsteadof'];
 const SUBSECTIONED = { requireSubsection: true } as const;
 
+/** A config entry the remote reader dies on, with the line it sits on. */
+interface RemoteConfigFault {
+  readonly line: number;
+  readonly error: TsgitError;
+}
+
+const missingValue = (entry: ValuelessEntry | undefined): RemoteConfigFault | undefined =>
+  entry && { line: entry.line, error: configMissingValue(entry.key, entry.source, entry.line) };
+
+const badBoolean = (entry: InvalidBooleanEntry | undefined): RemoteConfigFault | undefined =>
+  entry && { line: entry.line, error: configBadBooleanValue(entry.key, entry.source, entry.value) };
+
 const lowerLine = (
-  lowest: ValuelessEntry | undefined,
-  entry: ValuelessEntry | undefined,
-): ValuelessEntry | undefined =>
-  entry !== undefined && (lowest === undefined || entry.line < lowest.line) ? entry : lowest;
+  lowest: RemoteConfigFault | undefined,
+  fault: RemoteConfigFault | undefined,
+): RemoteConfigFault | undefined =>
+  fault !== undefined && (lowest === undefined || fault.line < lowest.line) ? fault : lowest;
 
 /**
  * git's `for_each_remote` reads the remotes through `read_config`, whose `handle_config` dies on
- * the first string key, in file order, that holds no value: under a remote, under a branch, a URL
- * rewrite, or `remote.pushdefault`.
+ * the first entry, in file order, it cannot read: a string key holding no value (under a remote,
+ * under a branch, a URL rewrite, or `remote.pushdefault`) or a remote's boolean holding a value
+ * no boolean reads.
  */
 const assertRemoteConfigReadable = async (ctx: Context): Promise<void> => {
   const found = await Promise.all([
-    findFirstValuelessInSection(ctx, 'remote', REMOTE_STRING_KEYS, SUBSECTIONED),
-    findFirstValuelessEntry(ctx, 'remote', undefined, ['pushdefault']),
-    findFirstValuelessInSection(ctx, 'branch', BRANCH_STRING_KEYS, SUBSECTIONED),
-    findFirstValuelessInSection(ctx, 'url', URL_REWRITE_KEYS, SUBSECTIONED),
+    findFirstValuelessInSection(ctx, 'remote', REMOTE_STRING_KEYS, SUBSECTIONED).then(missingValue),
+    findFirstValuelessEntry(ctx, 'remote', undefined, ['pushdefault']).then(missingValue),
+    findFirstValuelessInSection(ctx, 'branch', BRANCH_STRING_KEYS, SUBSECTIONED).then(missingValue),
+    findFirstValuelessInSection(ctx, 'url', URL_REWRITE_KEYS, SUBSECTIONED).then(missingValue),
+    findFirstInvalidBooleanInSection(ctx, 'remote', REMOTE_BOOLEAN_KEYS, SUBSECTIONED).then(
+      badBoolean,
+    ),
   ]);
   const first = found.reduce(lowerLine, undefined);
-  if (first !== undefined) throw configMissingValue(first.key, first.source, first.line);
+  if (first !== undefined) throw first.error;
 };
 
 /** git's `repo_get_oid` on the mapped ref: the name through the ref ladder, else the revision grammar. */

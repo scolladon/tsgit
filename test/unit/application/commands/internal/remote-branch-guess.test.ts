@@ -521,6 +521,61 @@ describe('uniqueTrackingName', () => {
       });
     },
   );
+
+  describe.each(['mirror', 'skipdefaultupdate', 'skipfetchall', 'prune', 'prunetags'])(
+    'Given remote.zed.%s holding a value no boolean reads',
+    (key) => {
+      describe('When the name is guessed', () => {
+        it('Then it refuses the bad boolean, as reading the remotes does', async () => {
+          // Arrange
+          const { ctx, configPath } = await seed(`${ORIGIN}[remote "zed"]\n\t${key} = bogus\n`, [
+            ORIGIN_FEAT,
+          ]);
+          const sut = uniqueTrackingName;
+
+          // Act
+          const result = await refusalOf(() => sut(ctx, 'feat'));
+
+          // Assert
+          expect(result).toEqual({
+            code: 'CONFIG_BAD_BOOLEAN_VALUE',
+            key: `remote.zed.${key}`,
+            source: configPath,
+            value: 'bogus',
+          });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    {
+      order: 'a bad boolean above a valueless url',
+      entry: '[remote "zed"]\n\tprune = bogus\n\turl\n',
+      code: 'CONFIG_BAD_BOOLEAN_VALUE',
+      key: 'remote.zed.prune',
+    },
+    {
+      order: 'a valueless url above a bad boolean',
+      entry: '[remote "zed"]\n\turl\n\tprune = bogus\n',
+      code: 'CONFIG_MISSING_VALUE',
+      key: 'remote.zed.url',
+    },
+  ])('Given $order', ({ entry, code, key }) => {
+    describe('When the name is guessed', () => {
+      it('Then it refuses the entry on the lower line', async () => {
+        // Arrange
+        const { ctx } = await seed(`${ORIGIN}${entry}`, [ORIGIN_FEAT]);
+        const sut = uniqueTrackingName;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toMatchObject({ code, key });
+      });
+    });
+  });
 });
 
 describe('parseRemoteBranch', () => {

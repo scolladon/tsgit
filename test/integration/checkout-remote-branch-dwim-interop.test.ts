@@ -1370,6 +1370,35 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(headsOf(ours)).toBe(headsOf(peer));
           });
         });
+
+        describe.each([
+          { label: 'a bad remote prune', slug: 'v5', entry: '[remote "zed"]\n\tprune = bogus\n' },
+          {
+            label: 'a bad remote mirror above a valueless url',
+            slug: 'v6',
+            entry: '[remote "zed"]\n\tmirror = bogus\n\turl\n',
+          },
+        ])('When both tools guess with $label', ({ slug, entry }) => {
+          it('Then both refuse the bad boolean and write no branch', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair(slug, baseOne, ignoreCase);
+            await appendConfig(entry)(peer);
+            await appendConfig(entry)(ours);
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', 'feat'], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut(ctx, { rev: 'feat' }));
+
+            // Assert
+            expect(peerRun.exitCode).toBe(FATAL_EXIT);
+            const key = /bad boolean config value 'bogus' for '([^']+)'/.exec(peerRun.stderr)?.[1];
+            expect(result).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', key, value: 'bogus' });
+            expect(headsOf(ours)).toBe(headsOf(peer));
+          });
+        });
       });
 
       describe('Given a switch argument that names paths and no branch', () => {
