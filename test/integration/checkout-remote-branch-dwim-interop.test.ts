@@ -12,7 +12,7 @@
  *   unique:         a checkout that creates or guesses a branch refuses and lands as git does
  *   interopSurface: checkout
  */
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -76,12 +76,79 @@ const cloneOf = (source: string, target: string): void => {
   configureIdentity(target);
 };
 
+/** One setup step both copies of a row run, with canonical git or a raw file write. */
+type Step = (dir: string) => void | Promise<void>;
+
+type BaseName = 'one' | 'two' | 'unborn';
+
+interface GuessRow {
+  readonly label: string;
+  readonly slug: string;
+  readonly base: BaseName;
+  readonly setup: ReadonlyArray<Step>;
+  readonly name: string;
+}
+
+interface GuessRefusalRow {
+  readonly label: string;
+  readonly slug: string;
+  readonly base: BaseName;
+  readonly setup: ReadonlyArray<Step>;
+  readonly gitArgs: ReadonlyArray<string>;
+  readonly opts: CheckoutOptions;
+  readonly exit: number;
+  readonly line: string;
+  readonly data: object;
+}
+
+const gitStep =
+  (...args: ReadonlyArray<string>): Step =>
+  (dir) => {
+    runGit(['-C', dir, ...args], { env: IDENTITY_ENV });
+  };
+
+const packRefs = gitStep('pack-refs', '--all');
+
+/** Appends raw config text: a valueless key has no `git config` spelling. */
+const appendConfig =
+  (text: string): Step =>
+  (dir) =>
+    appendFile(path.join(dir, '.git', 'config'), text);
+
+const stageLocalFile: Step = async (dir) => {
+  await writeFile(path.join(dir, 'f.txt'), 'local\n');
+  git(dir, 'add', 'f.txt');
+};
+
+const reflogTop = (dir: string, ref: string): string | undefined => {
+  const run = tryRunGitWithExit(['-C', dir, 'log', '-g', '--format=%gs', ref]);
+  return run.exitCode === 0 ? run.stdout.split('\n')[0] : undefined;
+};
+
+const headsOf = (dir: string): string =>
+  git(dir, 'for-each-ref', '--format=%(refname)', 'refs/heads');
+
+/** What a checkout leaves that both tools must agree on. */
+const stateOf = async (dir: string, name: string): Promise<unknown> => {
+  const config = tryRunGitWithExit(['-C', dir, 'config', '--get-regexp', `^branch\\.${name}\\.`]);
+  return {
+    head: await headBytes(dir),
+    config: { exitCode: config.exitCode, stdout: config.stdout },
+    branchLog: reflogTop(dir, `refs/heads/${name}`),
+    headLog: reflogTop(dir, 'HEAD'),
+    heads: headsOf(dir),
+    status: git(dir, 'status', '--porcelain'),
+  };
+};
+
 describe.skipIf(!GIT_AVAILABLE)(
   'integration — checkout branch creation parity with canonical git',
   () => {
     let scratch = '';
     let baseOne = '';
     let baseTwo = '';
+    let baseUnborn = '';
+    let otherUp = '';
     const caseRoots: string[] = [];
 
     beforeAll(async () => {
@@ -97,7 +164,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['-C', up, 'commit', '-q', '-m', 'c2'], { env: IDENTITY_ENV });
       git(up, 'branch', 'only-up');
       git(up, 'switch', '-q', 'master');
-      const otherUp = path.join(scratch, 'otherUp');
+      otherUp = path.join(scratch, 'otherUp');
       cloneOf(up, otherUp);
       git(otherUp, 'branch', 'only-other', 'origin/feat');
       baseOne = path.join(scratch, 'baseOne');
@@ -106,6 +173,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       await cp(baseOne, baseTwo, { recursive: true });
       git(baseTwo, 'remote', 'add', 'other', otherUp);
       runGit(['-C', baseTwo, 'fetch', '-q', 'other'], { env: IDENTITY_ENV });
+      baseUnborn = path.join(scratch, 'baseUnborn');
+      runGit(['init', '-q', '-b', 'master', baseUnborn]);
+      configureIdentity(baseUnborn);
+      git(baseUnborn, 'remote', 'add', 'origin', up);
+      runGit(['-C', baseUnborn, 'fetch', '-q', 'origin'], { env: IDENTITY_ENV });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -127,6 +199,13 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(peer, 'config', 'core.ignorecase', ignoreCase);
       git(ours, 'config', 'core.ignorecase', ignoreCase);
       return { peer, ours, ctx: createNodeContext({ workDir: ours }) };
+    };
+
+    const baseOf = (name: BaseName): string =>
+      ({ one: baseOne, two: baseTwo, unborn: baseUnborn })[name];
+
+    const addOtherRemote: Step = (dir) => {
+      git(dir, 'remote', 'add', 'other', otherUp);
     };
 
     describe.each(['false', 'true'])('Given core.ignorecase is %s', (ignoreCase) => {
@@ -289,6 +368,385 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(await headBytes(peer)).toBe(headBefore);
           });
         });
+      });
+
+      describe('Given a name only remote-tracking refs answer', () => {
+        describe.each([
+          { label: 'one remote', slug: 'r1', base: 'one', setup: [], name: 'feat' },
+          { label: 'packed refs', slug: 'r1b', base: 'one', setup: [packRefs], name: 'feat' },
+          {
+            label: 'two remotes and the second as default',
+            slug: 'r3',
+            base: 'two',
+            setup: [gitStep('config', 'checkout.defaultRemote', 'other')],
+            name: 'feat',
+          },
+          {
+            label: 'one match and an unfetched default remote',
+            slug: 'r3y',
+            base: 'one',
+            setup: [addOtherRemote, gitStep('config', 'checkout.defaultRemote', 'other')],
+            name: 'feat',
+          },
+          {
+            label: 'a name only the second remote carries',
+            slug: 'r3z',
+            base: 'two',
+            setup: [],
+            name: 'only-other',
+          },
+          {
+            label: 'one remote named as default',
+            slug: 'r25',
+            base: 'one',
+            setup: [gitStep('config', 'checkout.defaultRemote', 'origin')],
+            name: 'feat',
+          },
+          {
+            label: 'a valueless default remote followed by the second remote',
+            slug: 'c2',
+            base: 'two',
+            setup: [appendConfig('[checkout]\n\tdefaultRemote\n\tdefaultRemote = other\n')],
+            name: 'feat',
+          },
+          {
+            label: 'two default remotes, the last naming origin',
+            slug: 'c3',
+            base: 'two',
+            setup: [
+              gitStep('config', '--add', 'checkout.defaultRemote', 'other'),
+              gitStep('config', '--add', 'checkout.defaultRemote', 'origin'),
+            ],
+            name: 'feat',
+          },
+          {
+            label: 'a default remote fetching into another namespace',
+            slug: 'c4',
+            base: 'two',
+            setup: [
+              gitStep('config', 'checkout.defaultRemote', 'other'),
+              gitStep('config', 'remote.other.fetch', '+refs/heads/*:refs/remotes/o2/*'),
+              gitStep('fetch', '-q', 'other'),
+            ],
+            name: 'feat',
+          },
+          {
+            label: 'a refspec mapping into another namespace',
+            slug: 'r10',
+            base: 'one',
+            setup: [
+              gitStep('config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/mirror/*'),
+              gitStep('fetch', '-q', 'origin'),
+            ],
+            name: 'feat',
+          },
+          {
+            label: 'a negative refspec naming the branch',
+            slug: 'r10c',
+            base: 'one',
+            setup: [gitStep('config', '--add', 'remote.origin.fetch', '^refs/heads/feat')],
+            name: 'feat',
+          },
+          {
+            label: 'a later exact refspec',
+            slug: 'r10f',
+            base: 'one',
+            setup: [
+              gitStep(
+                'config',
+                '--add',
+                'remote.origin.fetch',
+                '+refs/heads/feat:refs/remotes/zz/feat',
+              ),
+              gitStep('fetch', '-q', 'origin'),
+            ],
+            name: 'feat',
+          },
+          { label: 'an unborn HEAD', slug: 'r11', base: 'unborn', setup: [], name: 'feat' },
+          {
+            label: 'a detached HEAD',
+            slug: 'r15',
+            base: 'one',
+            setup: [gitStep('checkout', '-q', '--detach', 'master')],
+            name: 'feat',
+          },
+          {
+            label: 'a valueless checkout.guess',
+            slug: 'r26',
+            base: 'one',
+            setup: [appendConfig('[checkout]\n\tguess\n')],
+            name: 'feat',
+          },
+          {
+            label: 'checkout.guess false then true',
+            slug: 'r29',
+            base: 'one',
+            setup: [
+              gitStep('config', '--add', 'checkout.guess', 'false'),
+              gitStep('config', '--add', 'checkout.guess', 'true'),
+            ],
+            name: 'feat',
+          },
+          ...['false', 'inherit', 'simple', 'always'].map(
+            (mode): GuessRow => ({
+              label: `branch.autoSetupMerge ${mode}`,
+              slug: `r12-${mode}`,
+              base: 'one',
+              setup: [gitStep('config', 'branch.autoSetupMerge', mode)],
+              name: 'feat',
+            }),
+          ),
+          {
+            label: 'branch.autoSetupRebase always',
+            slug: 'r12d',
+            base: 'one',
+            setup: [gitStep('config', 'branch.autoSetupRebase', 'always')],
+            name: 'feat',
+          },
+          {
+            label: 'a local branch of that name',
+            slug: 'r7',
+            base: 'one',
+            setup: [gitStep('branch', 'feat', 'master')],
+            name: 'feat',
+          },
+          {
+            label: 'a tag of that name',
+            slug: 'r21',
+            base: 'one',
+            setup: [gitStep('tag', 'feat', 'origin/feat')],
+            name: 'feat',
+          },
+          {
+            label: 'the remote-tracking spelling',
+            slug: 'r8',
+            base: 'one',
+            setup: [],
+            name: 'origin/feat',
+          },
+          {
+            label: 'the remote-tracking spelling and a valueless default remote',
+            slug: 'r27c',
+            base: 'one',
+            setup: [appendConfig('[checkout]\n\tdefaultRemote\n')],
+            name: 'origin/feat',
+          },
+        ] satisfies ReadonlyArray<GuessRow>)(
+          'When both tools check out with $label',
+          ({ slug, base, setup, name }) => {
+            it('Then both leave the same HEAD, branch config, reflogs, branches and status', async () => {
+              // Arrange
+              const { peer, ours, ctx } = await casePair(slug, baseOf(base), ignoreCase);
+              for (const step of setup) {
+                await step(peer);
+                await step(ours);
+              }
+              const sut = checkout;
+
+              // Act
+              const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', name], {
+                env: IDENTITY_ENV,
+              });
+              await sut(ctx, { rev: name });
+
+              // Assert
+              expect(peerRun.exitCode).toBe(0);
+              expect(await stateOf(ours, name)).toEqual(await stateOf(peer, name));
+            });
+          },
+        );
+
+        describe('When both tools check out with a forced switch over an untracked file', () => {
+          it('Then both create the branch and leave the same state', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair('r9e', baseOne, ignoreCase);
+            await writeFile(path.join(peer, 'f.txt'), 'dirty\n');
+            await writeFile(path.join(ours, 'f.txt'), 'dirty\n');
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', '-f', 'feat'], {
+              env: IDENTITY_ENV,
+            });
+            await sut(ctx, { rev: 'feat', force: true });
+
+            // Assert
+            expect(peerRun.exitCode).toBe(0);
+            expect(await stateOf(ours, 'feat')).toEqual(await stateOf(peer, 'feat'));
+          });
+        });
+
+        describe('When both tools check out a name only another case of a loose ref carries', () => {
+          it('Then both reach the same outcome on this file system', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair('r13c', baseTwo, ignoreCase);
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', 'ONLY-OTHER'], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut(ctx, { rev: 'ONLY-OTHER' }));
+
+            // Assert
+            if (peerRun.exitCode === 0) {
+              expect(result).toBeUndefined();
+              expect(await stateOf(ours, 'ONLY-OTHER')).toEqual(await stateOf(peer, 'ONLY-OTHER'));
+              return;
+            }
+            expect(peerRun.stderr).toContain("pathspec 'ONLY-OTHER' did not match");
+            expect(result).toMatchObject({ code: 'PATHSPEC_NO_MATCH', pattern: 'ONLY-OTHER' });
+          });
+        });
+      });
+
+      describe('Given a guess git refuses', () => {
+        describe.each([
+          {
+            label: 'a guessed branch alongside detach',
+            slug: 'r9c',
+            base: 'one',
+            setup: [],
+            gitArgs: ['--detach', 'feat'],
+            opts: { rev: 'feat', detach: true },
+            exit: FATAL_EXIT,
+            line: "'--detach' cannot be used with '-b/-B/--orphan'",
+            data: {
+              code: 'INVALID_OPTION',
+              option: 'createBranch',
+              reason: 'cannot be combined with detach',
+            },
+          },
+          {
+            label: 'HEAD on an unborn branch',
+            slug: 'h1',
+            base: 'unborn',
+            setup: [],
+            gitArgs: ['HEAD'],
+            opts: { rev: 'HEAD' },
+            exit: FATAL_EXIT,
+            line: "'HEAD' is not a valid branch name",
+            data: { code: 'INVALID_REF', reason: 'branch name must not be HEAD' },
+          },
+          {
+            label: 'HEAD on an unborn branch alongside detach',
+            slug: 'h1d',
+            base: 'unborn',
+            setup: [],
+            gitArgs: ['--detach', 'HEAD'],
+            opts: { rev: 'HEAD', detach: true },
+            exit: FATAL_EXIT,
+            line: "'HEAD' is not a valid branch name",
+            data: { code: 'INVALID_REF', reason: 'branch name must not be HEAD' },
+          },
+          {
+            label: 'a name holding revision syntax',
+            slug: 'tilde',
+            base: 'one',
+            setup: [],
+            gitArgs: ['feat~1'],
+            opts: { rev: 'feat~1' },
+            exit: FATAL_EXIT,
+            line: "'feat~1' is not a valid branch name",
+            data: { code: 'INVALID_REF', reason: 'ref name contains forbidden character' },
+          },
+          {
+            label: 'a tracking ref naming a tree',
+            slug: 'r20',
+            base: 'one',
+            setup: [gitStep('update-ref', 'refs/remotes/origin/treeish', 'origin/feat^{tree}')],
+            gitArgs: ['treeish'],
+            opts: { rev: 'treeish' },
+            exit: FATAL_EXIT,
+            line: "Cannot switch branch to a non-commit 'refs/remotes/origin/treeish'",
+            data: { code: 'CHECKOUT_NON_COMMIT', revision: 'refs/remotes/origin/treeish' },
+          },
+          {
+            label: 'two remotes fetching into one namespace and origin as default',
+            slug: 'r17',
+            base: 'two',
+            setup: [
+              gitStep('config', 'remote.other.fetch', '+refs/heads/*:refs/remotes/origin/*'),
+              gitStep('config', 'checkout.defaultRemote', 'origin'),
+            ],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            exit: FATAL_EXIT,
+            line: "not tracking: ambiguous information for ref 'refs/remotes/origin/feat'",
+            data: {
+              code: 'TRACKING_AMBIGUOUS',
+              ref: 'refs/remotes/origin/feat',
+              remotes: ['origin', 'other'],
+            },
+          },
+          {
+            label: 'a staged file the guessed branch would overwrite',
+            slug: 'r22',
+            base: 'one',
+            setup: [gitStep('switch', '-q', '-c', 'wip'), stageLocalFile],
+            gitArgs: ['feat'],
+            opts: { rev: 'feat' },
+            exit: 1,
+            line: 'Your local changes to the following files would be overwritten by checkout',
+            data: { code: 'CHECKOUT_OVERWRITE_DIRTY', localChanges: ['f.txt'], untracked: [] },
+          },
+        ] satisfies ReadonlyArray<GuessRefusalRow>)('When both tools check out $label', (row) => {
+          it('Then both refuse with the same reason and leave the same HEAD and branches', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair(row.slug, baseOf(row.base), ignoreCase);
+            for (const step of row.setup) {
+              await step(peer);
+              await step(ours);
+            }
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...row.gitArgs], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut(ctx, row.opts));
+
+            // Assert
+            expect(peerRun.exitCode).toBe(row.exit);
+            expect(peerRun.stderr).toContain(row.line);
+            expect(result).toEqual(row.data);
+            expect(await headBytes(ours)).toBe(await headBytes(peer));
+            expect(headsOf(ours)).toBe(headsOf(peer));
+          });
+        });
+
+        describe.each([
+          { label: 'two matches', slug: 'r27', base: 'two' },
+          { label: 'one match', slug: 'r27b', base: 'one' },
+        ] as const)(
+          'When both tools guess with a valueless last default remote and $label',
+          ({ slug, base }) => {
+            it('Then both refuse the missing value at the same line', async () => {
+              // Arrange
+              const { peer, ours, ctx } = await casePair(slug, baseOf(base), ignoreCase);
+              await appendConfig('[checkout]\n\tdefaultRemote\n')(peer);
+              await appendConfig('[checkout]\n\tdefaultRemote\n')(ours);
+              const sut = checkout;
+
+              // Act
+              const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', 'feat'], {
+                env: IDENTITY_ENV,
+              });
+              const result = await refusalOf(() => sut(ctx, { rev: 'feat' }));
+
+              // Assert
+              expect(peerRun.exitCode).toBe(FATAL_EXIT);
+              expect(peerRun.stderr).toContain("error: missing value for 'checkout.defaultremote'");
+              const line = Number(/at line (\d+)/.exec(peerRun.stderr)?.[1]);
+              expect(result).toMatchObject({
+                code: 'CONFIG_MISSING_VALUE',
+                key: 'checkout.defaultremote',
+                line,
+              });
+              expect(await headBytes(ours)).toBe(await headBytes(peer));
+            });
+          },
+        );
       });
     });
   },

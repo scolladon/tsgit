@@ -72,6 +72,11 @@ import {
 import { BRANCH_FLAG, FILE_FLAG } from './internal/post-checkout.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import { refreshedIndex } from './internal/refresh-index.js';
+import {
+  type GuessedBranch,
+  parseRemoteBranch,
+  readCheckoutGuess,
+} from './internal/remote-branch-guess.js';
 import { readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
@@ -178,9 +183,12 @@ interface SwitchTarget {
   readonly object: ObjectId;
 }
 
-/** A switch argument resolves to a target, or falls through to the paths it names, restored. */
+/**
+ * A switch argument resolves to a target, with the request that reaches it (the caller's, or the
+ * one a guessed branch rewrites it into), or falls through to the paths it names, restored.
+ */
 type SwitchResolution =
-  | { readonly kind: 'target'; readonly target: SwitchTarget }
+  | { readonly kind: 'target'; readonly request: TargetedSwitch; readonly target: SwitchTarget }
   | { readonly kind: 'restored'; readonly result: CheckoutResult };
 
 /** The HEAD a switch leaves: as read before the switch, and the commit it named. */
@@ -199,11 +207,55 @@ const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<Switch
   const branchName = arg === HEAD_ALIAS ? HEAD_NAME : await interpretBranchName(ctx, arg);
   const branch = await branchFor(ctx, branchName);
   if (branch !== undefined) {
-    return { kind: 'target', target: { arg, branchName, onBranch: branch.ref, object: branch.id } };
+    const target = { arg, branchName, onBranch: branch.ref, object: branch.id };
+    return { kind: 'target', request: opts, target };
   }
-  if (named === undefined) return { kind: 'restored', result: await unresolvedSwitch(ctx, opts) };
-  return { kind: 'target', target: { arg, branchName, onBranch: undefined, object: named } };
+  if (named === undefined) return unnamedSwitch(ctx, opts, arg);
+  return {
+    kind: 'target',
+    request: opts,
+    target: { arg, branchName, onBranch: undefined, object: named },
+  };
 };
+
+/** git's `dwim_ok` for a request: `-b` never guesses, and `checkout.guess` turns it off. */
+const guessAllowed = async (ctx: Context, opts: TargetedSwitch): Promise<boolean> =>
+  opts.createBranch === undefined && (await readCheckoutGuess(ctx));
+
+/**
+ * git's `parse_remote_branch` miss path: a guessed ref rewrites the request into
+ * `checkout -b <arg> <ref>`, aimed at the object the guess already read; no guess falls through.
+ */
+const unnamedSwitch = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  arg: string,
+): Promise<SwitchResolution> => {
+  const guessed = (await guessAllowed(ctx, opts)) ? await parseRemoteBranch(ctx, arg) : undefined;
+  if (guessed === undefined) return { kind: 'restored', result: await unresolvedSwitch(ctx, opts) };
+  return {
+    kind: 'target',
+    request: guessedRequest(opts, arg, guessed),
+    target: guessedTarget(guessed),
+  };
+};
+
+const guessedRequest = (
+  opts: TargetedSwitch,
+  arg: string,
+  guessed: GuessedBranch,
+): TargetedSwitch => ({
+  ...opts,
+  rev: guessed.ref,
+  createBranch: { name: arg },
+});
+
+const guessedTarget = ({ ref, id }: GuessedBranch): SwitchTarget => ({
+  arg: ref,
+  branchName: ref,
+  onBranch: undefined,
+  object: id,
+});
 
 /**
  * git's `lookup_commit_reference_gently`: the commit the object peels to, or
@@ -449,10 +501,11 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   const targeted = { ...opts, rev: opts.rev ?? HEAD_NAME };
   const resolution = await resolveSwitch(ctx, targeted);
   if (resolution.kind === 'restored') return resolution.result;
+  const { request, target } = resolution;
   if (headOid !== undefined && keepsWorkingTreeAsIs(opts)) {
-    return switchInPlace(ctx, targeted, resolution.target, { priorHead, headOid });
+    return switchInPlace(ctx, request, target, { priorHead, headOid });
   }
-  return switchToCommit(ctx, targeted, resolution.target, { priorHead, headOid });
+  return switchToCommit(ctx, request, target, { priorHead, headOid });
 };
 
 /** git's switch_unborn_to_new_branch: an unborn HEAD only changes the branch it names. */
