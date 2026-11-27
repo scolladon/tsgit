@@ -141,7 +141,7 @@ branch reflog `branch: Created from refs/remotes/origin/feat`, HEAD reflog
 | R31 | S2 < S5 | file `feat`, `checkout.guess=false` | 1 pathspec `feat` | — |
 | R6a / R6d | `--` | `checkout feat --`, with / without the file | 0, std (no API counterpart in tsgit, see DC-1) | — |
 | R6b | `--` first | `checkout -- feat` | 1 pathspec `feat` | — |
-| R6e | `--` | `checkout nothere --` | 128 `invalid reference: nothere` | — |
+| R6e | `--` | `checkout nowhere --` | 128 `invalid reference: nowhere` | — |
 
 **The gate (S1, S2)**
 
@@ -165,7 +165,7 @@ branch reflog `branch: Created from refs/remotes/origin/feat`, HEAD reflog
 | H2 | S8 | same, `checkout @` | 1 pathspec `@` (`refs/remotes/origin/@` does not exist) | PNM `@` (same) |
 | B1 | S13a < S13 (`-b`) | `checkout -b HEAD --detach` | 128 `'HEAD' is not a valid branch name` | `INVALID_OPTION {option:'createBranch',reason:'cannot be combined with detach'}` |
 | B2 | S13a < S13 (`-b`) | `checkout -b master --detach` | 128 `a branch named 'master' already exists` | `INVALID_OPTION … detach` |
-| B3 | S12 < S13a | `checkout -b master nothere` | 128 `'nothere' is not a commit and a branch 'master' cannot be created from it` | same code (`CHECKOUT_START_POINT_NOT_COMMIT`) |
+| B3 | S12 < S13a | `checkout -b master nowhere` | 128 `'nowhere' is not a commit and a branch 'master' cannot be created from it` | same code (`CHECKOUT_START_POINT_NOT_COMMIT`) |
 | A22d | S11 < S13 | `--detach feat`, +other | 128 matched multiple (2) | PNM |
 | A22e | S10 < S13 | `--detach feat`, file `feat` | 128 could be both | PNM |
 
@@ -173,7 +173,7 @@ branch reflog `branch: Created from refs/remotes/origin/feat`, HEAD reflog
 
 | Row | Setup | git | tsgit main |
 |---|---|---|---|
-| A22a | `checkout --detach nothere` | 128 `git checkout: --detach does not take a path argument 'nothere'` | PNM |
+| A22a | `checkout --detach nowhere` | 128 `git checkout: --detach does not take a path argument 'nowhere'` | PNM |
 | A22c | `checkout --detach g.txt` (tracked) | 128, same refusal naming `g.txt` | PNM (per the ledger row) |
 | P1 | tracked `g.txt`, `h.txt`, both dirty; `checkout g.txt` | 0 `Updated 1 path from the index`; `g.txt` restored, `h.txt` kept | `{rev:'g.txt'}` → PNM, `g.txt` still dirty |
 | P2 | same, `checkout '*.txt'` | 0, both restored | — |
@@ -533,7 +533,7 @@ result fields (ADR-249).
 | R9a, P6 | `createBranch: {name:'x'}` | start-point refusal unchanged |
 | R9c | `{rev:'feat',detach:true}` | `INVALID_OPTION createBranch`; no branch, HEAD and work tree untouched |
 | H1, H1d, H2 | unborn `{rev:'HEAD'}` / `+detach` / `{rev:'@'}` | git's invalid-name refusal ↔ `INVALID_REF` (H1, H1d); pathspec ↔ PNM (H2) |
-| B1, B2, B3 | `{createBranch:{name:'HEAD'},detach:true}` and the same with `'master'`;, `{rev:'nothere',createBranch:{name:'master'}}` | refusal named in git's order |
+| B1, B2, B3 | `{createBranch:{name:'HEAD'},detach:true}` and the same with `'master'`;, `{rev:'nowhere',createBranch:{name:'master'}}` | refusal named in git's order |
 | R17 | `{rev:'feat'}` | `TRACKING_AMBIGUOUS`; branch written, `A  f.txt`, HEAD on `master`, both tools |
 | R20 | `{rev:'treeish'}` | `CHECKOUT_NON_COMMIT` naming `refs/remotes/origin/treeish` |
 | R22 | `{rev:'feat'}` | dirty refusal, heads unchanged |
