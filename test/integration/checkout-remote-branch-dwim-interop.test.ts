@@ -354,7 +354,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, 'remote', 'add', 'other', otherUp);
     };
 
-    describe.each(['false', 'true'])('Given core.ignorecase is %s', (ignoreCase) => {
+    describe.each(['false', 'true'])('with core.ignorecase %s', (ignoreCase) => {
       describe('Given a new branch git refuses to create', () => {
         describe.each([
           {
