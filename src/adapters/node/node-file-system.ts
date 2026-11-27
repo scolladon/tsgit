@@ -1279,20 +1279,33 @@ export class NodeFileSystem implements FileSystem {
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.resolveWrite(path);
     await this.assertExclusiveCreateLeaf(real, path);
-    await runFs(() => this.createExclusive(real, data), path);
+    await runFs(() => this.createExclusive(real, data, path), path);
   };
 
   // Creates the file first and the parent only when that reports it absent:
   // a lock file's directory almost always exists, so the common case costs
   // one open instead of an unconditional `mkdir` walk. A second `ENOENT`
   // after `mkdir` is a real fault and propagates.
-  private async createExclusive(real: string, data: Uint8Array): Promise<void> {
+  private async createExclusive(real: string, data: Uint8Array, path: string): Promise<void> {
     try {
       await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
     } catch (err) {
       if (!isErrnoException(err) || err.code !== 'ENOENT') throw err;
-      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await this.mkdirExclusiveParent(real, path);
       await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
+    }
+  }
+
+  // Windows reports a file at the parent as `ENOENT` on the create, so the
+  // parent `mkdir` meets it as `EEXIST`. A recursive `mkdir` answers `EEXIST`
+  // only for an existing non-directory, so this is the same refusal POSIX
+  // gives as `ENOTDIR`; leaving it as `FILE_EXISTS` reads as "already created".
+  private async mkdirExclusiveParent(real: string, path: string): Promise<void> {
+    try {
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'EEXIST') throw notADirectory(path);
+      throw err;
     }
   }
 

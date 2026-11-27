@@ -6374,6 +6374,52 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
       });
     });
   });
+
+  describe('Given a file at the parent, reported as ENOENT then EEXIST by the parent mkdir', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then it refuses NOT_A_DIRECTORY naming the requested path', async () => {
+        // Arrange
+        const writeFile = vi.fn().mockRejectedValue(enoent());
+        const mkdir = vi.fn().mockRejectedValue(eexist());
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/.git/objects/ab/cdef', new Uint8Array());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(dataFor(caught, 'NOT_A_DIRECTORY').path).toBe('/root/.git/objects/ab/cdef');
+      });
+    });
+  });
+
+  describe('Given the parent mkdir fails with EACCES after an ENOENT create', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then PERMISSION_DENIED propagates unchanged', async () => {
+        // Arrange
+        const writeFile = vi.fn().mockRejectedValue(enoent());
+        const mkdir = vi.fn().mockRejectedValue(eacces());
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/.git/objects/ab/cdef', new Uint8Array());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(dataFor(caught, 'PERMISSION_DENIED').path).toBe('/root/.git/objects/ab/cdef');
+      });
+    });
+  });
 });
 
 describe('NodeFileSystem.write / writeStream — open with a creation mode, stat the descriptor (DI)', () => {
