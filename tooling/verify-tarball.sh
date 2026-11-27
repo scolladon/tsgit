@@ -579,7 +579,13 @@ done
 # path fall-through of a switch argument and the reported created branch —
 # runtime code in every distribution form, none removable without dropping the
 # behaviour.
-SIZE_CAP=$((1557 * 1024))
+# Raised 1557 -> 1559 KiB by the same change's review folds: the measured pack
+# landed at 1 595 490 B, 1 122 B over the old cap, attributable to the remote
+# reader's valueless and bad-boolean refusals, the eager path probe of a switch
+# argument, the work-tree gate ahead of checkout's config pass, the empty-pathspec
+# refusal and add's index lock taken before its pathspec — runtime code in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((1559 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
