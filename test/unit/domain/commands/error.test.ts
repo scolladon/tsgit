@@ -16,6 +16,7 @@ import {
   bundleReadFailed,
   type CommandError,
   cannotDescribe,
+  checkoutDetachPathArgument,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
   commitParseFailed,
@@ -146,6 +147,21 @@ describe('domain commands error — factory data', () => {
 
         // Assert
         expect(result.data).toEqual({ code, revision: 'x' });
+      });
+    });
+  });
+
+  describe('Given a detach argument holding a control byte', () => {
+    describe('When the detach path refusal is built', () => {
+      it('Then data carries the argument rendered for display', () => {
+        // Arrange
+        const sut = checkoutDetachPathArgument;
+
+        // Act
+        const result = sut('a\u001bb');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'CHECKOUT_DETACH_PATH_ARGUMENT', argument: 'a\\x1Bb' });
       });
     });
   });
@@ -2268,6 +2284,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'CHECKOUT_START_POINT_NOT_COMMIT', revision: 'nope', branch: 'side' },
       "CHECKOUT_START_POINT_NOT_COMMIT: 'nope' is not a commit and a branch 'side' cannot be created from it",
+    ],
+    [
+      { code: 'CHECKOUT_DETACH_PATH_ARGUMENT', argument: 'nope' },
+      "CHECKOUT_DETACH_PATH_ARGUMENT: git checkout: --detach does not take a path argument 'nope'",
     ],
     [
       { code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM', value: 'bogus' },

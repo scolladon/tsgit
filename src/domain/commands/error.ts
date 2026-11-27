@@ -227,6 +227,11 @@ export type CommandError =
   | { readonly code: 'UPSTREAM_NOT_BRANCH'; readonly startPoint: string }
   | { readonly code: 'UPSTREAM_MISSING'; readonly startPoint: string }
   | {
+      readonly code: 'CHECKOUT_DETACH_PATH_ARGUMENT';
+      /** The switch argument as given. */
+      readonly argument: string;
+    }
+  | {
       readonly code: 'TRACKING_AMBIGUOUS';
       readonly ref: RefName;
       readonly remotes: ReadonlyArray<string>;
@@ -1027,6 +1032,10 @@ export const upstreamNotBranch = (startPoint: string): TsgitError =>
 
 export const upstreamMissing = (startPoint: string): TsgitError =>
   new TsgitError({ code: 'UPSTREAM_MISSING', startPoint });
+
+/** git checkout's `--detach` with an argument no revision answers: it would read as a path. */
+export const checkoutDetachPathArgument = (argument: string): TsgitError =>
+  new TsgitError({ code: 'CHECKOUT_DETACH_PATH_ARGUMENT', argument: sanitizeForDisplay(argument) });
 
 export const trackingAmbiguous = (ref: RefName, remotes: ReadonlyArray<string>): TsgitError =>
   new TsgitError({ code: 'TRACKING_AMBIGUOUS', ref, remotes });

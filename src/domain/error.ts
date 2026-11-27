@@ -602,6 +602,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot set up tracking information; starting point '${data.startPoint}' is not a branch`;
     case 'UPSTREAM_MISSING':
       return `the requested upstream branch '${data.startPoint}' does not exist`;
+    case 'CHECKOUT_DETACH_PATH_ARGUMENT':
+      return `git checkout: --detach does not take a path argument '${data.argument}'`;
     case 'TRACKING_AMBIGUOUS':
       return `not tracking: ambiguous information for ref '${data.ref}'`;
     case 'TRACKING_INHERIT_REBASE_MULTIPLE':

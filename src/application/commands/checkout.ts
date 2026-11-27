@@ -1,5 +1,6 @@
 import {
   branchExists,
+  checkoutDetachPathArgument,
   checkoutNonCommit,
   checkoutStartPointNotCommit,
   invalidOption,
@@ -153,13 +154,17 @@ const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId 
   (await resolveRevisionName(ctx, arg)) ?? resolveRevisionExpression(ctx, arg);
 
 /**
- * A switch argument no revision answers: git hands it on as a pathspec, which
- * matches nothing — or, under `-b`, names a start point no branch can come from.
+ * A switch argument no revision answers: git hands it to `checkout_paths` as the caller spelled
+ * it, and restores what it matches from the index. `-b` refuses first, naming a start point no
+ * branch can come from, then `--detach`, which takes no path argument.
  */
-const unresolvedSwitch = (opts: TargetedSwitch) =>
-  opts.createBranch === undefined
-    ? pathspecNoMatch(opts.rev)
-    : checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+const unresolvedSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<CheckoutResult> => {
+  if (opts.createBranch !== undefined) {
+    throw checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+  }
+  if (opts.detach === true) throw checkoutDetachPathArgument(opts.rev);
+  return pathRestore(ctx, { paths: [opts.rev] });
+};
 
 /** A switch whose target is spelled: an omitted `rev` already reads as HEAD. */
 type TargetedSwitch = CheckoutSwitchOptions & { readonly rev: string };
@@ -172,18 +177,31 @@ interface SwitchTarget {
   readonly object: ObjectId;
 }
 
+/** A switch argument resolves to a target, or falls through to the paths it names, restored. */
+type SwitchResolution =
+  | { readonly kind: 'target'; readonly target: SwitchTarget }
+  | { readonly kind: 'restored'; readonly result: CheckoutResult };
+
+/** The HEAD a switch leaves: as read before the switch, and the commit it named. */
+interface SwitchOrigin {
+  readonly priorHead: HeadState;
+  readonly headOid: ObjectId | undefined;
+}
+
 const HEAD_ALIAS = '@';
 const HEAD_NAME = 'HEAD';
 
 /** git's `parse_branchname_arg`: the branch `refs/heads/<arg>` names, else the revision ladder. */
-const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<SwitchTarget> => {
+const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<SwitchResolution> => {
   const arg = previousCheckoutArg(opts.rev);
   const named = await resolveSwitchTarget(ctx, arg);
   const branchName = arg === HEAD_ALIAS ? HEAD_NAME : await interpretBranchName(ctx, arg);
   const branch = await branchFor(ctx, branchName);
-  if (branch !== undefined) return { arg, branchName, onBranch: branch.ref, object: branch.id };
-  if (named === undefined) throw unresolvedSwitch(opts);
-  return { arg, branchName, onBranch: undefined, object: named };
+  if (branch !== undefined) {
+    return { kind: 'target', target: { arg, branchName, onBranch: branch.ref, object: branch.id } };
+  }
+  if (named === undefined) return { kind: 'restored', result: await unresolvedSwitch(ctx, opts) };
+  return { kind: 'target', target: { arg, branchName, onBranch: undefined, object: named } };
 };
 
 /**
@@ -409,8 +427,12 @@ interface ResolvedSwitch {
  * git names the argument through `get_oid_mb` first, branch or not — its warnings and its read
  * of core.warnAmbiguousRefs happen either way.
  */
-const resolveCommitSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<ResolvedSwitch> => {
-  const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
+const resolveCommitSwitch = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  target: SwitchTarget,
+): Promise<ResolvedSwitch> => {
+  const { arg, branchName, onBranch, object } = target;
   const oid = await switchCommit(ctx, object);
   await assertBranchCreatable(ctx, opts);
   if (oid === undefined) throw checkoutNonCommit(arg);
@@ -424,10 +446,12 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   const headOid = await resolveRefOrMissing(ctx, HEAD_NAME);
   if (opts.rev === undefined && headOid === undefined) return switchUnbornToNewBranch(ctx, opts);
   const targeted = { ...opts, rev: opts.rev ?? HEAD_NAME };
+  const resolution = await resolveSwitch(ctx, targeted);
+  if (resolution.kind === 'restored') return resolution.result;
   if (headOid !== undefined && keepsWorkingTreeAsIs(opts)) {
-    return switchInPlace(ctx, targeted, priorHead, headOid);
+    return switchInPlace(ctx, targeted, resolution.target, { priorHead, headOid });
   }
-  return switchToCommit(ctx, targeted, priorHead, headOid);
+  return switchToCommit(ctx, targeted, resolution.target, { priorHead, headOid });
 };
 
 /** git's switch_unborn_to_new_branch: an unborn HEAD only changes the branch it names. */
@@ -473,12 +497,12 @@ const keepsWorkingTreeAsIs = (opts: CheckoutSwitchOptions): boolean =>
 const switchToCommit = async (
   ctx: Context,
   opts: TargetedSwitch,
-  priorHead: HeadState,
-  headOid: ObjectId | undefined,
+  target: SwitchTarget,
+  { priorHead, headOid }: SwitchOrigin,
 ): Promise<CheckoutResult> => {
   // git's merge_working_tree reads an unborn HEAD as no commit: the null oid, the empty tree.
   const oldOid = headOid ?? zeroOid(ctx.hashConfig);
-  const resolved = await resolveCommitSwitch(ctx, opts);
+  const resolved = await resolveCommitSwitch(ctx, opts, target);
   const request = await switchRequestOf(ctx, opts, headOid, resolved);
   const { written, deleted } = await materializeSwitch(ctx, request);
   return finishSwitch(ctx, {
@@ -493,10 +517,10 @@ const switchToCommit = async (
 const switchInPlace = async (
   ctx: Context,
   opts: TargetedSwitch,
-  priorHead: HeadState,
-  headOid: ObjectId,
+  target: SwitchTarget,
+  { priorHead, headOid }: SwitchOrigin & { readonly headOid: ObjectId },
 ): Promise<CheckoutResult> => {
-  const resolved = await resolveCommitSwitch(ctx, opts);
+  const resolved = await resolveCommitSwitch(ctx, opts, target);
   return finishSwitch(ctx, { opts, priorHead, oldOid: headOid, changedPaths: 0, ...resolved });
 };
 
