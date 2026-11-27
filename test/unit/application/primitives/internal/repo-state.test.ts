@@ -9,6 +9,7 @@ import {
 import {
   assertEagerConfigValid,
   assertOperationalRepository,
+  assertOperationalRepositoryWithCommandKeys,
   assertRepository,
 } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
@@ -716,5 +717,89 @@ describe('primitives/internal/repo-state', () => {
         expect(result).toBeUndefined();
       });
     });
+  });
+
+  describe('assertOperationalRepositoryWithCommandKeys', () => {
+    const CHECKOUT_KEYS = { section: 'checkout', keys: ['guess'] };
+
+    describe('Given checkout.guess = bogus alone', () => {
+      describe('When assertOperationalRepositoryWithCommandKeys', () => {
+        it('Then it refuses the bad boolean with the key, value and source', async () => {
+          // Arrange
+          const ctx = await seededCtx();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[checkout]\n\tguess = bogus\n');
+          const sut = assertOperationalRepositoryWithCommandKeys;
+
+          // Act
+          const caught = await catchTsgitError(() => sut(ctx, CHECKOUT_KEYS));
+
+          // Assert
+          expect(caught.data).toEqual({
+            code: 'CONFIG_BAD_BOOLEAN_VALUE',
+            key: 'checkout.guess',
+            value: 'bogus',
+            source: `${ctx.layout.gitDir}/config`,
+          });
+        });
+      });
+    });
+
+    describe.each([
+      {
+        order: 'checkout.guess above branch.autoSetupMerge',
+        config: '[checkout]\n\tguess = bogus\n[branch]\n\tautoSetupMerge = bogus\n',
+        key: 'checkout.guess',
+      },
+      {
+        order: 'branch.autoSetupMerge above checkout.guess',
+        config: '[branch]\n\tautoSetupMerge = bogus\n[checkout]\n\tguess = bogus\n',
+        key: 'branch.autosetupmerge',
+      },
+      {
+        order: 'a bad checkout.guess overridden by a later true',
+        config: '[checkout]\n\tguess = bogus\n\tguess = true\n',
+        key: 'checkout.guess',
+      },
+      {
+        order: 'a bad core.bare below a bad checkout.guess',
+        config: '[checkout]\n\tguess = bogus\n[core]\n\tbare = bogus\n',
+        key: 'core.bare',
+      },
+    ])('Given $order', ({ config, key }) => {
+      describe('When assertOperationalRepositoryWithCommandKeys', () => {
+        it(`Then it refuses ${key}`, async () => {
+          // Arrange
+          const ctx = await seededCtx();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+          const sut = assertOperationalRepositoryWithCommandKeys;
+
+          // Act
+          const caught = await catchTsgitError(() => sut(ctx, CHECKOUT_KEYS));
+
+          // Assert
+          expect(caught.data).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', key });
+        });
+      });
+    });
+
+    describe.each(['[checkout]\n\tguess\n', '[checkout]\n\tguess = false\n'])(
+      'Given the config %j',
+      (config) => {
+        describe('When assertOperationalRepositoryWithCommandKeys', () => {
+          it('Then it resolves the repository root', async () => {
+            // Arrange
+            const ctx = await seededCtx();
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+            const sut = assertOperationalRepositoryWithCommandKeys;
+
+            // Act
+            const result = await sut(ctx, CHECKOUT_KEYS);
+
+            // Assert
+            expect(result).toBe(ctx.layout.workDir);
+          });
+        });
+      },
+    );
   });
 });

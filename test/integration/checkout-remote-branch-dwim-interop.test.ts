@@ -189,6 +189,107 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
         });
       });
+
+      describe('Given config entries checkout reads in file order', () => {
+        describe.each([
+          {
+            label: 'a bad checkout.guess before switching to the current branch',
+            slug: 'r24b',
+            entries: [['checkout.guess', 'bogus']],
+            gitArgs: ['master'],
+            opts: { rev: 'master' },
+            key: 'checkout.guess',
+          },
+          {
+            label: 'a bad checkout.guess before restoring a path',
+            slug: 'r24c',
+            entries: [['checkout.guess', 'bogus']],
+            gitArgs: ['--', 'f.txt'],
+            opts: { paths: ['f.txt'] },
+            key: 'checkout.guess',
+          },
+          {
+            label: 'a bad checkout.guess before detaching at a tracking branch',
+            slug: 'r24e',
+            entries: [['checkout.guess', 'bogus']],
+            gitArgs: ['origin/feat'],
+            opts: { rev: 'origin/feat' },
+            key: 'checkout.guess',
+          },
+          {
+            label: 'a bad checkout.guess a later true overrides',
+            slug: 'c1',
+            entries: [
+              ['checkout.guess', 'bogus'],
+              ['checkout.guess', 'true'],
+            ],
+            gitArgs: ['master'],
+            opts: { rev: 'master' },
+            key: 'checkout.guess',
+          },
+          {
+            label: 'a bad checkout.guess above a bad branch.autoSetupMerge',
+            slug: 'o1',
+            entries: [
+              ['checkout.guess', 'bogus'],
+              ['branch.autoSetupMerge', 'bogus'],
+            ],
+            gitArgs: ['master'],
+            opts: { rev: 'master' },
+            key: 'checkout.guess',
+          },
+          {
+            label: 'a bad branch.autoSetupMerge above a bad checkout.guess',
+            slug: 'o2',
+            entries: [
+              ['branch.autoSetupMerge', 'bogus'],
+              ['checkout.guess', 'bogus'],
+            ],
+            gitArgs: ['master'],
+            opts: { rev: 'master' },
+            key: 'branch.autosetupmerge',
+          },
+          {
+            label: 'a bad branch.autoSetupMerge before detaching at a tracking branch',
+            slug: 'r30',
+            entries: [['branch.autoSetupMerge', 'bogus']],
+            gitArgs: ['origin/feat'],
+            opts: { rev: 'origin/feat' },
+            key: 'branch.autosetupmerge',
+          },
+        ] satisfies ReadonlyArray<{
+          label: string;
+          slug: string;
+          entries: ReadonlyArray<readonly [string, string]>;
+          gitArgs: ReadonlyArray<string>;
+          opts: CheckoutOptions;
+          key: string;
+        }>)('When both tools check out with $label', ({ slug, entries, gitArgs, opts, key }) => {
+          it(`Then both refuse ${key} and HEAD stays`, async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair(slug, baseOne, ignoreCase);
+            for (const [name, value] of entries) {
+              git(peer, 'config', '--add', name, value);
+              git(ours, 'config', '--add', name, value);
+            }
+            const headBefore = await headBytes(ours);
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...gitArgs], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut(ctx, opts));
+
+            // Assert
+            expect(peerRun.exitCode).toBe(FATAL_EXIT);
+            expect(peerRun.stderr).toContain(`bad boolean config value 'bogus' for '${key}'`);
+            expect(result).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', key, value: 'bogus' });
+            expect(await headBytes(ours)).toBe(headBefore);
+            expect(await headBytes(peer)).toBe(headBefore);
+          });
+        });
+      });
     });
   },
 );

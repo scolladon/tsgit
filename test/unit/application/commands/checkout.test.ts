@@ -2754,3 +2754,36 @@ describe('Given a switch from a born HEAD', () => {
     });
   });
 });
+
+describe('Given checkout.guess = bogus in the repository config', () => {
+  const seedBadGuess = async () => {
+    const seeded = await seedWithBranches();
+    await updateConfigEntries(seeded.ctx, [{ section: 'checkout', key: 'guess', value: 'bogus' }]);
+    await seeded.ctx.fs.writeUtf8(`${seeded.ctx.layout.workDir}/a.txt`, 'edited');
+    return seeded;
+  };
+
+  describe.each([
+    { mode: 'a branch switch', opts: { rev: 'main' } },
+    { mode: 'a path restore', opts: { paths: ['a.txt'] } },
+  ])('When checkout runs $mode', ({ opts }) => {
+    it('Then it refuses checkout.guess and leaves HEAD and the work tree untouched', async () => {
+      // Arrange
+      const { ctx } = await seedBadGuess();
+      const headBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+      const sut = checkout;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, opts));
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'checkout.guess',
+        value: 'bogus',
+      });
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(headBefore);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('edited');
+    });
+  });
+});

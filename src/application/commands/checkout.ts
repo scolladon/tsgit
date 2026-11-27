@@ -32,7 +32,11 @@ import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filte
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
-import type { HeadState } from '../primitives/internal/repo-state.js';
+import {
+  assertOperationalRepositoryWithCommandKeys,
+  type CommandBooleanKeys,
+  type HeadState,
+} from '../primitives/internal/repo-state.js';
 import type { IsVerified } from '../primitives/internal/smudge-racily-clean.js';
 import {
   type JudgedMaterialization,
@@ -68,11 +72,7 @@ import {
 import { BRANCH_FLAG, FILE_FLAG } from './internal/post-checkout.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import { refreshedIndex } from './internal/refresh-index.js';
-import {
-  assertOperationalRepository,
-  readHeadRaw,
-  requireWorkTree,
-} from './internal/repo-state.js';
+import { readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
@@ -113,6 +113,7 @@ export interface CheckoutResult {
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 const INDEX_SOURCE = 'index';
+const CHECKOUT_COMMAND_KEYS: CommandBooleanKeys = { section: 'checkout', keys: ['guess'] };
 
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
@@ -744,7 +745,7 @@ export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutR
   withFilterProcessPool(ctx, () => checkoutInScope(ctx, opts));
 
 const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositoryWithCommandKeys(ctx, CHECKOUT_COMMAND_KEYS);
   requireWorkTree(ctx, 'checkout');
   assertSingleCheckoutMode(opts);
 

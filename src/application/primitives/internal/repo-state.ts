@@ -262,17 +262,22 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
+  const selected = await selectEagerCandidate(ctx);
+  if (selected !== undefined) throwEagerCandidate(selected);
+};
+
+/** The lowest-line entry among every eager class, or `undefined` when all are valid or absent. */
+const selectEagerCandidate = async (ctx: Context): Promise<EagerCandidate | undefined> => {
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     ...(await coreCandidates(ctx)),
     ...(await sparseCandidates(ctx)),
     ...(await autoSetupRebaseCandidates(ctx)),
     ...(await diffDriverCandidates(ctx)),
   ];
-  const selected = candidates.reduce<EagerCandidate | undefined>(
+  return candidates.reduce<EagerCandidate | undefined>(
     (winner, candidate) => pickLowerLine(winner, candidate),
     undefined,
   );
-  if (selected !== undefined) throwEagerCandidate(selected);
 };
 
 /** `[sparse]` booleans git refuses at config load, whether or not sparse checkout is on. */
@@ -457,6 +462,44 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
   await assertWorktreeCoreBooleansValid(ctx);
   return root;
 };
+
+/** The boolean keys a builtin's own config callback reads, all under one subsectionless section. */
+export interface CommandBooleanKeys {
+  readonly section: string;
+  readonly keys: ReadonlyArray<string>;
+}
+
+/**
+ * `assertOperationalRepository` for a builtin whose config callback validates
+ * its own boolean keys: git's `git_checkout_config` reads them in the same
+ * file-order pass as `git_default_config`, so a bad command key and a bad
+ * eager key race by line — the lower one is named. Setup's refusals
+ * (`core.bare`, ownership, format) still precede both.
+ *
+ * The hit path pays one scan of the command keys over the cached token
+ * stream and leaves the shared gate memo untouched; only a bad command key
+ * re-derives setup and the eager winner un-memoized, to pick the lower line.
+ */
+export const assertOperationalRepositoryWithCommandKeys = async (
+  ctx: Context,
+  command: CommandBooleanKeys,
+): Promise<FilePath> => {
+  await assertUsableHeadAndOpenEpoch(ctx);
+  const invalid = await findFirstInvalidBoolean(ctx, command.section, undefined, command.keys);
+  if (invalid !== undefined) await refuseCommandKey(ctx, invalid);
+  const root = await memoizeGateVerdict(ctx, computeGateVerdict);
+  await assertWorktreeCoreBooleansValid(ctx);
+  return root;
+};
+
+const refuseCommandKey = async (ctx: Context, invalid: InvalidBooleanEntry): Promise<never> => {
+  assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
+  const command: EagerCandidate = { kind: 'boolean', line: invalid.line, entry: invalid };
+  return throwEagerCandidate(earlierOf(command, await selectEagerCandidate(ctx)));
+};
+
+const earlierOf = (command: EagerCandidate, eager: EagerCandidate | undefined): EagerCandidate =>
+  eager !== undefined && eager.line < command.line ? eager : command;
 
 const assertUsableHeadAndOpenEpoch = async (ctx: Context): Promise<void> => {
   await assertGitDirUsable(ctx);
