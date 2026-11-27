@@ -828,10 +828,25 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
     });
 
-    // Depth-1 (a file at the immediate parent) is deliberately not a row here:
-    // it is adapter-dependent — Node reports FILE_EXISTS, memory reports
-    // NOT_A_DIRECTORY carrying the ancestor. Depth >= 2 agrees on the code
-    // across both drivers.
+    it('Given a file at the immediate parent, When writeExclusive, Then throws NOT_A_DIRECTORY and leaves the parent file intact', async () => {
+      // Arrange
+      const parent = `${env.rootDir}/parent.bin`;
+      await env.fs.write(parent, new Uint8Array([1]));
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.writeExclusive(`${parent}/leaf.bin`, new Uint8Array([2]));
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertNotADirectory(caught);
+      expect(await env.fs.read(parent)).toEqual(new Uint8Array([1]));
+    });
+
     it('Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY and records no intermediate directory', async () => {
       // Arrange
       const grandparent = `${env.rootDir}/grandparent.bin`;
