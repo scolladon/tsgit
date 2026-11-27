@@ -1051,11 +1051,16 @@ export const trackingAmbiguous = (ref: RefName, remotes: ReadonlyArray<string>):
 export const checkoutRemoteBranchAmbiguous = (
   name: string,
   remotes: ReadonlyArray<string>,
-): TsgitError => new TsgitError({ code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS', name, remotes });
+): TsgitError =>
+  new TsgitError({
+    code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS',
+    name: sanitizeForDisplay(name),
+    remotes,
+  });
 
 /** git checkout's remote-branch guess: the name it would guess also names a path. */
 export const checkoutPathOrTrackingBranch = (name: string): TsgitError =>
-  new TsgitError({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name });
+  new TsgitError({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: sanitizeForDisplay(name) });
 
 export const trackingInheritRebaseMultiple = (merges: ReadonlyArray<RefName>): TsgitError =>
   new TsgitError({ code: 'TRACKING_INHERIT_REBASE_MULTIPLE', merges });

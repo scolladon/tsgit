@@ -18,6 +18,8 @@ import {
   cannotDescribe,
   checkoutDetachPathArgument,
   checkoutOverwriteDirty,
+  checkoutPathOrTrackingBranch,
+  checkoutRemoteBranchAmbiguous,
   cherryPickMergeNoMainline,
   commitParseFailed,
   configBadBooleanLiteral,
@@ -162,6 +164,38 @@ describe('domain commands error — factory data', () => {
 
         // Assert
         expect(result.data).toEqual({ code: 'CHECKOUT_DETACH_PATH_ARGUMENT', argument: 'a\\x1Bb' });
+      });
+    });
+  });
+
+  describe('Given a guessed name holding a control byte', () => {
+    describe('When the ambiguous remote-branch refusal is built', () => {
+      it('Then data carries the name rendered for display', () => {
+        // Arrange
+        const sut = checkoutRemoteBranchAmbiguous;
+
+        // Act
+        const result = sut('a\u001bb', ['origin', 'other']);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS',
+          name: 'a\\x1Bb',
+          remotes: ['origin', 'other'],
+        });
+      });
+    });
+
+    describe('When the path-or-tracking-branch refusal is built', () => {
+      it('Then data carries the name rendered for display', () => {
+        // Arrange
+        const sut = checkoutPathOrTrackingBranch;
+
+        // Act
+        const result = sut('a\u001bb');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'a\\x1Bb' });
       });
     });
   });
