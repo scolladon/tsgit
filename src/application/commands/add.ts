@@ -285,62 +285,79 @@ const addInScope = async (
 // Branch on the resolved pathspec: pure literals that each name an
 // existing file route through the byte-identical per-path stage flow
 // from; anything else (globs, literal directories, negations)
-// walks the working tree and filters with the matcher.
+// walks the working tree and filters with the matcher. git's `cmd_add` holds
+// the index lock before it parses the pathspec, so every pathspec refusal
+// waits behind a held lock.
 const dispatchPathspec = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
   opts: AddOptions,
   scope: ConversionScope,
 ): Promise<AddResult> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    return await stageUnderLock({ ctx, lock }, paths, opts, scope);
+  } finally {
+    await lock.release();
+  }
+};
+
+/** A command's context together with the index lock it already holds. */
+interface HeldIndex {
+  readonly ctx: Context;
+  readonly lock: IndexLock;
+}
+
+const stageUnderLock = async (
+  held: HeldIndex,
+  paths: ReadonlyArray<string>,
+  opts: AddOptions,
+  scope: ConversionScope,
+): Promise<AddResult> => {
+  const { ctx } = held;
   const resolved = resolveCommandPathspec(ctx, paths);
-  const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   const walks = resolved.hasGlob || holdsExclusion(resolved.matcher);
-  const stats = walks ? undefined : await literalStats(ctx, literalMustMatch);
+  const stats = walks ? undefined : await literalStats(ctx, resolved.literalMustMatch);
   const repoIgnore = await repoIgnoreOf(ctx, opts);
-  if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, repoIgnore, scope);
-  return addByPathspec(ctx, resolved, repoIgnore, scope);
+  if (stats !== undefined) return addLiteralOnly(held, resolved, stats, repoIgnore, scope);
+  return addByPathspec(held, resolved, repoIgnore, scope);
 };
 
 const holdsExclusion = (matcher: Pathspec): boolean => matcher.some((entry) => entry.negated);
 
 const addLiteralOnly = async (
-  ctx: Context,
+  { ctx, lock }: HeldIndex,
   resolved: CommandPathspec,
   stats: LiteralStats,
   repoIgnore: IgnorePredicate,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
-  try {
-    const { indexRules, modeDonors, unmergedStages, stageZeroBeside, sorted, ...state } =
-      await readExistingEntries(ctx);
-    const staging = {
-      ctx,
-      scope: { ...scope, indexRules, modeDonors },
-      ...state,
-      stageZeroBeside,
-      ensurePromisorConfigValid,
-    };
-    const repositories = embeddedRepositories(ctx, sorted);
-    const reported = await splitReportedLiterals(resolved, state.entries, scope.exclusion, {
-      repoIgnore,
-      repositories,
-    });
-    const { sparse, ignored } = reported;
-    const stageable = await withoutRepositoryLiterals(repositories, reported.stageable);
-    const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
-      staging,
-      sorted,
-      stageable,
-      stats,
-    );
-    await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
-    return { ...result, sparse, ignored };
-  } finally {
-    await lock.release();
-  }
+  const { indexRules, modeDonors, unmergedStages, stageZeroBeside, sorted, ...state } =
+    await readExistingEntries(ctx);
+  const staging = {
+    ctx,
+    scope: { ...scope, indexRules, modeDonors },
+    ...state,
+    stageZeroBeside,
+    ensurePromisorConfigValid,
+  };
+  const repositories = embeddedRepositories(ctx, sorted);
+  const reported = await splitReportedLiterals(resolved, state.entries, scope.exclusion, {
+    repoIgnore,
+    repositories,
+  });
+  const { sparse, ignored } = reported;
+  const stageable = await withoutRepositoryLiterals(repositories, reported.stageable);
+  const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
+    staging,
+    sorted,
+    stageable,
+    stats,
+  );
+  await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
+  return { ...result, sparse, ignored };
 };
 
 interface IgnoreContext {
@@ -983,43 +1000,37 @@ const dispatchWalkEntry = <T extends Named, R>(
 // leaves are filtered by it. `.gitignore` directory pruning still
 // applies via `buildRepoIgnorePredicate`.
 const addByPathspec = async (
-  ctx: Context,
+  { ctx, lock }: HeldIndex,
   { matcher, positives }: CommandPathspec,
   repoIgnore: IgnorePredicate,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
-  try {
-    const staged = await stageIgnoredWalk(
-      ctx,
-      repoIgnore,
-      { matcher, positives },
-      scope,
-      ensurePromisorConfigValid,
-    );
-    const tally = tallyWalkOutcomes(staged.existing, staged.outcomes, staged.stageZeroBeside);
-    const { matched } = tally;
-    const removedEntries = await collectMatchedRemovals(
-      ctx,
-      staged.existing,
-      matched,
-      staged.verdicts,
-      scope.exclusion.excludes,
-    );
-    const settled = await settleWalkRemovals(
-      ctx,
-      staged,
-      matcher,
-      tally.newEntries,
-      removedEntries,
-      scope.exclusion.excludes,
-    );
-    await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
-    return sortedResult(tally, settled.removed, staged);
-  } finally {
-    await lock.release();
-  }
+  const staged = await stageIgnoredWalk(
+    ctx,
+    repoIgnore,
+    { matcher, positives },
+    scope,
+    ensurePromisorConfigValid,
+  );
+  const tally = tallyWalkOutcomes(staged.existing, staged.outcomes, staged.stageZeroBeside);
+  const removedEntries = await collectMatchedRemovals(
+    ctx,
+    staged.existing,
+    tally.matched,
+    staged.verdicts,
+    scope.exclusion.excludes,
+  );
+  const settled = await settleWalkRemovals(
+    ctx,
+    staged,
+    matcher,
+    tally.newEntries,
+    removedEntries,
+    scope.exclusion.excludes,
+  );
+  await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
+  return sortedResult(tally, settled.removed, staged);
 };
 
 /** git ≥ 2.0: `add <pathspec>` stages the deletion of every tracked path it names that the walk found missing from disk. */
@@ -1046,33 +1057,40 @@ const addRenormalized = async (
   paths: ReadonlyArray<string>,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const { matcher, positives, symlinkScanTargets } = resolveCommandPathspec(ctx, paths);
-  await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
   const lock = await acquireIndexLock(ctx);
-  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { entries } = await readIndexOrEmpty(ctx);
-    const sparse = await refuseUnseenRenormalized(ctx, positives, entries, scope.exclusion);
-    const staging = {
-      ctx,
-      scope: { ...scope, indexRules: NO_INDEX_RULES, modeDonors: NO_MODE_DONORS },
-      ensurePromisorConfigValid,
-    };
-    const renormalized = await renormalizeEntries(staging, entries, matcher);
-    await commitIfChanged(lock, entries.length, renormalized.entries, {
-      restagedPaths: renormalized.restagedPaths,
-    });
-    return {
-      added: [],
-      modified: renormalized.modified,
-      removed: [],
-      eolNotices: [],
-      sparse: sparse.map(({ spelling }) => spelling),
-      ignored: [],
-    };
+    return await renormalizeUnderLock({ ctx, lock }, paths, scope);
   } finally {
     await lock.release();
   }
+};
+
+const renormalizeUnderLock = async (
+  { ctx, lock }: HeldIndex,
+  paths: ReadonlyArray<string>,
+  scope: ConversionScope,
+): Promise<AddResult> => {
+  const { matcher, positives, symlinkScanTargets } = resolveCommandPathspec(ctx, paths);
+  await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
+  const { entries } = await readIndexOrEmpty(ctx);
+  const sparse = await refuseUnseenRenormalized(ctx, positives, entries, scope.exclusion);
+  const staging = {
+    ctx,
+    scope: { ...scope, indexRules: NO_INDEX_RULES, modeDonors: NO_MODE_DONORS },
+    ensurePromisorConfigValid: createPromisorGuard(ctx),
+  };
+  const renormalized = await renormalizeEntries(staging, entries, matcher);
+  await commitIfChanged(lock, entries.length, renormalized.entries, {
+    restagedPaths: renormalized.restagedPaths,
+  });
+  return {
+    added: [],
+    modified: renormalized.modified,
+    removed: [],
+    eolNotices: [],
+    sparse: sparse.map(({ spelling }) => spelling),
+    ignored: [],
+  };
 };
 
 /** Collected in emission order: the walk's ignore stack is stateful, so it is walked once. */

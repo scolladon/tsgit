@@ -4,7 +4,8 @@
  * command: `add`, `rm`, `grep`, a `checkout` path restore, and a `checkout`
  * whose switch argument no revision answers, which git reads as a path. tsgit
  * refuses each with `EMPTY_PATHSPEC`, even beside an argument outside the
- * repository.
+ * repository. `add` holds the index lock before it parses the pathspec, so
+ * behind a held lock it refuses the lock first, as git's `cmd_add` does.
  *
  * @proves
  *   surface:        add, rm, grep, checkout
@@ -12,7 +13,7 @@
  *   unique:         an empty pathspec is refused before any pattern is read
  *   interopSurface: add, rm, grep, checkout
  */
-import { mkdtemp, realpath, rm as removePath, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm as removePath, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -27,6 +28,7 @@ import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-h
 
 const GIT_EMPTY_PATHSPEC = 'fatal: empty string is not a valid pathspec.';
 const GIT_FATAL_EXIT = 128;
+const HELD_LOCK = 'held';
 
 const IDENTITY_ENV = {
   ...runGitEnv(),
@@ -114,4 +116,45 @@ describe.skipIf(!GIT_AVAILABLE)('Given an empty pathspec', () => {
       expect(result).toEqual({ code: 'EMPTY_PATHSPEC' });
     });
   });
+
+  describe.each([
+    { label: 'an empty pathspec', gitArgs: ['add', ''], paths: [''], opts: {} },
+    {
+      label: 'a pathspec outside the repository',
+      gitArgs: ['add', '../x'],
+      paths: ['../x'],
+      opts: {},
+    },
+    {
+      label: 'an empty pathspec to renormalize',
+      gitArgs: ['add', '--renormalize', ''],
+      paths: [''],
+      opts: { renormalize: true },
+    },
+  ])(
+    'When git and tsgit add $label behind a held index lock',
+    ({ label, gitArgs, paths, opts }) => {
+      it('Then both refuse the held lock first and leave it in place', async () => {
+        // Arrange
+        const slug = `locked${label.replaceAll(/[^a-z]/gi, '')}`;
+        const gitRepo = await repoAt(`git-${slug}`);
+        const tsgitRepo = await repoAt(`tsgit-${slug}`);
+        await writeFile(path.join(gitRepo, '.git', 'index.lock'), HELD_LOCK);
+        await writeFile(path.join(tsgitRepo, '.git', 'index.lock'), HELD_LOCK);
+        const sut = add;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitRepo, ...gitArgs]);
+        const result = await refusalOf(() =>
+          sut(createNodeContext({ workDir: tsgitRepo }), paths, opts),
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(GIT_FATAL_EXIT);
+        expect(git.stderr).toContain("index.lock': File exists.");
+        expect(result).toMatchObject({ code: 'RESOURCE_LOCKED', resource: 'index' });
+        expect(await readFile(path.join(tsgitRepo, '.git', 'index.lock'), 'utf8')).toBe(HELD_LOCK);
+      });
+    },
+  );
 });

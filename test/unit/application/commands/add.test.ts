@@ -4742,6 +4742,35 @@ describe('add against a held index.lock', () => {
       });
     });
   });
+
+  describe.each([
+    { label: 'an empty pathspec', paths: [''], opts: {} },
+    { label: 'a pathspec outside the repository', paths: ['../x'], opts: {} },
+    { label: 'an empty pathspec to renormalize', paths: [''], opts: { renormalize: true } },
+    {
+      label: 'a pathspec outside the repository to renormalize',
+      paths: ['../x'],
+      opts: { renormalize: true },
+    },
+  ])('Given index.lock held by another process and $label', ({ paths, opts }) => {
+    describe('When add names it', () => {
+      it('Then the lock refusal wins over the pathspec refusal and the lock is kept', async () => {
+        // Arrange
+        const ctx = await seedTrackedThenIgnored({ 'real.txt': 'r' }, '');
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        const held = new Uint8Array([0x68]);
+        await ctx.fs.writeExclusive(lockPath, held);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, paths, opts), 'RESOURCE_LOCKED');
+
+        // Assert
+        expect(err.data).toMatchObject({ code: 'RESOURCE_LOCKED', resource: 'index' });
+        expect(await ctx.fs.read(lockPath)).toEqual(held);
+      });
+    });
+  });
 });
 
 describe('add of a literal beneath an ignored directory', () => {
