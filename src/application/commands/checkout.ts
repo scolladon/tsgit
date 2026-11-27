@@ -62,6 +62,7 @@ import { type BranchCreateResult, type BranchTrack, branchCreate } from './branc
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { checkFilename } from './internal/misspelt-revision.js';
 import {
   type CommandPathspec,
   type PositivePathspec,
@@ -237,7 +238,8 @@ const guessAllowed = async (ctx: Context, opts: TargetedSwitch): Promise<boolean
   opts.createBranch === undefined && (opts.guess ?? (await readCheckoutGuess(ctx)));
 
 /**
- * git's `parse_remote_branch` miss path: a guessed ref rewrites the request into
+ * git's `parse_branchname_arg` miss path: the argument is probed as a path before anything judges
+ * it, `-b` and `--detach` included; then a guessed ref rewrites the request into
  * `checkout -b <arg> <ref>`, aimed at the object the guess already read; no guess falls through.
  */
 const unnamedSwitch = async (
@@ -245,7 +247,10 @@ const unnamedSwitch = async (
   opts: TargetedSwitch,
   arg: string,
 ): Promise<SwitchResolution> => {
-  const guessed = (await guessAllowed(ctx, opts)) ? await parseRemoteBranch(ctx, arg) : undefined;
+  const candidate = { name: arg, namesPath: await checkFilename(ctx, arg) };
+  const guessed = (await guessAllowed(ctx, opts))
+    ? await parseRemoteBranch(ctx, candidate)
+    : undefined;
   if (guessed === undefined) return UNRESOLVED;
   return {
     kind: 'target',

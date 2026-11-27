@@ -88,6 +88,24 @@ const branchSection = async (ctx: Context, name: string): Promise<string | undef
 const lastReflogMessage = async (ctx: Context, ref: string): Promise<string | undefined> =>
   (await readReflog(ctx, ref as RefName)).at(-1)?.message;
 
+const STAT_FAILURE = 'name too long';
+const STAT_PROBES: ReadonlySet<PropertyKey> = new Set(['lstat', 'tryLstat', 'lexists']);
+
+/** `ctx` whose file system fails every stat of a path ending in `/<name>` for a reason other than absence. */
+const withFailingStat = (ctx: Context, name: string): Context => {
+  const fs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      const real = Reflect.get(target, prop, receiver);
+      if (!STAT_PROBES.has(prop) || typeof real !== 'function') return real;
+      return async (path: string, ...rest: ReadonlyArray<unknown>) => {
+        if (path.endsWith(`/${name}`)) throw new Error(STAT_FAILURE);
+        return real.call(target, path, ...rest);
+      };
+    },
+  });
+  return { ...ctx, fs };
+};
+
 const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   try {
     await run();
@@ -498,6 +516,33 @@ describe('checkout remote-branch guess', () => {
           revision: 'feat',
           branch: 'x',
         });
+      });
+    });
+  });
+
+  describe('Given a switch argument no revision answers whose stat fails for a reason other than absence', () => {
+    describe.each([
+      { label: 'with the guess on', opts: { rev: 'nope' } },
+      { label: 'with the guess off', opts: { rev: 'nope', guess: false } },
+      { label: 'while creating a branch', opts: { rev: 'nope', createBranch: { name: 'x' } } },
+      { label: 'while detaching', opts: { rev: 'nope', detach: true } },
+    ])('When checkout reads it $label', ({ opts }) => {
+      it('Then the stat failure propagates before anything else judges the argument', async () => {
+        // Arrange
+        const { ctx } = await seed('[checkout]\n\tdefaultRemote\n');
+        const hostile = withFailingStat(ctx, 'nope');
+        const sut = checkout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(hostile, opts);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(STAT_FAILURE);
       });
     });
   });

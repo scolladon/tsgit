@@ -3,7 +3,9 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
+import { checkFilename } from '../../../../../src/application/commands/internal/misspelt-revision.js';
 import {
+  type GuessCandidate,
   parseRemoteBranch,
   readCheckoutGuess,
   uniqueTrackingName,
@@ -66,6 +68,12 @@ const thrownBy = async (run: () => Promise<unknown>): Promise<TsgitError | undef
 
 const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> =>
   (await thrownBy(run))?.data;
+
+/** The candidate checkout hands the guess: the name, probed as a path the way git probes it. */
+const candidateOf = async (ctx: Context, name: string): Promise<GuessCandidate> => ({
+  name,
+  namesPath: await checkFilename(ctx, name),
+});
 
 const ORIGIN_FEAT = 'refs/remotes/origin/feat';
 const OTHER_FEAT = 'refs/remotes/other/feat';
@@ -405,7 +413,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await sut(ctx, 'feat');
+        const result = await sut(ctx, await candidateOf(ctx, 'feat'));
 
         // Assert
         expect(result).toEqual({ ref: ORIGIN_FEAT, id });
@@ -421,7 +429,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await sut(ctx, 'missing');
+        const result = await sut(ctx, await candidateOf(ctx, 'missing'));
 
         // Assert
         expect(result).toBeUndefined();
@@ -437,7 +445,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await thrownBy(() => sut(ctx, 'feat'));
+        const result = await thrownBy(async () => sut(ctx, await candidateOf(ctx, 'feat')));
 
         // Assert
         expect(result?.data).toEqual({
@@ -460,7 +468,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await refusalOf(() => sut(ctx, 'feat'));
+        const result = await refusalOf(async () => sut(ctx, await candidateOf(ctx, 'feat')));
 
         // Assert
         expect(result).toEqual({
@@ -484,7 +492,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await refusalOf(() => sut(ctx, 'feat'));
+        const result = await refusalOf(async () => sut(ctx, await candidateOf(ctx, 'feat')));
 
         // Assert
         expect(result).toEqual({
@@ -505,7 +513,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await thrownBy(() => sut(ctx, 'feat'));
+        const result = await thrownBy(async () => sut(ctx, await candidateOf(ctx, 'feat')));
 
         // Assert
         expect(result?.data).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'feat' });
@@ -525,7 +533,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await refusalOf(() => sut(ctx, 'feat'));
+        const result = await refusalOf(async () => sut(ctx, await candidateOf(ctx, 'feat')));
 
         // Assert
         expect(result).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'feat' });
@@ -543,7 +551,9 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await refusalOf(() => sut(fromSub, 'feat'));
+        const result = await refusalOf(async () =>
+          sut(fromSub, await candidateOf(fromSub, 'feat')),
+        );
 
         // Assert
         expect(result).toEqual({ code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name: 'feat' });
@@ -558,7 +568,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await sut(ctx, 'feat');
+        const result = await sut(ctx, await candidateOf(ctx, 'feat'));
 
         // Assert
         expect(result).toEqual({ ref: ORIGIN_FEAT, id });
@@ -575,7 +585,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await sut(ctx, 'missing');
+        const result = await sut(ctx, await candidateOf(ctx, 'missing'));
 
         // Assert
         expect(result).toBeUndefined();
@@ -592,7 +602,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await refusalOf(() => sut(ctx, 'feat'));
+        const result = await refusalOf(async () => sut(ctx, await candidateOf(ctx, 'feat')));
 
         // Assert
         expect(result).toEqual({
@@ -612,7 +622,7 @@ describe('parseRemoteBranch', () => {
         const sut = parseRemoteBranch;
 
         // Act
-        const result = await sut(ctx, name);
+        const result = await sut(ctx, await candidateOf(ctx, name));
 
         // Assert
         expect(result).toBeUndefined();
