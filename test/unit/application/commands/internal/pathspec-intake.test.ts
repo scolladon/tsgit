@@ -91,6 +91,49 @@ describe('resolveCommandPathspec', () => {
       });
     });
   });
+
+  describe.each([
+    { label: 'alone', paths: [''] },
+    { label: 'after a pattern outside the repository', paths: ['../x', ''] },
+  ])('Given an empty pattern $label', ({ paths }) => {
+    describe('When resolved', () => {
+      it('Then it is refused as an empty pathspec before any pattern is read', () => {
+        // Arrange
+        const sut = resolveCommandPathspec;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut({}, paths);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'EMPTY_PATHSPEC' });
+      });
+    });
+  });
+
+  describe('Given an empty pattern after a backslash pattern on a Windows host', () => {
+    describe('When resolved', () => {
+      it('Then the empty pattern is refused first', () => {
+        // Arrange
+        const sut = resolveCommandPathspec;
+        let caught: unknown;
+
+        // Act
+        try {
+          sut({ windowsPathSyntax: true }, ['a\\b', '']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'EMPTY_PATHSPEC' });
+      });
+    });
+  });
 });
 
 describe('positiveOf', () => {

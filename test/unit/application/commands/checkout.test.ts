@@ -518,7 +518,7 @@ describe('checkout', () => {
     });
   });
 
-  describe('Given an index.lock already on disk', () => {
+  describe('Given an index.lock holding other bytes already on disk', () => {
     describe('When path-restore from the default (index) source', () => {
       it('Then refuses with RESOURCE_LOCKED and leaves the lock intact', async () => {
         // Arrange
@@ -1284,11 +1284,8 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given a bare repository', () => {
     describe('When checkout', () => {
-      it('Then throws WORK_TREE_REQUIRED naming the checkout operation (L253 literal)', async () => {
-        // Arrange — a bare repo; requireWorkTree(ctx, 'checkout') must throw
-        // with the operation string 'checkout'. A StringLiteral mutant
-        // emptying the 'checkout' argument would surface an empty operation
-        // in the message.
+      it('Then throws WORK_TREE_REQUIRED naming the checkout operation', async () => {
+        // Arrange — a bare repo: the refusal names the operation as 'checkout'.
         const ctx0 = createMemoryContext();
         await init(ctx0);
         const ctx = asBareContext(ctx0);
@@ -2751,6 +2748,39 @@ describe('Given a switch from a born HEAD', () => {
 
       // Assert
       expect(materialize.mock.calls[0]?.[1]).toMatchObject({ headTree, refreshedIndex: true });
+    });
+  });
+});
+
+describe('Given checkout.guess = bogus in the repository config', () => {
+  const seedBadGuess = async () => {
+    const seeded = await seedWithBranches();
+    await updateConfigEntries(seeded.ctx, [{ section: 'checkout', key: 'guess', value: 'bogus' }]);
+    await seeded.ctx.fs.writeUtf8(`${seeded.ctx.layout.workDir}/a.txt`, 'edited');
+    return seeded;
+  };
+
+  describe.each([
+    { mode: 'a branch switch', opts: { rev: 'main' } },
+    { mode: 'a path restore', opts: { paths: ['a.txt'] } },
+  ])('When checkout runs $mode', ({ opts }) => {
+    it('Then it refuses checkout.guess and leaves HEAD and the work tree untouched', async () => {
+      // Arrange
+      const { ctx } = await seedBadGuess();
+      const headBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+      const sut = checkout;
+
+      // Act
+      const result = await refusalOf(() => sut(ctx, opts));
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'checkout.guess',
+        value: 'bogus',
+      });
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(headBefore);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('edited');
     });
   });
 });

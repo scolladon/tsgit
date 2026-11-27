@@ -23,8 +23,8 @@ Item ids are `<slice><number>`: A merge/rebase/sequencer/checkout, B fetch/push/
 | A13 | octopus merge with a directory/file conflict | tsgit throws a raw `NOT_A_DIRECTORY` and leaves untracked files from the partial step. git records a conflict (exit 1) at the last step and refuses with `Should not be doing an octopus` (exit 2) at a middle step. Pinned. |
 | A20 | `branch.create` from `@{-1}` tracking | tsgit throws `UPSTREAM_NOT_BRANCH` with `track: 'direct'`, and writes no tracking config with `autoSetupMerge=always`. git's result is not recorded in the note. Note only. |
 | A21 | checkout with an unborn HEAD pointing at a non-heads ref | tsgit throws `REF_NOT_FOUND`; git switches and logs `(invalid)`. Pinned. |
-| A22 | `checkout --detach <x>` | tsgit says `PATHSPEC_NO_MATCH`, even for a tracked file; git says `--detach does not take a path argument`. Pinned. |
-| A23 | `checkout <remote>/<name>` DWIM | tsgit gives `PATHSPEC_NO_MATCH`; git creates the tracking branch. Pinned. |
+| A22 | `checkout --detach <x>` | tsgit says `PATHSPEC_NO_MATCH`, even for a tracked file; git says `--detach does not take a path argument`. Pinned. Closed by #357. |
+| A23 | `checkout <remote>/<name>` DWIM | tsgit gives `PATHSPEC_NO_MATCH`; git creates the tracking branch. Pinned. Closed by #357. |
 | B5 | fetch `force` / `showForcedUpdates` options | tsgit has no such option; a `+` refspec is the only way to force. git's side is not recorded. Note only. **verify on main** |
 | B13 | two sources for one destination in a push | tsgit sends both to the server, which rejects both; git refuses on the client before connecting. Pinned. |
 | B17 | mirror refspec (`+refs/heads/*:refs/heads/*`) with `^refs/heads/feat` | tsgit maps feat's upstream to itself and `branch -d` deletes the unmerged branch; git refuses with `not fully merged`. With the standard layout both behave the same. Pinned. |

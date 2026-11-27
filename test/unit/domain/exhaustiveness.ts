@@ -175,6 +175,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'UPSTREAM_NOT_BRANCH':
     case 'UPSTREAM_MISSING':
     case 'TRACKING_AMBIGUOUS':
+    case 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS':
+    case 'CHECKOUT_PATH_OR_TRACKING_BRANCH':
+    case 'CHECKOUT_DETACH_PATH_ARGUMENT':
     case 'TRACKING_INHERIT_REBASE_MULTIPLE':
     case 'INVALID_FILTER_SPEC':
     case 'REMOTE_FILTER_UNSUPPORTED':

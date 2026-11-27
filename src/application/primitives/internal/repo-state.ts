@@ -78,11 +78,12 @@ const HEAD_REF = RefName.from('HEAD');
 export type HeadState = Exclude<ResolveDirectResult, { readonly kind: 'missing' }>;
 
 /**
- * Smallest-`line` selection shared by every eager gate in this file: distinct
- * keys always occupy distinct physical config lines (the tokenizer emits at
- * most one entry per line), so ties never occur and `<` alone decides.
+ * Smallest-`line` selection shared by every config gate that races entries by
+ * line: distinct keys always occupy distinct physical config lines (the
+ * tokenizer emits at most one entry per line), so ties never occur and `<`
+ * alone decides.
  */
-const pickLowerLine = <T extends { readonly line: number }>(
+export const pickLowerLine = <T extends { readonly line: number }>(
   a: T | undefined,
   b: T | undefined,
 ): T | undefined => {
@@ -262,17 +263,22 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
+  const selected = await selectEagerCandidate(ctx);
+  if (selected !== undefined) throwEagerCandidate(selected);
+};
+
+/** The lowest-line entry among every eager class, or `undefined` when all are valid or absent. */
+const selectEagerCandidate = async (ctx: Context): Promise<EagerCandidate | undefined> => {
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     ...(await coreCandidates(ctx)),
     ...(await sparseCandidates(ctx)),
     ...(await autoSetupRebaseCandidates(ctx)),
     ...(await diffDriverCandidates(ctx)),
   ];
-  const selected = candidates.reduce<EagerCandidate | undefined>(
+  return candidates.reduce<EagerCandidate | undefined>(
     (winner, candidate) => pickLowerLine(winner, candidate),
     undefined,
   );
-  if (selected !== undefined) throwEagerCandidate(selected);
 };
 
 /** `[sparse]` booleans git refuses at config load, whether or not sparse checkout is on. */
@@ -457,6 +463,52 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
   await assertWorktreeCoreBooleansValid(ctx);
   return root;
 };
+
+/**
+ * A work-tree builtin's own config callback: the boolean keys it reads, all under one
+ * subsectionless section, and the builtin it names when there is no work tree.
+ */
+export interface CommandBooleanKeys {
+  readonly section: string;
+  readonly keys: ReadonlyArray<string>;
+  readonly operation: string;
+}
+
+/**
+ * `assertOperationalRepository` for a work-tree builtin whose config callback
+ * validates its own boolean keys. Setup's refusals (`core.bare`, ownership,
+ * format) come first, then git's `setup_work_tree` (`NEED_WORK_TREE`), and only
+ * then the builtin reads its config: `git_checkout_config` reads its keys in
+ * the same file-order pass as `git_default_config`, so a bad command key and a
+ * bad eager key race by line — the lower one is named.
+ *
+ * Setup runs un-memoized, as the settings-first tier runs it. The hit path then
+ * pays one scan of the command keys over the cached token stream and leaves the
+ * shared gate memo untouched; only a bad command key re-derives the eager
+ * winner un-memoized, to pick the lower line.
+ */
+export const assertOperationalRepositoryWithCommandKeys = async (
+  ctx: Context,
+  command: CommandBooleanKeys,
+): Promise<FilePath> => {
+  await assertUsableHeadAndOpenEpoch(ctx);
+  assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
+  requireWorkTree(ctx, command.operation);
+  const invalid = await findFirstInvalidBoolean(ctx, command.section, undefined, command.keys);
+  if (invalid !== undefined) await refuseCommandKey(ctx, invalid);
+  const root = await memoizeGateVerdict(ctx, computeGateVerdict);
+  await assertWorktreeCoreBooleansValid(ctx);
+  return root;
+};
+
+const refuseCommandKey = async (ctx: Context, invalid: InvalidBooleanEntry): Promise<never> => {
+  const command: EagerCandidate = { kind: 'boolean', line: invalid.line, entry: invalid };
+  return throwEagerCandidate(earlierOf(command, await selectEagerCandidate(ctx)));
+};
+
+const earlierOf = (command: EagerCandidate, eager: EagerCandidate | undefined): EagerCandidate =>
+  // Stryker disable next-line EqualityOperator: equivalent — the two entries come from distinct config lines, so `<` and `<=` never disagree.
+  eager !== undefined && eager.line < command.line ? eager : command;
 
 const assertUsableHeadAndOpenEpoch = async (ctx: Context): Promise<void> => {
   await assertGitDirUsable(ctx);

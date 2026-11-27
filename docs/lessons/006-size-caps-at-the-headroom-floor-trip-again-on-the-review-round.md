@@ -13,7 +13,7 @@ evidence:
 source: { run: gc-size-lying-loose-blob, phase: review, date: 2026-10-21 }
 status: active
 supersedes: []
-last-verified: 2026-11-26
+last-verified: 2026-11-27
 ---
 # 006 — Size caps at the headroom floor trip again on the review round
 
@@ -56,3 +56,4 @@ still in `dist/` beside the new ones and the chunk globs summed both. `rm -rf di
 true rows (1.4 kB and 670 B over) and the caps were raised once, after the review round, from those numbers.
 `.size-limit.json` — on the rev-parse corrupt-input change, `check:size` went red by 48–115 B after an early part and by hundreds of bytes after the last; the raise waited for a clean build and a `main` baseline, landed once with 0.3 kB of headroom on the user's call, held through three review cycles and a refactor, and was tightened to the measurement after the mutation triage, the last step that touches `src/`.
 `docs/design/bundle-size-optimization.md` — the grep blob-target raise ("Size-limit raise — grep blob targets"): one raise at the implementation gate on a clean build, three review cycles landed under it, and a red `check:size`/`check:tarball` after the Stryker run measured green once `rm -rf dist .wireit` rebuilt it.
+`tooling/verify-tarball.sh` — the checkout remote-branch guess raised the caps once after implementation (1555 → 1557 KiB), and the review folds crossed three rows and the tarball again (1557 → 1559 KiB), then a refactor's one export crossed the full library by 12 B (436.0 → 436.1 kB): each raise on a clean `rm -rf dist .wireit` build.

@@ -1,5 +1,6 @@
 import {
   branchExists,
+  checkoutDetachPathArgument,
   checkoutNonCommit,
   checkoutStartPointNotCommit,
   invalidOption,
@@ -31,7 +32,11 @@ import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filte
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
-import type { HeadState } from '../primitives/internal/repo-state.js';
+import {
+  assertOperationalRepositoryWithCommandKeys,
+  type CommandBooleanKeys,
+  type HeadState,
+} from '../primitives/internal/repo-state.js';
 import type { IsVerified } from '../primitives/internal/smudge-racily-clean.js';
 import {
   type JudgedMaterialization,
@@ -53,10 +58,11 @@ import {
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTreeWithLossyBytes } from '../primitives/walk-tree.js';
-import { type BranchTrack, branchCreate } from './branch.js';
+import { type BranchCreateResult, type BranchTrack, branchCreate } from './branch.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { checkFilename } from './internal/misspelt-revision.js';
 import {
   type CommandPathspec,
   type PositivePathspec,
@@ -68,10 +74,11 @@ import { BRANCH_FLAG, FILE_FLAG } from './internal/post-checkout.js';
 import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import { refreshedIndex } from './internal/refresh-index.js';
 import {
-  assertOperationalRepository,
-  readHeadRaw,
-  requireWorkTree,
-} from './internal/repo-state.js';
+  type GuessedBranch,
+  parseRemoteBranch,
+  readCheckoutGuess,
+} from './internal/remote-branch-guess.js';
+import { readHeadRaw } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
@@ -89,6 +96,12 @@ export interface CheckoutSwitchOptions {
   readonly detach?: boolean;
   readonly force?: boolean;
   readonly createBranch?: CheckoutCreateBranch;
+  /**
+   * git's `--[no-]guess`: whether a name no revision answers may create the
+   * local branch one remote tracks under that name. Omitted, `checkout.guess`
+   * decides.
+   */
+  readonly guess?: boolean;
 }
 
 export interface CheckoutPathsOptions {
@@ -108,10 +121,21 @@ export interface CheckoutResult {
   readonly id: ObjectId;
   readonly detached: boolean;
   readonly changedPaths: number;
+  /**
+   * The branch this checkout created — by `createBranch`, or by git's guess of a
+   * local branch from a remote-tracking ref — and the upstream it recorded.
+   * Absent when no branch ref was written, an unborn `createBranch` included.
+   */
+  readonly createdBranch?: BranchCreateResult;
 }
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 const INDEX_SOURCE = 'index';
+const CHECKOUT_COMMAND_KEYS: CommandBooleanKeys = {
+  section: 'checkout',
+  keys: ['guess'],
+  operation: 'checkout',
+};
 
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
@@ -153,13 +177,19 @@ const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId 
   (await resolveRevisionName(ctx, arg)) ?? resolveRevisionExpression(ctx, arg);
 
 /**
- * A switch argument no revision answers: git hands it on as a pathspec, which
- * matches nothing — or, under `-b`, names a start point no branch can come from.
+ * A switch argument no revision answers: git hands it to `checkout_paths` as the caller spelled
+ * it, and restores what it matches from the index. `parse_pathspec` refuses an argument it cannot
+ * read first; then `-b` refuses, naming a start point no branch can come from, then `--detach`,
+ * which takes no path argument.
  */
-const unresolvedSwitch = (opts: TargetedSwitch) =>
-  opts.createBranch === undefined
-    ? pathspecNoMatch(opts.rev)
-    : checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+const unresolvedSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<CheckoutResult> => {
+  resolveCommandPathspec(ctx, [opts.rev]);
+  if (opts.createBranch !== undefined) {
+    throw checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+  }
+  if (opts.detach === true) throw checkoutDetachPathArgument(opts.rev);
+  return pathRestore(ctx, { paths: [opts.rev] });
+};
 
 /** A switch whose target is spelled: an omitted `rev` already reads as HEAD. */
 type TargetedSwitch = CheckoutSwitchOptions & { readonly rev: string };
@@ -172,19 +202,85 @@ interface SwitchTarget {
   readonly object: ObjectId;
 }
 
+/**
+ * A switch argument resolves to a target, with the request that reaches it (the caller's, or the
+ * one a guessed branch rewrites it into), or to nothing: its caller then reads it as paths.
+ */
+type SwitchResolution =
+  | { readonly kind: 'target'; readonly request: TargetedSwitch; readonly target: SwitchTarget }
+  | { readonly kind: 'unresolved' };
+
+const UNRESOLVED: SwitchResolution = { kind: 'unresolved' };
+
+/** The HEAD a switch leaves: as read before the switch, and the commit it named. */
+interface SwitchOrigin {
+  readonly priorHead: HeadState;
+  readonly headOid: ObjectId | undefined;
+}
+
 const HEAD_ALIAS = '@';
 const HEAD_NAME = 'HEAD';
 
 /** git's `parse_branchname_arg`: the branch `refs/heads/<arg>` names, else the revision ladder. */
-const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<SwitchTarget> => {
+const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<SwitchResolution> => {
   const arg = previousCheckoutArg(opts.rev);
   const named = await resolveSwitchTarget(ctx, arg);
   const branchName = arg === HEAD_ALIAS ? HEAD_NAME : await interpretBranchName(ctx, arg);
   const branch = await branchFor(ctx, branchName);
-  if (branch !== undefined) return { arg, branchName, onBranch: branch.ref, object: branch.id };
-  if (named === undefined) throw unresolvedSwitch(opts);
-  return { arg, branchName, onBranch: undefined, object: named };
+  if (branch !== undefined) {
+    const target = { arg, branchName, onBranch: branch.ref, object: branch.id };
+    return { kind: 'target', request: opts, target };
+  }
+  if (named === undefined) return unnamedSwitch(ctx, opts, arg);
+  return {
+    kind: 'target',
+    request: opts,
+    target: { arg, branchName, onBranch: undefined, object: named },
+  };
 };
+
+/** git's `dwim_ok` for a request: `-b` never guesses, and `checkout.guess` turns it off. */
+const guessAllowed = async (ctx: Context, opts: TargetedSwitch): Promise<boolean> =>
+  opts.createBranch === undefined && (opts.guess ?? (await readCheckoutGuess(ctx)));
+
+/**
+ * git's `parse_branchname_arg` miss path: the argument is probed as a path before anything judges
+ * it, `-b` and `--detach` included; then a guessed ref rewrites the request into
+ * `checkout -b <arg> <ref>`, aimed at the object the guess already read; no guess falls through.
+ */
+const unnamedSwitch = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  arg: string,
+): Promise<SwitchResolution> => {
+  const candidate = { name: arg, namesPath: await checkFilename(ctx, arg) };
+  const guessed = (await guessAllowed(ctx, opts))
+    ? await parseRemoteBranch(ctx, candidate)
+    : undefined;
+  if (guessed === undefined) return UNRESOLVED;
+  return {
+    kind: 'target',
+    request: guessedRequest(opts, arg, guessed),
+    target: guessedTarget(guessed),
+  };
+};
+
+const guessedRequest = (
+  opts: TargetedSwitch,
+  arg: string,
+  guessed: GuessedBranch,
+): TargetedSwitch => ({
+  ...opts,
+  rev: guessed.ref,
+  createBranch: { name: arg },
+});
+
+const guessedTarget = ({ ref, id }: GuessedBranch): SwitchTarget => ({
+  arg: ref,
+  branchName: ref,
+  onBranch: undefined,
+  object: id,
+});
 
 /**
  * git's `lookup_commit_reference_gently`: the commit the object peels to, or
@@ -204,23 +300,25 @@ const headCheckoutLabel = (head: HeadState, oldOid: ObjectId): string =>
     ? head.target.slice(HEADS_PREFIX.length)
     : oldOid;
 
-/** git refuses `-b` with `--detach`, and an existing branch name, before the work tree moves. */
+/**
+ * git judges a new branch in its own order before the work tree moves: the name's validity,
+ * then a branch already carrying it, and only then the `--detach` conflict.
+ */
 const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<void> => {
   if (opts.createBranch === undefined) return;
-  if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
   const name = newBranchRef(opts.createBranch.name);
   if (await refResolvesForReading(ctx, name)) throw branchExists(name);
+  if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
 };
 
 const createRequestedBranch = async (
   ctx: Context,
   opts: CheckoutSwitchOptions,
   startPoint: string,
-): Promise<RefName | undefined> => {
+): Promise<BranchCreateResult | undefined> => {
   const request = opts.createBranch;
   if (request === undefined) return undefined;
-  const created = await branchCreate(ctx, { ...request, startPoint });
-  return created.name;
+  return branchCreate(ctx, { ...request, startPoint });
 };
 
 interface HeadMove {
@@ -379,7 +477,7 @@ const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<Checkou
   // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
   const created = await createRequestedBranch(ctx, opts, finish.arg);
   const stays = staysOnHead(opts, finish.branchRef);
-  const attached = stays ? attachedBranch(priorHead) : (created ?? finish.branchRef);
+  const attached = stays ? attachedBranch(priorHead) : (created?.name ?? finish.branchRef);
   if (!stays) await moveHeadForSwitch(ctx, finish, attached);
   await removeBranchState(ctx, 'announce');
   // post-checkout fires after the worktree + HEAD are updated; a branch checkout flags `1`.
@@ -389,6 +487,7 @@ const finishSwitch = async (ctx: Context, finish: SwitchFinish): Promise<Checkou
     id: oid,
     detached: attached === undefined,
     changedPaths: finish.changedPaths,
+    ...(created === undefined ? {} : { createdBranch: created }),
   };
 };
 
@@ -406,8 +505,12 @@ interface ResolvedSwitch {
  * git names the argument through `get_oid_mb` first, branch or not — its warnings and its read
  * of core.warnAmbiguousRefs happen either way.
  */
-const resolveCommitSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<ResolvedSwitch> => {
-  const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
+const resolveCommitSwitch = async (
+  ctx: Context,
+  opts: TargetedSwitch,
+  target: SwitchTarget,
+): Promise<ResolvedSwitch> => {
+  const { arg, branchName, onBranch, object } = target;
   const oid = await switchCommit(ctx, object);
   await assertBranchCreatable(ctx, opts);
   if (oid === undefined) throw checkoutNonCommit(arg);
@@ -421,10 +524,13 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   const headOid = await resolveRefOrMissing(ctx, HEAD_NAME);
   if (opts.rev === undefined && headOid === undefined) return switchUnbornToNewBranch(ctx, opts);
   const targeted = { ...opts, rev: opts.rev ?? HEAD_NAME };
+  const resolution = await resolveSwitch(ctx, targeted);
+  if (resolution.kind === 'unresolved') return unresolvedSwitch(ctx, targeted);
+  const { request, target } = resolution;
   if (headOid !== undefined && keepsWorkingTreeAsIs(opts)) {
-    return switchInPlace(ctx, targeted, priorHead, headOid);
+    return switchInPlace(ctx, request, target, { priorHead, headOid });
   }
-  return switchToCommit(ctx, targeted, priorHead, headOid);
+  return switchToCommit(ctx, request, target, { priorHead, headOid });
 };
 
 /** git's switch_unborn_to_new_branch: an unborn HEAD only changes the branch it names. */
@@ -470,12 +576,12 @@ const keepsWorkingTreeAsIs = (opts: CheckoutSwitchOptions): boolean =>
 const switchToCommit = async (
   ctx: Context,
   opts: TargetedSwitch,
-  priorHead: HeadState,
-  headOid: ObjectId | undefined,
+  target: SwitchTarget,
+  { priorHead, headOid }: SwitchOrigin,
 ): Promise<CheckoutResult> => {
   // git's merge_working_tree reads an unborn HEAD as no commit: the null oid, the empty tree.
   const oldOid = headOid ?? zeroOid(ctx.hashConfig);
-  const resolved = await resolveCommitSwitch(ctx, opts);
+  const resolved = await resolveCommitSwitch(ctx, opts, target);
   const request = await switchRequestOf(ctx, opts, headOid, resolved);
   const { written, deleted } = await materializeSwitch(ctx, request);
   return finishSwitch(ctx, {
@@ -490,10 +596,10 @@ const switchToCommit = async (
 const switchInPlace = async (
   ctx: Context,
   opts: TargetedSwitch,
-  priorHead: HeadState,
-  headOid: ObjectId,
+  target: SwitchTarget,
+  { priorHead, headOid }: SwitchOrigin & { readonly headOid: ObjectId },
 ): Promise<CheckoutResult> => {
-  const resolved = await resolveCommitSwitch(ctx, opts);
+  const resolved = await resolveCommitSwitch(ctx, opts, target);
   return finishSwitch(ctx, { opts, priorHead, oldOid: headOid, changedPaths: 0, ...resolved });
 };
 
@@ -717,8 +823,7 @@ export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutR
   withFilterProcessPool(ctx, () => checkoutInScope(ctx, opts));
 
 const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, 'checkout');
+  await assertOperationalRepositoryWithCommandKeys(ctx, CHECKOUT_COMMAND_KEYS);
   assertSingleCheckoutMode(opts);
 
   ctx.progress.start(CHECKOUT_MATERIALIZE_OP);

@@ -65,6 +65,7 @@ describe('checkout createBranch', () => {
           id: first,
           detached: false,
           changedPaths: 1,
+          createdBranch: { name: 'refs/heads/topic', id: first },
         });
         expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/topic\n');
         expect(await readText(ctx, `${ctx.layout.gitDir}/refs/heads/topic`)).toBe(`${first}\n`);
@@ -85,11 +86,19 @@ describe('checkout createBranch', () => {
         const sut = checkout;
 
         // Act
-        await sut(ctx, { rev: 'other', createBranch: { name: 't2', track: 'direct' } });
+        const result = await sut(ctx, {
+          rev: 'other',
+          createBranch: { name: 't2', track: 'direct' },
+        });
 
         // Assert
         const config = await readText(ctx, `${ctx.layout.gitDir}/config`);
         expect(config).toContain('[branch "t2"]\n\tremote = .\n\tmerge = refs/heads/other\n');
+        expect(result.createdBranch?.upstream).toEqual({
+          remote: '.',
+          merges: ['refs/heads/other'],
+          rebase: false,
+        });
       });
     });
   });
@@ -141,6 +150,55 @@ describe('checkout createBranch', () => {
           option: 'createBranch',
           reason: 'cannot be combined with detach',
         });
+      });
+    });
+  });
+
+  describe('Given HEAD as the new branch name and detach', () => {
+    describe('When checkout runs', () => {
+      it('Then it refuses the name before the detach conflict', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { createBranch: { name: 'HEAD' }, detach: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'branch name must not be HEAD',
+        });
+      });
+    });
+  });
+
+  describe('Given an existing branch name and detach', () => {
+    describe('When checkout runs', () => {
+      it('Then it refuses the existing branch before the detach conflict and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { createBranch: { name: 'main' }, detach: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'BRANCH_EXISTS',
+          name: 'refs/heads/main',
+        });
+        expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
       });
     });
   });
@@ -216,6 +274,7 @@ describe('checkout createBranch from an unborn HEAD', () => {
           id: second,
           detached: false,
           changedPaths: 0,
+          createdBranch: { name: 'refs/heads/x', id: second },
         });
         expect(await readText(ctx, `${ctx.layout.gitDir}/refs/heads/x`)).toBe(`${second}\n`);
         expect(await readText(ctx, `${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/x\n');
@@ -329,6 +388,24 @@ describe('checkout from an unborn HEAD with no start point', () => {
           option: 'createBranch',
           reason: 'cannot be combined with detach',
         });
+        expect(await headFile(ctx)).toBe(before);
+      });
+    });
+
+    describe('When checkout creates HEAD with detach', () => {
+      it('Then it refuses the name before the detach conflict and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seedUnborn();
+        const before = await headFile(ctx);
+        const sut = checkout;
+
+        // Act
+        const result = await dataOf(() =>
+          sut(ctx, { detach: true, createBranch: { name: 'HEAD' } }),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'INVALID_REF', reason: 'branch name must not be HEAD' });
         expect(await headFile(ctx)).toBe(before);
       });
     });

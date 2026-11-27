@@ -602,8 +602,14 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot set up tracking information; starting point '${data.startPoint}' is not a branch`;
     case 'UPSTREAM_MISSING':
       return `the requested upstream branch '${data.startPoint}' does not exist`;
+    case 'CHECKOUT_DETACH_PATH_ARGUMENT':
+      return `git checkout: --detach does not take a path argument '${data.argument}'`;
     case 'TRACKING_AMBIGUOUS':
       return `not tracking: ambiguous information for ref '${data.ref}'`;
+    case 'CHECKOUT_REMOTE_BRANCH_AMBIGUOUS':
+      return `'${data.name}' matched multiple (${data.remotes.length}) remote tracking branches`;
+    case 'CHECKOUT_PATH_OR_TRACKING_BRANCH':
+      return `'${data.name}' could be both a local file and a tracking branch.`;
     case 'TRACKING_INHERIT_REBASE_MULTIPLE':
       return 'cannot inherit upstream tracking configuration of multiple refs when rebasing is requested';
     case 'TEXTCONV_FAILED':

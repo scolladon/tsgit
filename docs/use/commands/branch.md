@@ -22,7 +22,7 @@ interface BranchNamespace {
   }): Promise<{
     name: RefName;
     id: ObjectId;
-    upstream?: { remote: string; merge: RefName; rebase: boolean };
+    upstream?: { remote: string; merges: ReadonlyArray<RefName>; rebase: boolean };
   }>;
   delete(input: { name: string; force?: boolean }): Promise<{ name: RefName }>;
   rename(input: { from: string; to: string; force?: boolean }): Promise<{

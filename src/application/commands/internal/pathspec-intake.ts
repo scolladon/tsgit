@@ -1,4 +1,4 @@
-import { pathspecOutsideRepo } from '../../../domain/commands/error.js';
+import { emptyPathspec, pathspecOutsideRepo } from '../../../domain/commands/error.js';
 import type { IndexEntry } from '../../../domain/git-index/index.js';
 import { escapedPathOf } from '../../../domain/git-index/index-path-key.js';
 import { wellFormed } from '../../../domain/objects/encoding.js';
@@ -45,10 +45,16 @@ const refuseBackslash = (paths: ReadonlyArray<string>): void => {
   if (offending !== undefined) throw pathspecOutsideRepo(offending as FilePath);
 };
 
+/** git's `parse_pathspec` reads every argument for an empty one before it parses any. */
+const refuseEmpty = (paths: ReadonlyArray<string>): void => {
+  if (paths.includes('')) throw emptyPathspec();
+};
+
 export const resolveCommandPathspec = (
   host: PathspecHost,
   paths: ReadonlyArray<string>,
 ): CommandPathspec => {
+  refuseEmpty(paths);
   if (host.windowsPathSyntax === true) refuseBackslash(paths);
   const resolved = resolvePathspec(paths);
   const positives = resolved.matcher.flatMap((entry, index) =>

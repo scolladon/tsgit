@@ -650,6 +650,31 @@ describe('findUngatedVerbs', () => {
     });
   });
 
+  describe('Given a barrel-exported verb that gates through the command-keys operational tier', () => {
+    describe('When scanned', () => {
+      it('Then it is not reported — that tier refuses what the operational tier refuses', () => {
+        // Arrange
+        const files = {
+          [BARREL]: "export { commandKeys } from './command-keys.js';\n",
+          '/virtual/src/application/commands/command-keys.ts': [
+            "import { assertOperationalRepositoryWithCommandKeys } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'export const commandKeys = async (ctx: Context): Promise<void> => {',
+            "  await assertOperationalRepositoryWithCommandKeys(ctx, { section: 'checkout', keys: ['guess'] });",
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an exported helper that is not in the command barrel', () => {
     describe('When scanned', () => {
       it('Then it is not reported — only the public command surface is bound', () => {

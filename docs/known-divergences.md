@@ -127,8 +127,6 @@ Exit codes and data match git; only the wording or the named path differs.
 
 - **32.53** `REF_NOT_FOUND` carries the caller's name raw into its message, where git prints `?` for each control byte — pre-existing, pinned against git 2.56.0: on the name `x<ESC>]0;pwned<BEL>`, git `cherry-pick` prints `fatal: bad revision 'x?]0;pwned?'` and `describe` prints `fatal: Not a valid object name x?]0;pwned?`; tsgit `describe` and `cherryPickRun` throw `REF_NOT_FOUND: ref not found: x\u001b]0;pwned\u0007` with the raw ESC/BEL in both `message` and `data.name`. Fix: `sanitizeForDisplay` in `refNotFound` (`src/domain/refs/error.ts:69`), as `checkoutNonCommit` already does. Not folded: out of scope.
 
-- **32.1 row A22** — `--detach <path>` message (A22). Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
-
 - **32.73** `rm` of a tracked entry the host cannot stat refuses with a code that hides the name-too-long fault — pinned against git 2.56.0. `S = 's'×300` planted index-only. git `rm -q S` exits 128 (`fatal: git rm: 'S': File name too long`), index unchanged; tsgit `repo.rm([S])` refuses with `CHECKOUT_OVERWRITE_DIRTY` from `removeFile`'s catch-all (`src/application/commands/internal/working-tree.ts`), index unchanged.
   ```
   git rm -q <s300> -> exit 128; ls-files unchanged
@@ -140,6 +138,12 @@ Exit codes and data match git; only the wording or the named path differs.
   # seed: commit base + m; rm m; mkdir m; echo inner>m/inner
   git rm m        -> fatal: git rm: 'm': Operation not permitted ; exit=128 ; index unchanged
   tsgit rm(['m']) -> THROW {"code":"CHECKOUT_OVERWRITE_DIRTY","localChanges":["m"],"untracked":[]} ; index unchanged
+  ```
+
+- **(followRemoteHEAD warning)** git warns on an unrecognized `remote.<n>.followRemoteHEAD` value during `checkout <guess>`; tsgit says nothing — pinned against git 2.56.1. A clone of `up` (`master`, `feat`) with `git config remote.origin.followRemoteHEAD bogus`: git `checkout feat` prints `warning: unrecognized followRemoteHEAD value 'bogus' ignored`, creates `feat` tracking `origin/feat` and exits 0; tsgit `checkout({ rev: 'feat' })` writes the same branch and upstream and emits no warning (`src/application/commands/internal/remote-branch-guess.ts`). Data and exit code match. Not folded: out of scope.
+  ```
+  git checkout feat                 -> warning: unrecognized followRemoteHEAD value 'bogus' ignored; exit 0
+  tsgit checkout({ rev: 'feat' })   -> ok, createdBranch feat upstream origin / refs/heads/feat; no warning
   ```
 
 ## Rare configuration and edge input
@@ -350,6 +354,40 @@ A well-formed repository, but a configuration, layout or argument shape few call
   ```
   Not folded: out of scope.
 
+- **(checkout force)** A forced `checkout` of a switch argument that names an unmerged path refuses where git skips the path with a warning — deliberate (ADR-1285), pinned against git 2.56.1. `g.txt` is left unmerged by a conflicted merge. git `checkout -f g.txt` warns `path 'g.txt' is unmerged`, updates 0 paths, keeps the three stages and exits 0. tsgit `checkout({ rev: 'g.txt', force: true })` routes `force` to the plain path restore (`src/application/commands/checkout.ts`, `unresolvedSwitch`), which refuses `MERGE_HAS_CONFLICTS` and keeps the three stages, as git's unforced `checkout g.txt` refuses. tsgit has no forced path restore, `{ paths }` included.
+  ```
+  g.txt unmerged (master and side both change it, then git merge side)
+  git checkout -f g.txt                      -> warning: path 'g.txt' is unmerged; Updated 0 paths from the index; exit 0; stages 1 2 3 kept
+  tsgit checkout({rev:'g.txt',force:true})   -> threw {"code":"MERGE_HAS_CONFLICTS","count":1,"paths":["g.txt"]}; stages 1 2 3 kept
+  ```
+  Not folded: adds feature behaviour (git's ignore-unmerged arm of a forced path restore).
+
+- **(branch tracking valueless)** `branch.create` and `checkout({ createBranch: { track } })` ignore a valueless `remote.<n>.*` string key where git refuses before writing — pre-existing, pinned against git 2.56.1. A clone of `up` (`master`, `feat`) with `[remote "zed"]` / `fetch` (no value) appended to `.git/config`: git `branch -t x origin/feat` and `checkout -q -b x --track origin/feat` print `error: missing value for 'remote.zed.fetch'` / `fatal: bad config variable 'remote.zed.fetch' in file '.git/config' at line 15`, exit 128 and leave no `x`; tsgit creates `x` with `branch.x.remote = origin`, `branch.x.merge = refs/heads/feat`. `git branch other` (local start point) writes `other`, then dies 128; tsgit returns success. The checkout remote-branch guess already refuses the key (`src/application/commands/internal/remote-branch-guess.ts`); the tracking reader (`src/application/commands/internal/branch-tracking.ts`) does not. Not folded: out of scope.
+  ```
+  printf '[remote "zed"]\n\tfetch\n' >> .git/config
+  git branch -t x origin/feat                -> missing value for 'remote.zed.fetch'; exit 128; refs/heads: master
+  git checkout -q -b x --track origin/feat   -> same; exit 128; HEAD master; refs/heads: master
+  git branch other                           -> same; exit 128; refs/heads: master other
+  tsgit branch.create({ name: 'x', startPoint: 'origin/feat', track: 'direct' })        -> ok, upstream origin / refs/heads/feat
+  tsgit checkout({ rev: 'origin/feat', createBranch: { name: 'x', track: 'direct' } }) -> ok; refs/heads: master x
+  tsgit branch.create({ name: 'other' })     -> ok
+  ```
+
+- **(remote tagopt/followRemoteHEAD valueless)** git 2.56.1 crashes on a valueless `remote.<n>.tagopt` or `remote.<n>.followRemoteHEAD` during `checkout <guess>`; tsgit ignores the entry and guesses — pinned against git 2.56.1. Same clone, with `[remote "zed"]` and the bare key appended: git `checkout feat` exits 139 (SIGSEGV) with no message; tsgit `checkout({ rev: 'feat' })` creates `feat` tracking `origin/feat` and attaches HEAD (`src/application/commands/internal/remote-branch-guess.ts`). The boolean keys `mirror`, `skipdefaultupdate`, `skipfetchall`, `prune` and `prunetags` exit 0 in git, as in tsgit. Copying a crash would need an ADR. Not folded: out of scope.
+  ```
+  remote.zed.tagopt (guess)             git exit 139
+  remote.zed.followRemoteHEAD (guess)   git exit 139
+  tsgit checkout({ rev: 'feat' })       -> ok, createdBranch feat upstream origin / refs/heads/feat
+  ```
+
+- **(checkout tracking report)** git's non-quiet `checkout` of an existing branch dies in its tracking report on a valueless `remote.<n>.*` key, after it has switched; tsgit returns the switch — pinned against git 2.56.1. Same clone with `[remote "zed"]` / `fetch`: git `checkout master` prints `Already on 'master'`, then `missing value for 'remote.zed.fetch'`, exit 128; `checkout other` writes `HEAD` = `refs/heads/other`, then exits 128; `checkout -q` exits 0 in both. tsgit `checkout({ rev: 'master' })` returns `{ branch: refs/heads/master, detached: false, changedPaths: 0 }`: the library renders no report, so it behaves as git's quiet mode. HEAD and the work tree match; only the exit code differs. Not folded: out of scope.
+  ```
+  git checkout master       -> Already on 'master' / error: missing value for 'remote.zed.fetch'; exit 128
+  git checkout other        -> Switched to branch 'other' / same error; exit 128; HEAD ref: refs/heads/other
+  git checkout -q master    -> exit 0
+  tsgit checkout({ rev: 'master' }) -> ok, branch refs/heads/master
+  ```
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
@@ -403,3 +441,12 @@ git supports a form that tsgit does not offer, and no caller has asked for it.
   tsgit branchCreate({ name: 'x' })    -> ref written; log: (empty)
   grep -rn reference-transaction src   -> src/application/primitives/reftable-transaction.ts:4 (doc comment only)
   ```
+
+- **(checkout --track)** `checkout` has no form that derives the new branch's name from a remote-tracking start point, as git's `checkout --track <remote>/<name>` does — pinned against git 2.56.1. git `checkout --track origin/feat` creates `feat`, tracks `origin`, writes the reflog `branch: Created from origin/feat` and attaches HEAD. tsgit needs the name spelled: `checkout({ rev: 'origin/feat', createBranch: { name: 'feat', track: 'direct' } })` writes the same HEAD, upstream config and reflog (`src/application/commands/checkout.ts`, `CheckoutCreateBranch.name` is required).
+  ```
+  git clone up peer; git clone up ours   (up: master, feat)
+  git -C peer checkout --track origin/feat                               -> exit 0
+  tsgit checkout({rev:'origin/feat',createBranch:{name:'feat',track:'direct'}}) -> createdBranch {"name":"refs/heads/feat","upstream":{"remote":"origin","merges":["refs/heads/feat"],"rebase":false}}
+  both: HEAD ref: refs/heads/feat | branch.feat.remote origin, .merge refs/heads/feat | branch: Created from origin/feat
+  ```
+  Not folded: adds feature behaviour; the explicit `createBranch` form already expresses it.
