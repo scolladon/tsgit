@@ -12,7 +12,14 @@ parent `mkdir` with a create-first `writeFile(wx)`. That `mkdir` turned the file
 parent into `EEXIST`, so `FILE_EXISTS`. Create-first gets `ENOTDIR` instead and
 only falls back to `mkdir` on `ENOENT`, so the error maps to `NOT_A_DIRECTORY`.
 
-This change is a pin and a backlog strike. It changes no source.
+That holds on POSIX only. On Windows, the create reports a file parent as
+`ENOENT`, so the fallback recursive `mkdir` runs and meets the file as `EEXIST`.
+The result is still `FILE_EXISTS`, and the silent success is still live there.
+The pin below caught it on CI (`windows-latest`, all three Node lines: expected
+`NOT_A_DIRECTORY`, received `FILE_EXISTS`).
+
+This change pins the refusal on every platform, folds the Windows fix, and
+strikes the backlog row.
 
 ## Evidence (main @ 6a788fc2, git 2.56.1, scrubbed `GIT_*`)
 
@@ -37,6 +44,13 @@ library.
   false. Replace the comment with a depth-1 row that runs on every contract
   driver (node, memory): a file at the immediate parent makes `writeExclusive`
   throw `NOT_A_DIRECTORY`, and the parent file keeps its bytes.
+- `src/adapters/node/node-file-system.ts`: `createExclusive`'s fallback parent
+  `mkdir` maps `EEXIST` to `NOT_A_DIRECTORY` and names the requested path.
+  A recursive `mkdir` answers `EEXIST` only when a non-directory sits at the
+  target: verified on macOS for a file, a symlink to a file, an existing
+  directory and a racing directory create. Other errnos propagate unchanged.
+  Two DI rows pin `EEXIST` → `NOT_A_DIRECTORY` (requested path, not the
+  resolved one) and `EACCES` → `PERMISSION_DENIED`.
 - `docs/BACKLOG.md`: strike D5 in 32.1 and in the Release-order cut-3 row, and
   cite #317 and this design.
 
@@ -44,6 +58,9 @@ library.
 
 - The ref D/F refusal wording (message only, see above).
 - `docs/known-divergences.md`: nothing diverges, so no row goes there.
+- `write` / `writeUtf8` under a file parent: Node refuses `FILE_EXISTS`, memory
+  refuses `NOT_A_DIRECTORY`. Both refuse, it is a different surface, and it is
+  deferred to impact triage.
 
 ## Decision candidates
 
