@@ -19,7 +19,7 @@ Item ids are `<slice><number>`: A merge/rebase/sequencer/checkout, B fetch/push/
 | id | gap | evidence |
 |---|---|---|
 | A2 | merge refuses when only `REVERT_HEAD` or `REBASE_HEAD` exists | tsgit refuses; git merges (exit 0). Pinned. |
-| A6 | `checkout -- <unmerged path>` (index source) succeeds silently | tsgit succeeds silently; git fails with `path is unmerged`. Pinned. |
+| A6 | `checkout -- <unmerged path>` (index source) succeeds silently | tsgit succeeds silently; git fails with `path is unmerged`. Pinned. Closed by #332. |
 | A13 | octopus merge with a directory/file conflict | tsgit throws a raw `NOT_A_DIRECTORY` and leaves untracked files from the partial step. git records a conflict (exit 1) at the last step and refuses with `Should not be doing an octopus` (exit 2) at a middle step. Pinned. |
 | A20 | `branch.create` from `@{-1}` tracking | tsgit throws `UPSTREAM_NOT_BRANCH` with `track: 'direct'`, and writes no tracking config with `autoSetupMerge=always`. git's result is not recorded in the note. Note only. |
 | A21 | checkout with an unborn HEAD pointing at a non-heads ref | tsgit throws `REF_NOT_FOUND`; git switches and logs `(invalid)`. Pinned. |

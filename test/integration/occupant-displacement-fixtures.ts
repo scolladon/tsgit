@@ -240,15 +240,17 @@ export const unmergedAt =
     });
     fileWith(rel, CONFLICTED)(dir);
   };
-/** `rel` is conflicted in the index (stages 2-3 only, as an add/add) with a conflicted work file. */
-export const unmergedAbsentAt =
-  (rel: string): Occupant =>
+/** `rel` is absent from HEAD and conflicted in the index at the given stages only, with a conflicted work file. */
+export const unmergedStagesAt =
+  (rel: string, stages: ReadonlyArray<1 | 2 | 3>): Occupant =>
   (dir) => {
     runGit(['-C', dir, 'update-index', '--index-info'], {
-      input: stagedLines(dir, rel, [2, 3]),
+      input: stagedLines(dir, rel, stages),
     });
     fileWith(rel, CONFLICTED)(dir);
   };
+/** `rel` is conflicted in the index (stages 2-3 only, as an add/add) with a conflicted work file. */
+export const unmergedAbsentAt = (rel: string): Occupant => unmergedStagesAt(rel, [2, 3]);
 
 const trackedPaths = (dir: string): string[] =>
   runGit(['-C', dir, 'ls-files', '-z'])

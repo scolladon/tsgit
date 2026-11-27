@@ -50,6 +50,7 @@ import {
   touchedAt,
   unmergedAbsentAt,
   unmergedAt,
+  unmergedStagesAt,
   v1,
   WORK_TREE_SHAPES,
 } from './occupant-displacement-fixtures.js';
@@ -451,6 +452,19 @@ const REFUSED_RESTORES: ReadonlyArray<PathRestoreRow> = [
   },
   { name: 'n keep', plant: unmergedAbsentAt('n'), paths: ['n', 'keep'], unmerged: ['n'] },
   { name: "'k*' f", plant: unmergedAt('f'), paths: ['k*', 'f'], unmerged: ['f'] },
+  {
+    name: 'n2 with stage 2 only',
+    plant: unmergedStagesAt('n2', [2]),
+    paths: ['n2'],
+    unmerged: ['n2'],
+  },
+  {
+    name: 'n3 with stage 3 only',
+    plant: unmergedStagesAt('n3', [3]),
+    paths: ['n3'],
+    unmerged: ['n3'],
+  },
+  { name: 'd holding d/n', plant: unmergedAbsentAt('d/n'), paths: ['d'], unmerged: ['d/n'] },
 ];
 
 describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
