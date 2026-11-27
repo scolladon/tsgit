@@ -487,6 +487,7 @@ describe('uniqueTrackingName', () => {
     { label: 'a remote url', entry: '[remote]\n\turl\n' },
     { label: 'a branch merge', entry: '[branch]\n\tmerge\n' },
     { label: 'a URL rewrite', entry: `[url]\n\t${'insteadof'}\n` },
+    { label: 'a remote prune no boolean reads', entry: '[remote]\n\tprune = bogus\n' },
   ])('Given a valueless $label outside any subsection', ({ entry }) => {
     describe('When the name is guessed', () => {
       it('Then reading the remotes ignores it and the ref is chosen', async () => {
