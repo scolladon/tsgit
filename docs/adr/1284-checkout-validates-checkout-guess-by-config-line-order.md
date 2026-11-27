@@ -37,4 +37,6 @@ setup refusals git raises first. The `guess` option (ADR-1281) does not skip the
 
 ### Negative
 
-- The memoized gate verdict exposes the winning entry's line instead of only throwing.
+- A bad command key re-derives the eager winner outside the memoized gate verdict, so the
+  refusal path reads the config a second time. The hit path scans the command keys once and
+  leaves the shared memo unchanged.
