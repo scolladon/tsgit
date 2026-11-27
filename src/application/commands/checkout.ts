@@ -197,11 +197,13 @@ interface SwitchTarget {
 
 /**
  * A switch argument resolves to a target, with the request that reaches it (the caller's, or the
- * one a guessed branch rewrites it into), or falls through to the paths it names, restored.
+ * one a guessed branch rewrites it into), or to nothing: its caller then reads it as paths.
  */
 type SwitchResolution =
   | { readonly kind: 'target'; readonly request: TargetedSwitch; readonly target: SwitchTarget }
-  | { readonly kind: 'restored'; readonly result: CheckoutResult };
+  | { readonly kind: 'unresolved' };
+
+const UNRESOLVED: SwitchResolution = { kind: 'unresolved' };
 
 /** The HEAD a switch leaves: as read before the switch, and the commit it named. */
 interface SwitchOrigin {
@@ -244,7 +246,7 @@ const unnamedSwitch = async (
   arg: string,
 ): Promise<SwitchResolution> => {
   const guessed = (await guessAllowed(ctx, opts)) ? await parseRemoteBranch(ctx, arg) : undefined;
-  if (guessed === undefined) return { kind: 'restored', result: await unresolvedSwitch(ctx, opts) };
+  if (guessed === undefined) return UNRESOLVED;
   return {
     kind: 'target',
     request: guessedRequest(opts, arg, guessed),
@@ -512,7 +514,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   if (opts.rev === undefined && headOid === undefined) return switchUnbornToNewBranch(ctx, opts);
   const targeted = { ...opts, rev: opts.rev ?? HEAD_NAME };
   const resolution = await resolveSwitch(ctx, targeted);
-  if (resolution.kind === 'restored') return resolution.result;
+  if (resolution.kind === 'unresolved') return unresolvedSwitch(ctx, targeted);
   const { request, target } = resolution;
   if (headOid !== undefined && keepsWorkingTreeAsIs(opts)) {
     return switchInPlace(ctx, request, target, { priorHead, headOid });
