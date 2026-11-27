@@ -1243,6 +1243,59 @@ describe.skipIf(!GIT_AVAILABLE)(
             });
           },
         );
+
+        describe.each([
+          {
+            label: 'a valueless remote fetch and a name one remote carries',
+            slug: 'v1',
+            entry: '[remote "zed"]\n\tfetch\n',
+            key: 'remote.zed.fetch',
+            name: 'feat',
+          },
+          {
+            label: 'a valueless remote fetch and a name no remote carries',
+            slug: 'v2',
+            entry: '[remote "zed"]\n\tfetch\n',
+            key: 'remote.zed.fetch',
+            name: 'nothing',
+          },
+          {
+            label: 'a valueless branch merge',
+            slug: 'v3',
+            entry: '[branch "x"]\n\tmerge\n',
+            key: 'branch.x.merge',
+            name: 'feat',
+          },
+          {
+            label: 'a valueless URL rewrite',
+            slug: 'v4',
+            entry: `[url "y"]\n\t${'insteadof'}\n`,
+            key: 'url.y.insteadof',
+            name: 'feat',
+          },
+        ])('When both tools guess with $label', ({ slug, entry, key, name }) => {
+          it('Then both refuse the missing value at the same line and write no branch', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair(slug, baseOne, ignoreCase);
+            await appendConfig(entry)(peer);
+            await appendConfig(entry)(ours);
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', name], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut(ctx, { rev: name }));
+
+            // Assert
+            expect(peerRun.exitCode).toBe(FATAL_EXIT);
+            expect(peerRun.stderr).toContain(`error: missing value for '${key}'`);
+            const line = Number(/at line (\d+)/.exec(peerRun.stderr)?.[1]);
+            expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key, line });
+            expect(await headBytes(ours)).toBe(await headBytes(peer));
+            expect(headsOf(ours)).toBe(headsOf(peer));
+          });
+        });
       });
 
       describe('Given a switch argument that names paths and no branch', () => {

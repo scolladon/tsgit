@@ -12,7 +12,14 @@ import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { hasGlobSpecial } from '../../../domain/pathspec/wildcard.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
-import { findLastEntry, parseGitBoolean, readConfig } from '../../primitives/config-read.js';
+import {
+  findFirstValuelessEntry,
+  findFirstValuelessInSection,
+  findLastEntry,
+  parseGitBoolean,
+  readConfig,
+  type ValuelessEntry,
+} from '../../primitives/config-read.js';
 import { findTrackingRef } from './remote-tracking-ref.js';
 import { resolveRevisionExpression } from './revision-expression.js';
 import { resolveRevisionName } from './revision-name.js';
@@ -46,6 +53,45 @@ const readDefaultRemote = async (ctx: Context): Promise<string | undefined> => {
   return entry.value;
 };
 
+/** The string keys git's remote reader (`remote.c` `handle_config`) refuses when one holds no value. */
+const REMOTE_STRING_KEYS: ReadonlyArray<string> = [
+  'url',
+  'pushurl',
+  'push',
+  'fetch',
+  'receivepack',
+  'uploadpack',
+  'proxy',
+  'proxyauthmethod',
+  'vcs',
+  'serveroption',
+];
+const BRANCH_STRING_KEYS: ReadonlyArray<string> = ['remote', 'merge', 'pushremote'];
+const URL_REWRITE_KEYS: ReadonlyArray<string> = ['insteadof', 'pushinsteadof'];
+const SUBSECTIONED = { requireSubsection: true } as const;
+
+const lowerLine = (
+  lowest: ValuelessEntry | undefined,
+  entry: ValuelessEntry | undefined,
+): ValuelessEntry | undefined =>
+  entry !== undefined && (lowest === undefined || entry.line < lowest.line) ? entry : lowest;
+
+/**
+ * git's `for_each_remote` reads the remotes through `read_config`, whose `handle_config` dies on
+ * the first string key, in file order, that holds no value: under a remote, under a branch, a URL
+ * rewrite, or `remote.pushdefault`.
+ */
+const assertRemoteConfigReadable = async (ctx: Context): Promise<void> => {
+  const found = await Promise.all([
+    findFirstValuelessInSection(ctx, 'remote', REMOTE_STRING_KEYS, SUBSECTIONED),
+    findFirstValuelessEntry(ctx, 'remote', undefined, ['pushdefault']),
+    findFirstValuelessInSection(ctx, 'branch', BRANCH_STRING_KEYS, SUBSECTIONED),
+    findFirstValuelessInSection(ctx, 'url', URL_REWRITE_KEYS, SUBSECTIONED),
+  ]);
+  const first = found.reduce(lowerLine, undefined);
+  if (first !== undefined) throw configMissingValue(first.key, first.source, first.line);
+};
+
 /** git's `repo_get_oid` on the mapped ref: the name through the ref ladder, else the revision grammar. */
 const resolveMappedRef = async (ctx: Context, ref: RefName): Promise<ObjectId | undefined> =>
   (await resolveRevisionName(ctx, ref)) ?? resolveRevisionExpression(ctx, ref);
@@ -64,6 +110,7 @@ const remoteMatch = async (
 
 /** git's `for_each_remote` + `check_tracking_name`: every remote whose mapped ref resolves, in config order. */
 const remoteMatches = async (ctx: Context, name: string): Promise<ReadonlyArray<RemoteMatch>> => {
+  await assertRemoteConfigReadable(ctx);
   const remotes = [...((await readConfig(ctx)).remote ?? [])];
   const matches = await Promise.all(
     remotes.map(([remote, entry]) => remoteMatch(ctx, remote, entry.fetch ?? [], name)),

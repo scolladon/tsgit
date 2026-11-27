@@ -402,6 +402,105 @@ describe('uniqueTrackingName', () => {
       });
     });
   });
+
+  describe.each([
+    ...[
+      'url',
+      'pushurl',
+      'push',
+      'fetch',
+      'receivepack',
+      'uploadpack',
+      'proxy',
+      'proxyauthmethod',
+      'vcs',
+      'serveroption',
+    ].map((key) => ({ entry: `[remote "zed"]\n\t${key}\n`, key: `remote.zed.${key}` })),
+    { entry: '[remote]\n\tpushdefault\n', key: 'remote.pushdefault' },
+    ...['remote', 'merge', 'pushremote'].map((key) => ({
+      entry: `[branch "x"]\n\t${key}\n`,
+      key: `branch.x.${key}`,
+    })),
+    ...['insteadof', 'pushinsteadof'].map((key) => ({
+      entry: `[url "y"]\n\t${key}\n`,
+      key: `url.y.${key}`,
+    })),
+  ])('Given a valueless $key in the remote configuration', ({ entry, key }) => {
+    describe('When the name is guessed', () => {
+      it('Then it refuses the missing value at its line, as reading the remotes does', async () => {
+        // Arrange
+        const { ctx, configPath } = await seed(`${ORIGIN}${entry}`, [ORIGIN_FEAT]);
+        const line = (await ctx.fs.readUtf8(configPath)).split('\n').length - 1;
+        const sut = uniqueTrackingName;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toEqual({ code: 'CONFIG_MISSING_VALUE', key, source: configPath, line });
+      });
+    });
+  });
+
+  describe('Given two valueless remote keys', () => {
+    describe('When the name is guessed', () => {
+      it('Then it refuses the one on the lower line', async () => {
+        // Arrange
+        const rewrite = 'insteadof';
+        const config = `${ORIGIN}[url "y"]\n\t${rewrite}\n[remote "zed"]\n\tfetch\n`;
+        const { ctx, configPath } = await seed(config, [ORIGIN_FEAT]);
+        const line = await lastLineOf(ctx, configPath, `\t${rewrite}`);
+        const sut = uniqueTrackingName;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'url.y.insteadof',
+          source: configPath,
+          line,
+        });
+      });
+    });
+  });
+
+  describe('Given a valueless remote fetch above a valueless default remote', () => {
+    describe('When the name is guessed', () => {
+      it('Then it refuses the default remote, read before the remotes', async () => {
+        // Arrange
+        const config = `${ORIGIN}[remote "zed"]\n\tfetch\n[checkout]\n\tdefaultRemote\n`;
+        const { ctx } = await seed(config, [ORIGIN_FEAT]);
+        const sut = uniqueTrackingName;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, 'feat'));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: DEFAULT_REMOTE_KEY });
+      });
+    });
+  });
+
+  describe.each(['mirror', 'skipdefaultupdate', 'skipfetchall', 'prune', 'prunetags'])(
+    'Given a valueless boolean remote.zed.%s',
+    (key) => {
+      describe('When the name is guessed', () => {
+        it('Then the valueless boolean reads as true and the ref is chosen', async () => {
+          // Arrange
+          const { ctx, id } = await seed(`${ORIGIN}[remote "zed"]\n\t${key}\n`, [ORIGIN_FEAT]);
+          const sut = uniqueTrackingName;
+
+          // Act
+          const result = await sut(ctx, 'feat');
+
+          // Assert
+          expect(result.chosen).toEqual({ ref: ORIGIN_FEAT, id });
+        });
+      });
+    },
+  );
 });
 
 describe('parseRemoteBranch', () => {
