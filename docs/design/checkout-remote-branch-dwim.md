@@ -17,7 +17,7 @@
 > - `assertBranchCreatable`'s order: git checks the new branch name before the `--detach`
 >   conflict (rows B1, B2, H1d).
 >
-> Status: draft → self-reviewed ×3
+> Status: accepted (ADRs 1281–1287) · implemented · review folds recorded in "What review folded"
 
 ## Context
 
@@ -564,3 +564,30 @@ Every guard in §1/§3 has an isolated row above.
   `{paths}` counterpart of `-f` was already absent.
 - `diff.ignoreSubmodules` and the `submodule.*` keys that `git_checkout_config` also reads:
   backlog 32.1 row D16 owns them.
+
+## What review folded
+
+Each was pinned against git 2.56.1 and landed with its own red row:
+
+- **S5 eagerly.** `check_filename` runs on every miss path, before the wildcard gate, the
+  guess gate, `-b` and `--detach`: a stat failure other than absence surfaces first
+  (`PATH_TOO_LONG` where git dies `failed to stat`). `parseRemoteBranch` receives the
+  probe's answer as git's `could_be_checkout_paths`.
+- **S12 order.** `parse_pathspec` refuses an unreadable argument (outside the repository,
+  empty) before the `-b` start-point refusal and the `--detach` refusal.
+- **Work tree before config.** `setup_work_tree` runs before `cmd_checkout` reads its
+  config: a bare repository refuses `WORK_TREE_REQUIRED` before a bad `checkout.guess` or
+  eager key. The eager-key half of this order was already inverted on main.
+- **The remote reader.** `for_each_remote` reads the remotes through `remote.c`'s
+  `handle_config`, which dies, in file order, on a valueless string key (ten under a remote,
+  `remote.pushdefault`, three under a branch, two URL rewrites) and on a remote boolean no
+  boolean reads. Keys outside a subsection are ignored. A valueless `tagopt` or
+  `followRemoteHEAD` crashes git 2.56.1 (exit 139); tsgit ignores them.
+- **Empty pathspec.** The shared pathspec intake refuses `''` with `EMPTY_PATHSPEC` before
+  any pattern is read, for `add`, `rm`, `grep` and `checkout` (it was
+  `PATHSPEC_OUTSIDE_REPO`).
+- **`add` lock order.** `cmd_add` holds the index lock before it parses the pathspec, so
+  behind a held lock every pathspec refusal, and the no-pathspec refusal, is
+  `RESOURCE_LOCKED`.
+- **Display.** The guessed name is rendered for display in both remote-branch refusals.
+- **CQS.** `resolveSwitch` returns an unresolved switch; its caller restores the paths.
