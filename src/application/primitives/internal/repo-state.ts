@@ -463,28 +463,36 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
   return root;
 };
 
-/** The boolean keys a builtin's own config callback reads, all under one subsectionless section. */
+/**
+ * A work-tree builtin's own config callback: the boolean keys it reads, all under one
+ * subsectionless section, and the builtin it names when there is no work tree.
+ */
 export interface CommandBooleanKeys {
   readonly section: string;
   readonly keys: ReadonlyArray<string>;
+  readonly operation: string;
 }
 
 /**
- * `assertOperationalRepository` for a builtin whose config callback validates
- * its own boolean keys: git's `git_checkout_config` reads them in the same
- * file-order pass as `git_default_config`, so a bad command key and a bad
- * eager key race by line — the lower one is named. Setup's refusals
- * (`core.bare`, ownership, format) still precede both.
+ * `assertOperationalRepository` for a work-tree builtin whose config callback
+ * validates its own boolean keys. Setup's refusals (`core.bare`, ownership,
+ * format) come first, then git's `setup_work_tree` (`NEED_WORK_TREE`), and only
+ * then the builtin reads its config: `git_checkout_config` reads its keys in
+ * the same file-order pass as `git_default_config`, so a bad command key and a
+ * bad eager key race by line — the lower one is named.
  *
- * The hit path pays one scan of the command keys over the cached token
- * stream and leaves the shared gate memo untouched; only a bad command key
- * re-derives setup and the eager winner un-memoized, to pick the lower line.
+ * Setup runs un-memoized, as the settings-first tier runs it. The hit path then
+ * pays one scan of the command keys over the cached token stream and leaves the
+ * shared gate memo untouched; only a bad command key re-derives the eager
+ * winner un-memoized, to pick the lower line.
  */
 export const assertOperationalRepositoryWithCommandKeys = async (
   ctx: Context,
   command: CommandBooleanKeys,
 ): Promise<FilePath> => {
   await assertUsableHeadAndOpenEpoch(ctx);
+  assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
+  requireWorkTree(ctx, command.operation);
   const invalid = await findFirstInvalidBoolean(ctx, command.section, undefined, command.keys);
   if (invalid !== undefined) await refuseCommandKey(ctx, invalid);
   const root = await memoizeGateVerdict(ctx, computeGateVerdict);
@@ -493,7 +501,6 @@ export const assertOperationalRepositoryWithCommandKeys = async (
 };
 
 const refuseCommandKey = async (ctx: Context, invalid: InvalidBooleanEntry): Promise<never> => {
-  assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
   const command: EagerCandidate = { kind: 'boolean', line: invalid.line, entry: invalid };
   return throwEagerCandidate(earlierOf(command, await selectEagerCandidate(ctx)));
 };

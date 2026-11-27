@@ -78,7 +78,7 @@ import {
   parseRemoteBranch,
   readCheckoutGuess,
 } from './internal/remote-branch-guess.js';
-import { readHeadRaw, requireWorkTree } from './internal/repo-state.js';
+import { readHeadRaw } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
@@ -131,7 +131,11 @@ export interface CheckoutResult {
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 const INDEX_SOURCE = 'index';
-const CHECKOUT_COMMAND_KEYS: CommandBooleanKeys = { section: 'checkout', keys: ['guess'] };
+const CHECKOUT_COMMAND_KEYS: CommandBooleanKeys = {
+  section: 'checkout',
+  keys: ['guess'],
+  operation: 'checkout',
+};
 
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
@@ -820,7 +824,6 @@ export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutR
 
 const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepositoryWithCommandKeys(ctx, CHECKOUT_COMMAND_KEYS);
-  requireWorkTree(ctx, 'checkout');
   assertSingleCheckoutMode(opts);
 
   ctx.progress.start(CHECKOUT_MATERIALIZE_OP);

@@ -524,6 +524,39 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('Given a bare repository and a config key checkout would refuse', () => {
+        describe.each([
+          { label: 'a bad checkout.guess', slug: 'w1', name: 'checkout.guess' },
+          { label: 'a bad branch.autoSetupMerge', slug: 'w2', name: 'branch.autoSetupMerge' },
+        ])('When both tools check out with $label', ({ slug, name }) => {
+          it('Then both refuse the missing work tree before reading the config', async () => {
+            // Arrange
+            const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-remote-dwim-${slug}-`));
+            caseRoots.push(root);
+            const peer = path.join(root, 'peer.git');
+            const ours = path.join(root, 'ours.git');
+            for (const dir of [peer, ours]) {
+              runGit(['clone', '-q', '--bare', baseOne, dir], { env: IDENTITY_ENV });
+              git(dir, 'config', 'core.ignorecase', ignoreCase);
+              git(dir, 'config', '--add', name, 'bogus');
+            }
+            const repo = await openRepository({ cwd: ours });
+            const sut = repo.checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', 'master'], {
+              env: IDENTITY_ENV,
+            });
+            const result = await refusalOf(() => sut({ rev: 'master' }));
+
+            // Assert
+            expect(peerRun.exitCode).toBe(FATAL_EXIT);
+            expect(peerRun.stderr).toContain('this operation must be run in a work tree');
+            expect(result).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'checkout' });
+          });
+        });
+      });
+
       describe('Given a name only remote-tracking refs answer', () => {
         describe.each([
           { label: 'one remote', slug: 'r1', base: 'one', setup: [], name: 'feat' },

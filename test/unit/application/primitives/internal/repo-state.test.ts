@@ -44,6 +44,12 @@ const seededCtx = async (): Promise<Context> => {
   return ctx;
 };
 
+/** `ctx` with its layout stripped of a work tree, as a bare repository has none. */
+const withoutWorkTree = (ctx: Context): Context => {
+  const { workDir: _workDir, ...layout } = ctx.layout;
+  return { ...ctx, layout: { ...layout, bare: true } };
+};
+
 /** Runs `thunk`, capturing its rejection as a `TsgitError` so it can be asserted on. */
 const catchTsgitError = async (thunk: () => Promise<unknown>): Promise<TsgitError> => {
   try {
@@ -720,7 +726,46 @@ describe('primitives/internal/repo-state', () => {
   });
 
   describe('assertOperationalRepositoryWithCommandKeys', () => {
-    const CHECKOUT_KEYS = { section: 'checkout', keys: ['guess'] };
+    const CHECKOUT_KEYS = { section: 'checkout', keys: ['guess'], operation: 'checkout' };
+
+    describe.each([
+      { label: 'a bad checkout.guess', config: '[checkout]\n\tguess = bogus\n' },
+      { label: 'a bad branch.autoSetupMerge', config: '[branch]\n\tautoSetupMerge = bogus\n' },
+    ])('Given a repository without a work tree and $label', ({ config }) => {
+      describe('When assertOperationalRepositoryWithCommandKeys', () => {
+        it('Then it refuses the missing work tree before reading the config', async () => {
+          // Arrange
+          const seeded = await seededCtx();
+          await seeded.fs.writeUtf8(`${seeded.layout.gitDir}/config`, config);
+          const ctx = withoutWorkTree(seeded);
+          const sut = assertOperationalRepositoryWithCommandKeys;
+
+          // Act
+          const caught = await catchTsgitError(() => sut(ctx, CHECKOUT_KEYS));
+
+          // Assert
+          expect(caught.data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'checkout' });
+        });
+      });
+    });
+
+    describe('Given a repository without a work tree and a bad core.bare', () => {
+      describe('When assertOperationalRepositoryWithCommandKeys', () => {
+        it('Then setup refuses core.bare before the work tree is required', async () => {
+          // Arrange
+          const seeded = await seededCtx();
+          await seeded.fs.writeUtf8(`${seeded.layout.gitDir}/config`, '[core]\n\tbare = bogus\n');
+          const ctx = withoutWorkTree(seeded);
+          const sut = assertOperationalRepositoryWithCommandKeys;
+
+          // Act
+          const caught = await catchTsgitError(() => sut(ctx, CHECKOUT_KEYS));
+
+          // Assert
+          expect(caught.data).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'core.bare' });
+        });
+      });
+    });
 
     describe('Given checkout.guess = bogus alone', () => {
       describe('When assertOperationalRepositoryWithCommandKeys', () => {
