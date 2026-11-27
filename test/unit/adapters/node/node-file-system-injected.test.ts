@@ -6377,11 +6377,16 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
 
   describe('Given a file at the parent, reported as ENOENT then EEXIST by the parent mkdir', () => {
     describe('When writeExclusive is called', () => {
-      it('Then it refuses NOT_A_DIRECTORY naming the requested path', async () => {
+      it('Then it refuses NOT_A_DIRECTORY naming the requested path, not the resolved one', async () => {
         // Arrange
         const writeFile = vi.fn().mockRejectedValue(enoent());
         const mkdir = vi.fn().mockRejectedValue(eexist());
-        const adapter = build({ writeFile, mkdir });
+        const realpath = vi
+          .fn()
+          .mockImplementation(async (input: string) =>
+            input.replace('/root/.git', '/root/real-git'),
+          );
+        const adapter = build({ writeFile, mkdir, realpath });
         const sut = adapter.writeExclusive.bind(adapter);
 
         // Act
@@ -6394,6 +6399,7 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
 
         // Assert
         expect(dataFor(caught, 'NOT_A_DIRECTORY').path).toBe('/root/.git/objects/ab/cdef');
+        expect(mkdir).toHaveBeenCalledWith('/root/real-git/objects/ab', { recursive: true });
       });
     });
   });
