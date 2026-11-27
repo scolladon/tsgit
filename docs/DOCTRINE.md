@@ -40,9 +40,9 @@ design can apply without reopening the conversation. Each entry cites the ADR th
 
 ## D-6 — A faithfulness fix that only changes verdicts or returned values is not marked breaking
 
-- **Trigger:** a faithfulness fix changes what a command returns or matches on existing repositories (a glob dialect, case folding, a returned field's value) without changing a signature or type and without turning a returning method into a throwing one, and the design asks whether the commit carries `!`.
-- **Rule:** ship it as a plain `fix(<scope>):`; keep `!` for D-3's case (a returning public method starts throwing) and for signature or type changes.
-- **Evidence:** ADR-1257
+- **Trigger:** a faithfulness fix changes what a command returns or matches on existing repositories (a glob dialect, case folding, a returned field's value) without changing a signature or type and without turning a returning method into a throwing one, and the design asks whether the commit carries `!`; or a change adds an optional option or an optional result field and the design asks whether that type change carries `!`.
+- **Rule:** ship it as a plain `fix(<scope>):`; an additive optional member (option or result field) ships as `feat(<scope>):` without `!`; keep `!` for D-3's case (a returning public method starts throwing) and for signature or type changes that break a compiled caller (a removed, renamed, narrowed or newly required member).
+- **Evidence:** ADR-1257, ADR-1287
 - **Counter-cases:** none
 
 ## D-7 — A perf gate on work git itself does is a bench pair against a same-process floor twin
