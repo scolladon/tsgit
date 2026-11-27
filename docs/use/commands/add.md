@@ -116,7 +116,8 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` — `core.safecrlf=true` and a path's line endings would not survive the round trip. See [Line-ending conversion](#line-ending-conversion-coreautocrlf-coreeol-text-eol-ident).
 - `CONFIG_BAD_BOOLEAN_VALUE` — `core.autocrlf`, `core.safecrlf` or `core.fileMode` holds a value git's boolean grammar refuses (`core.autocrlf` also accepts `input`, `core.safecrlf` also accepts `warn`); `core.fileMode` is refused in local config and in an active `config.worktree`. `core.trustctime` is refused the same way; a `core.checkstat` other than `default` / `minimal` refuses `CONFIG_INVALID_ENUM_VALUE`, and a valueless one `CONFIG_MISSING_VALUE`. Checked before anything is staged, as on every command.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
-- `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
+- `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set, or an empty string is among `paths` (refused before any other pathspec is read, one outside the repository included).
+- `RESOURCE_LOCKED { resource: 'index' }` — the index lock is held. `add` takes the lock before it reads its pathspec, as git's `cmd_add` does, so behind a held lock every pathspec refusal above (`EMPTY_PATHSPEC`, `PATHSPEC_OUTSIDE_REPO`, …) becomes this one, `renormalize` included.
 
 ## Executable bit (`core.fileMode`)
 

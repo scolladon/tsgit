@@ -14,6 +14,7 @@ interface CheckoutSwitchOptions {
   readonly detach?: boolean;
   readonly force?: boolean;
   readonly createBranch?: CheckoutCreateBranch;  // git's `checkout -b`
+  readonly guess?: boolean;                      // git's `--[no-]guess`; omitted: `checkout.guess`
 }
 
 interface CheckoutCreateBranch {
@@ -26,7 +27,17 @@ interface CheckoutPathsOptions {
   readonly paths: ReadonlyArray<string>;
   readonly source?: 'index' | string;            // 'index', or a revision naming a commit or a tree
 }
+
+interface CheckoutResult {
+  readonly branch: RefName | undefined;
+  readonly id: ObjectId;
+  readonly detached: boolean;
+  readonly changedPaths: number;
+  readonly createdBranch?: BranchCreateResult;   // { name, id, upstream? }, as branch.create returns
+}
 ```
+
+`createdBranch` is set when the checkout wrote a branch ref: by `createBranch`, or by the remote-branch guess. It is absent otherwise, an unborn `createBranch` (no ref written) included. It carries the upstream the branch recorded, so a caller can rebuild git's `branch '<name>' set up to track '<remote>/<branch>'.` and `Switched to a new branch '<name>'` lines.
 
 ## Modes
 
@@ -35,7 +46,9 @@ interface CheckoutPathsOptions {
 | **Switch** | `{ rev }` (an omitted `rev` means HEAD) | Materialise `rev`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
 | **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Takes `index.lock` and writes the index (restored entries' stat data refreshed), as git's `checkout_paths` does. |
 | **Restore from a revision** | `{ paths, source: <revision> }` | Restore content from the tree of a commit or tree-ish: a branch or tag name, `HEAD`, an object id or an expression such as `HEAD~1`. Index entries for the listed paths are also rewritten. |
-| **Create and switch** | `{ rev, createBranch }` | Create `createBranch.name` at `rev` (with `track` / `noTrack` as [`branch.create`](branch.md) takes them), then switch to it. Refuses `INVALID_OPTION` with `detach`, and `BRANCH_EXISTS` for a name already taken, before the work tree moves. |
+| **Create and switch** | `{ rev, createBranch }` | Create `createBranch.name` at `rev` (with `track` / `noTrack` as [`branch.create`](branch.md) takes them), then switch to it. Refuses an invalid name (`INVALID_REF`), then a name already taken (`BRANCH_EXISTS`), then `detach` (`INVALID_OPTION`), before the work tree moves. |
+| **Create from a remote-tracking ref (guess)** | `{ rev: <name> }` that no revision answers | When exactly one remote tracks `<name>`, create the local branch `<name>` from that remote-tracking ref and switch to it, as `{ rev: <ref>, createBranch: { name } }` does. See [Remote-branch guess](#remote-branch-guess). |
+| **Restore a path argument** | `{ rev: <path> }` that no revision answers and no guess takes | Read `rev` as a pathspec and restore its tracked paths from the index, as `{ paths: [rev] }` does. |
 | **Create on an unborn branch** | `{ createBranch }` (no `rev`) | Points HEAD at `refs/heads/<name>` and touches nothing else: no ref, index, work tree, reflog or `post-checkout`. `id` is the null object id. |
 
 ## Behaviour
@@ -43,7 +56,8 @@ interface CheckoutPathsOptions {
 - **The branch lookup runs first, whatever `detach` says.** Switch mode reads `rev` as `refs/heads/<rev>` before anything else, the way git's own branch-argument parse does. A name a branch carries attaches HEAD to that branch — or checks out the same commit detached when `detach: true`. A name no branch carries goes down git's revision ladder instead and **detaches** HEAD onto what it finds: a full object id first, then the tag and remote-tracking namespaces in gitrevisions order, then an unambiguous abbreviated id. So `detach` decides only whether a *branch* name attaches; it no longer decides how `rev` is resolved, and a tag or a remote-tracking name checks out detached without it.
 - **The reflog entry echoes the argument you passed.** `checkout: moving from <old> to <rev>` carries `rev` verbatim — the branch name, the tag, or the object id exactly as you spelled it — where it used to abbreviate an id to seven characters. git echoes the argument it was handed.
 - **`-` is `@{-1}`.** A lone `-` as `rev` names the branch the previous switch left, and the reflog entry echoes it as spelt.
-- **A switch target must peel to a commit.** A tag peels to the commit it names; a tree refuses `CHECKOUT_NON_COMMIT`. A `rev` no revision answers matches nothing as a pathspec (`PATHSPEC_NO_MATCH`), or, under `createBranch`, refuses `CHECKOUT_START_POINT_NOT_COMMIT`.
+- **A switch target must peel to a commit.** A tag peels to the commit it names; a tree refuses `CHECKOUT_NON_COMMIT`.
+- **A `rev` no revision answers and no guess takes is a pathspec.** It is restored as `{ paths: [rev] }` restores it, from the index, under the index lock, with `post-checkout`'s file flag: its tracked paths are rewritten (local changes to them are overwritten, as git does), an unmerged match refuses `MERGE_HAS_CONFLICTS`, and nothing matched refuses `PATHSPEC_NO_MATCH`. `force` routes to the same plain restore, so an unmerged match refuses where git's `checkout -f <path>` skips it with a warning (see [known divergences](../../known-divergences.md)). The refusals run in git's order: a pathspec that cannot be read (`PATHSPEC_OUTSIDE_REPO`, `EMPTY_PATHSPEC`) first, then `createBranch` (`CHECKOUT_START_POINT_NOT_COMMIT`), then `detach` (`CHECKOUT_DETACH_PATH_ARGUMENT`), and only then the restore.
 - **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override. The "is something already here?" probe does not follow symbolic links, so a **dangling** symlink at a target path counts as occupying it and refuses, rather than being silently replaced.
 - **Refusal classes match git's.** Without `force`, `CHECKOUT_OVERWRITE_DIRTY` carries two arrays. `localChanges` holds an update or delete beneath a regular file, an update at a directory, and a delete at a directory that holds no untracked file. `untracked` holds an add at a file or symlink (unless ignored, which includes an occupant beneath a directory an ignore rule excludes, see [`isIgnored`](../primitives/is-ignored.md)), an add beneath an untracked file or symlink (the obstructing component, once per entry, unless the switch removes it or it is ignored), and a delete at a directory that holds an untracked file. A path beyond a symlinked directory is judged by its cached stat.
 - **An exec-bit-only local change refuses.** With the bit trusted (`core.fileMode` unset or `true`, read from local config over an active `config.worktree`), a switch that rewrites a tracked regular file whose only local change is its exec bit refuses `CHECKOUT_OVERWRITE_DIRTY` with the path in `localChanges`, as git does; under `core.fileMode = false` the bit is no change and the switch proceeds. A directory standing at a tracked file's path counts as a local change here.
@@ -71,7 +85,21 @@ interface CheckoutPathsOptions {
 - **Skip-worktree paths.** A path restore leaves skip-worktree paths out of its universe: they are never written and keep their bit, so a pathspec that matches only such paths refuses `PATHSPEC_NO_MATCH` (every unmatched spelling in `patterns`) and restores nothing. With a tree source, a skip-worktree path whose tree entry (mode, id) differs from its index entry is restored and its bit cleared.
 - **Path restore from the index refuses an unmerged match.** When a matched path is unmerged, the restore refuses `MERGE_HAS_CONFLICTS { count, paths }` and leaves the index and the work tree as they were. A pathspec that matches nothing is refused first (`PATHSPEC_NO_MATCH`). A restore from a revision is not refused: the tree's entry replaces the stages.
 - **Path restore replaces a symlinked leading directory.** `checkout -- <paths>` and `checkout <rev> -- <paths>` rewrite an entry that lies beyond a symlinked leading directory, replacing the link. A forced switch and `reset --hard` instead keep a link whose target stat matches.
-- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md#pathspec-syntax) (git's pathspec glob; a `\` is a matching escape on POSIX and refused `PATHSPEC_OUTSIDE_REPO` under Windows path syntax). Scope is matched on raw path bytes, so a literal never restores a lossy entry through its U+FFFD view.
+- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md#pathspec-syntax) (git's pathspec glob; a `\` is a matching escape on POSIX and refused `PATHSPEC_OUTSIDE_REPO` under Windows path syntax). Scope is matched on raw path bytes, so a literal never restores a lossy entry through its U+FFFD view. An empty string among `paths` refuses `EMPTY_PATHSPEC` before any other pattern is read.
+- **`checkout.guess` is validated on every checkout**, path restores included, and whatever `guess` says. A value no boolean reads refuses `CONFIG_BAD_BOOLEAN_VALUE` keyed `checkout.guess`; between it and the config keys every command validates (`core.*`, `branch.autoSetupMerge`, …) the one on the lower config line is refused. A repository with no work tree refuses `WORK_TREE_REQUIRED` before any of these checks.
+
+## Remote-branch guess
+
+git's `checkout <name>` DWIM: a name no revision answers may create the local branch one remote tracks under that name.
+
+- **When it runs.** Switch mode, when `rev` is answered by no branch, tag, remote-tracking ref or object id, and no `createBranch` is given. `guess` turns it on or off for the call; omitted, `checkout.guess` decides (the last entry wins, a valueless key is true, unset is true). `detach` and `force` do not turn it off. A lone `-` is searched as `@{-1}`, not as the branch it stands for. A `rev` holding a wildcard (`*`, `?`, `[`, `\`) is never guessed, and nothing is read for it.
+- **`<remote>/<name>` is not guessed.** It resolves as a remote-tracking ref and checks out detached, as before.
+- **The path probe comes first.** A `rev` no revision answers is probed as a work-tree path (any file type, a directory or a dangling symlink included) before anything judges it, `createBranch` and `detach` included; a stat failure such as `PATH_TOO_LONG` surfaces there.
+- **Matching.** For each remote, in config order, the first positive fetch refspec that maps `refs/heads/<name>` gives the candidate ref, and the remote matches when that ref resolves. As in git, a negative refspec `^refs/heads/<name>` does not exclude the name.
+- **Choosing.** One matching remote wins. Among several, the one `checkout.defaultRemote` names wins (compared case-sensitively); otherwise the guess refuses `CHECKOUT_REMOTE_BRANCH_AMBIGUOUS` with every matching remote, in config order. A chosen ref whose name is also a work-tree path refuses `CHECKOUT_PATH_OR_TRACKING_BRANCH`. A path with several matching remotes and no default reports the ambiguity.
+- **What it writes.** The request becomes `{ rev: <ref>, createBranch: { name } }`, with every rule of that form: the track mode comes from `branch.autoSetupMerge`, `branch.<name>.remote` / `.merge` are written, the branch reflog reads `branch: Created from <ref>` (the full mapped ref), the HEAD reflog reads `checkout: moving from <old> to <name>`, and `createdBranch` reports the branch. `detach` with a guessed branch refuses `INVALID_OPTION`; a refusal of the work-tree move (`CHECKOUT_OVERWRITE_DIRTY`) leaves no branch behind.
+- **No guess falls through.** When no remote matches, or the guess is off, `rev` is restored as a path argument (above).
+- **Config read on the guess path only.** A valueless `checkout.defaultRemote` refuses `CONFIG_MISSING_VALUE`. The remote configuration is read as git reads it: a valueless string key under a remote (`url`, `pushurl`, `push`, `fetch`, `receivepack`, `uploadpack`, `proxy`, `proxyauthmethod`, `vcs`, `serveroption`), `remote.pushdefault`, a branch's `remote` / `merge` / `pushremote`, or a URL rewrite's `insteadOf` / `pushInsteadOf` refuses `CONFIG_MISSING_VALUE`; a remote's `mirror`, `skipDefaultUpdate`, `skipFetchAll`, `prune` or `pruneTags` holding a value no boolean reads refuses `CONFIG_BAD_BOOLEAN_VALUE`. The entry on the lower line is refused; keys outside a subsection are ignored.
 
 ## Examples
 
@@ -92,24 +120,36 @@ await repo.checkout({ paths: ['src/foo.ts'], source: 'HEAD~1' });
 // Create a branch at a start point and switch to it
 await repo.checkout({ rev: 'origin/main', createBranch: { name: 'topic' } });
 
+// Create `feat` from the one remote that tracks it, and switch to it
+const { createdBranch } = await repo.checkout({ rev: 'feat' });
+// createdBranch: { name: 'refs/heads/feat', id, upstream: { remote: 'origin', merges: ['refs/heads/feat'], rebase: false } }
+
+// Turn the guess off: `feat` is read as a path argument
+await repo.checkout({ rev: 'feat', guess: false });
+
 // Force-switch through a dirty tree
 await repo.checkout({ rev: 'main', force: true });
 ```
 
 ## Throws
 
-- `CONFIG_BAD_BOOLEAN_VALUE` — `core.fileMode` or `core.trustctime` holds a value git refuses, in local config or an active `config.worktree`; a bad `core.checkstat` refuses `CONFIG_INVALID_ENUM_VALUE` (valueless: `CONFIG_MISSING_VALUE`).
+- `CONFIG_BAD_BOOLEAN_VALUE` — `core.fileMode` or `core.trustctime` holds a value git refuses, in local config or an active `config.worktree`; `checkout.guess` holds one (every checkout, the lower config line winning against the other validated keys); or, on the guess path, a remote's `mirror`, `skipDefaultUpdate`, `skipFetchAll`, `prune` or `pruneTags` does. A bad `core.checkstat` refuses `CONFIG_INVALID_ENUM_VALUE` (valueless: `CONFIG_MISSING_VALUE`).
+- `CONFIG_MISSING_VALUE` — on the guess path, `checkout.defaultRemote` or a remote string key the guess reads (see [Remote-branch guess](#remote-branch-guess)) has no value.
+- `CHECKOUT_REMOTE_BRANCH_AMBIGUOUS { name, remotes }` — several remotes track `name` and no `checkout.defaultRemote` picks one; `remotes` lists them in config order.
+- `CHECKOUT_PATH_OR_TRACKING_BRANCH { name }` — the guess chose a remote-tracking ref and `name` is also a work-tree path.
+- `CHECKOUT_DETACH_PATH_ARGUMENT { argument }` — `detach` with a `rev` no revision answers and no guess takes.
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree (an exec-bit-only change under a trusted `core.fileMode` and an assume-unchanged file with drifted stat included), or whose target would overwrite a staged change (`localChanges`).
 - `CHECKOUT_NON_COMMIT` — switch mode where `rev` names a tree.
 - `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision, including any start point on an unborn HEAD; `revision` and `branch` carry both.
 - `BRANCH_EXISTS` — `createBranch.name` is already a branch.
-- `INVALID_OPTION` — `createBranch` combined with `detach`.
-- `INVALID_REF` — `createBranch.name` is `HEAD` or starts with `-` (`reason: 'branch name must not be HEAD'` / `'branch name must not start with -'`), checked after the `detach` refusal and before the existing-branch one, on a born and an unborn HEAD alike; or `rev` cannot be spelled as a ref name and does not resolve as an object id.
+- `INVALID_OPTION` — `createBranch`, or a guessed branch, combined with `detach`; checked after the name and existing-branch refusals.
+- `INVALID_REF` — `createBranch.name` is `HEAD` or starts with `-` (`reason: 'branch name must not be HEAD'` / `'branch name must not start with -'`), checked before the existing-branch and `detach` refusals, on a born and an unborn HEAD alike; or `rev` cannot be spelled as a ref name and does not resolve as an object id.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
 - `NO_INITIAL_COMMIT` — switch mode on an unborn HEAD with no `rev` and no `createBranch`. A path restore from the index on an unborn branch succeeds, as git's does: `id` is the null object id, also passed twice to `post-checkout`.
-- `MERGE_HAS_CONFLICTS { count, paths }` — a path restore from the index matched an unmerged path; nothing is restored.
-- `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive path pattern, literal or glob, matched nothing. The refusal is atomic and lists every unmatched positive pathspec in command-line order in `patterns` (`pattern` is the first); nothing is restored.
-- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
+- `MERGE_HAS_CONFLICTS { count, paths }` — a path restore from the index (a `rev` read as a path argument included, forced or not) matched an unmerged path; nothing is restored.
+- `PATHSPEC_NO_MATCH { pattern, patterns }` — a positive path pattern, literal or glob (or a `rev` read as a path argument), matched nothing. The refusal is atomic and lists every unmatched positive pathspec in command-line order in `patterns` (`pattern` is the first); nothing is restored.
+- `EMPTY_PATHSPEC` — an empty string among `paths`, or an empty `rev` read as a path argument; refused before any other pattern is read.
+- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one); refused before any config check.
 
 ## Smudge filter drivers (`filter=<name>`)
 

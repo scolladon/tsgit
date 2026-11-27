@@ -17,7 +17,7 @@ a bound `this`.
 | [`branch`](branch.md) | List, create, delete, or rename branches. Nested-namespace surface (`repo.branch.list/create/delete/rename`). |
 | [`bundle`](bundle.md) | Package and inspect git objects in a transportable bundle file. Nested-namespace surface (`repo.bundle.create/verify/listHeads`). |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
-| [`checkout`](checkout.md) | Switch branches or restore working-tree files. |
+| [`checkout`](checkout.md) | Switch branches or restore working-tree files; a name no revision answers creates the branch one remote tracks under it (`guess`, `createdBranch`), else restores the paths it names. |
 | [`cherryPick`](cherry-pick.md) | Apply commits onto HEAD as new single-parent commits (single + `A..B` range), preserving author/message, with a git-faithful resumable sequencer. Nested-namespace surface (`repo.cherryPick.run/continue/skip/abort`). |
 | [`clone`](clone.md) | Clone a remote repository over smart-HTTP (full / shallow / partial). |
 | [`commit`](commit.md) | Create a commit from the current index. |

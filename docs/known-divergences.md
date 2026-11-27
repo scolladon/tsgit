@@ -127,8 +127,6 @@ Exit codes and data match git; only the wording or the named path differs.
 
 - **32.53** `REF_NOT_FOUND` carries the caller's name raw into its message, where git prints `?` for each control byte — pre-existing, pinned against git 2.56.0: on the name `x<ESC>]0;pwned<BEL>`, git `cherry-pick` prints `fatal: bad revision 'x?]0;pwned?'` and `describe` prints `fatal: Not a valid object name x?]0;pwned?`; tsgit `describe` and `cherryPickRun` throw `REF_NOT_FOUND: ref not found: x\u001b]0;pwned\u0007` with the raw ESC/BEL in both `message` and `data.name`. Fix: `sanitizeForDisplay` in `refNotFound` (`src/domain/refs/error.ts:69`), as `checkoutNonCommit` already does. Not folded: out of scope.
 
-- **32.1 row A22** — `--detach <path>` message (A22). Evidence: [faithfulness-triage-2026-10](spike/faithfulness-triage-2026-10.md).
-
 - **32.73** `rm` of a tracked entry the host cannot stat refuses with a code that hides the name-too-long fault — pinned against git 2.56.0. `S = 's'×300` planted index-only. git `rm -q S` exits 128 (`fatal: git rm: 'S': File name too long`), index unchanged; tsgit `repo.rm([S])` refuses with `CHECKOUT_OVERWRITE_DIRTY` from `removeFile`'s catch-all (`src/application/commands/internal/working-tree.ts`), index unchanged.
   ```
   git rm -q <s300> -> exit 128; ls-files unchanged
@@ -350,6 +348,14 @@ A well-formed repository, but a configuration, layout or argument shape few call
   ```
   Not folded: out of scope.
 
+- **(checkout force)** A forced `checkout` of a switch argument that names an unmerged path refuses where git skips the path with a warning — deliberate (ADR-1285), pinned against git 2.56.1. `g.txt` is left unmerged by a conflicted merge. git `checkout -f g.txt` warns `path 'g.txt' is unmerged`, updates 0 paths, keeps the three stages and exits 0. tsgit `checkout({ rev: 'g.txt', force: true })` routes `force` to the plain path restore (`src/application/commands/checkout.ts`, `unresolvedSwitch`), which refuses `MERGE_HAS_CONFLICTS` and keeps the three stages, as git's unforced `checkout g.txt` refuses. tsgit has no forced path restore, `{ paths }` included.
+  ```
+  g.txt unmerged (master and side both change it, then git merge side)
+  git checkout -f g.txt                      -> warning: path 'g.txt' is unmerged; Updated 0 paths from the index; exit 0; stages 1 2 3 kept
+  tsgit checkout({rev:'g.txt',force:true})   -> threw {"code":"MERGE_HAS_CONFLICTS","count":1,"paths":["g.txt"]}; stages 1 2 3 kept
+  ```
+  Not folded: adds feature behaviour (git's ignore-unmerged arm of a forced path restore).
+
 ## Performance off the hot path
 
 Measured, on a command that is not on a common caller path.
@@ -403,3 +409,12 @@ git supports a form that tsgit does not offer, and no caller has asked for it.
   tsgit branchCreate({ name: 'x' })    -> ref written; log: (empty)
   grep -rn reference-transaction src   -> src/application/primitives/reftable-transaction.ts:4 (doc comment only)
   ```
+
+- **(checkout --track)** `checkout` has no form that derives the new branch's name from a remote-tracking start point, as git's `checkout --track <remote>/<name>` does — pinned against git 2.56.1. git `checkout --track origin/feat` creates `feat`, tracks `origin`, writes the reflog `branch: Created from origin/feat` and attaches HEAD. tsgit needs the name spelled: `checkout({ rev: 'origin/feat', createBranch: { name: 'feat', track: 'direct' } })` writes the same HEAD, upstream config and reflog (`src/application/commands/checkout.ts`, `CheckoutCreateBranch.name` is required).
+  ```
+  git clone up peer; git clone up ours   (up: master, feat)
+  git -C peer checkout --track origin/feat                               -> exit 0
+  tsgit checkout({rev:'origin/feat',createBranch:{name:'feat',track:'direct'}}) -> createdBranch {"name":"refs/heads/feat","upstream":{"remote":"origin","merges":["refs/heads/feat"],"rebase":false}}
+  both: HEAD ref: refs/heads/feat | branch.feat.remote origin, .merge refs/heads/feat | branch: Created from origin/feat
+  ```
+  Not folded: adds feature behaviour; the explicit `createBranch` form already expresses it.
