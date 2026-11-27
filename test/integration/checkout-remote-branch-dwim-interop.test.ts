@@ -26,6 +26,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
+  lsStage,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -89,6 +90,9 @@ interface GuessRow {
   readonly base: BaseName;
   readonly setup: ReadonlyArray<Step>;
   readonly name: string;
+  /** git's arguments and tsgit's options when the row is not a bare `checkout <name>`. */
+  readonly gitArgs?: ReadonlyArray<string>;
+  readonly opts?: CheckoutOptions;
 }
 
 interface GuessRefusalRow {
@@ -122,13 +126,62 @@ const stageLocalFile: Step = async (dir) => {
   git(dir, 'add', 'f.txt');
 };
 
-const writeWorkFile =
-  (relative: string): Step =>
+const writeText =
+  (relative: string, text: string): Step =>
   async (dir) => {
     const file = path.join(dir, relative);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, 'local\n');
+    await writeFile(file, text);
   };
+
+const writeWorkFile = (relative: string): Step => writeText(relative, 'local\n');
+
+const trackWorkFile = (relative: string): ReadonlyArray<Step> => [
+  writeWorkFile(relative),
+  gitStep('add', relative),
+];
+
+/** `g.txt` and `h.txt` committed on `master`, then both dirtied in the work tree. */
+const dirtyCommittedPair: ReadonlyArray<Step> = [
+  writeText('g.txt', 'g\n'),
+  writeText('h.txt', 'h\n'),
+  gitStep('add', 'g.txt', 'h.txt'),
+  gitStep('commit', '-q', '-m', 'pair'),
+  writeText('g.txt', 'dirty\n'),
+  writeText('h.txt', 'dirty\n'),
+];
+
+const MERGE_CONFLICT_EXIT = 1;
+
+const conflictedMerge =
+  (branch: string): Step =>
+  (dir) => {
+    const run = tryRunGitWithExit(['-C', dir, 'merge', '-q', branch], { env: IDENTITY_ENV });
+    if (run.exitCode !== MERGE_CONFLICT_EXIT) {
+      throw new Error(`merge of ${branch} in ${dir} exited ${run.exitCode}: ${run.stderr}`);
+    }
+  };
+
+/** `g.txt` changed on `master` and on `side`, then `side` merged: `g.txt` is left unmerged. */
+const unmergedFile: ReadonlyArray<Step> = [
+  writeText('g.txt', 'base\n'),
+  gitStep('add', 'g.txt'),
+  gitStep('commit', '-q', '-m', 'base'),
+  gitStep('switch', '-q', '-c', 'side'),
+  writeText('g.txt', 'side\n'),
+  gitStep('commit', '-q', '-am', 'side'),
+  gitStep('switch', '-q', 'master'),
+  writeText('g.txt', 'main\n'),
+  gitStep('commit', '-q', '-am', 'main'),
+  conflictedMerge('side'),
+];
+
+/** Checks out `feat` by guess, back to `master`, then deletes `feat`: the previous branch is gone. */
+const previousBranchDeleted: ReadonlyArray<Step> = [
+  gitStep('checkout', '-q', 'feat'),
+  gitStep('checkout', '-q', 'master'),
+  gitStep('branch', '-q', '-D', 'feat'),
+];
 
 const danglingLink =
   (relative: string): Step =>
@@ -157,10 +210,41 @@ const pathOrTracking = (name: string) => ({
   data: { code: 'CHECKOUT_PATH_OR_TRACKING_BRANCH', name },
 });
 
+const pathspecNoMatch = (name: string) => ({
+  exit: 1,
+  line: `error: pathspec '${name}' did not match any file(s) known to git`,
+  data: { code: 'PATHSPEC_NO_MATCH', pattern: name, patterns: [name] },
+});
+
+const startPointNotCommit = (revision: string, branch: string) => ({
+  exit: FATAL_EXIT,
+  line: `'${revision}' is not a commit and a branch '${branch}' cannot be created from it`,
+  data: { code: 'CHECKOUT_START_POINT_NOT_COMMIT', revision, branch },
+});
+
+const detachPathArgument = (argument: string) => ({
+  exit: FATAL_EXIT,
+  line: `git checkout: --detach does not take a path argument '${argument}'`,
+  data: { code: 'CHECKOUT_DETACH_PATH_ARGUMENT', argument },
+});
+
 const reflogTop = (dir: string, ref: string): string | undefined => {
   const run = tryRunGitWithExit(['-C', dir, 'log', '-g', '--format=%gs', ref]);
   return run.exitCode === 0 ? run.stdout.split('\n')[0] : undefined;
 };
+
+const RESTORED_FILES = ['g.txt', 'h.txt'] as const;
+
+/** The bytes of the files a path restore may touch; `undefined` for one the row never wrote. */
+const workFilesOf = (dir: string): Promise<ReadonlyArray<string | undefined>> =>
+  Promise.all(
+    RESTORED_FILES.map((file) =>
+      readFile(path.join(dir, file), 'utf8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      }),
+    ),
+  );
 
 const headsOf = (dir: string): string =>
   git(dir, 'for-each-ref', '--format=%(refname)', 'refs/heads');
@@ -358,6 +442,14 @@ describe.skipIf(!GIT_AVAILABLE)(
             key: 'checkout.guess',
           },
           {
+            label: 'a bad checkout.guess and the guess turned off',
+            slug: 'r24d',
+            entries: [['checkout.guess', 'bogus']],
+            gitArgs: ['--no-guess', 'feat'],
+            opts: { rev: 'feat', guess: false },
+            key: 'checkout.guess',
+          },
+          {
             label: 'a bad checkout.guess a later true overrides',
             slug: 'c1',
             entries: [
@@ -549,6 +641,15 @@ describe.skipIf(!GIT_AVAILABLE)(
             ],
             name: 'feat',
           },
+          {
+            label: 'checkout.guess false and the guess turned on',
+            slug: 'r5b',
+            base: 'one',
+            setup: [gitStep('config', 'checkout.guess', 'false')],
+            name: 'feat',
+            gitArgs: ['--guess', 'feat'],
+            opts: { rev: 'feat', guess: true },
+          },
           ...['false', 'inherit', 'simple', 'always'].map(
             (mode): GuessRow => ({
               label: `branch.autoSetupMerge ${mode}`,
@@ -602,7 +703,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           },
         ] satisfies ReadonlyArray<GuessRow>)(
           'When both tools check out with $label',
-          ({ slug, base, setup, name }) => {
+          ({ slug, base, setup, name, gitArgs = [name], opts = { rev: name } }) => {
             it('Then both leave the same HEAD, branch config, reflogs, branches and status', async () => {
               // Arrange
               const { peer, ours, ctx } = await casePair(slug, baseOf(base), ignoreCase);
@@ -613,10 +714,10 @@ describe.skipIf(!GIT_AVAILABLE)(
               const sut = checkout;
 
               // Act
-              const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', name], {
+              const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...gitArgs], {
                 env: IDENTITY_ENV,
               });
-              const result = await sut(ctx, { rev: name });
+              const result = await sut(ctx, opts);
 
               // Assert
               expect(peerRun.exitCode).toBe(0);
@@ -886,6 +987,146 @@ describe.skipIf(!GIT_AVAILABLE)(
             opts: { rev: 'feat', detach: true },
             ...pathOrTracking('feat'),
           },
+          {
+            label: 'a name only a remote-tracking ref carries with the guess turned off',
+            slug: 'r5',
+            base: 'one',
+            setup: [],
+            gitArgs: ['--no-guess', 'feat'],
+            opts: { rev: 'feat', guess: false },
+            ...pathspecNoMatch('feat'),
+          },
+          ...(
+            [
+              {
+                label: 'checkout.guess false',
+                slug: 'r4',
+                base: 'one',
+                setup: [gitStep('config', 'checkout.guess', 'false')],
+                name: 'feat',
+              },
+              {
+                label: 'a file of that name and checkout.guess false',
+                slug: 'r31',
+                base: 'one',
+                setup: [writeWorkFile('feat'), gitStep('config', 'checkout.guess', 'false')],
+                name: 'feat',
+              },
+              {
+                label: 'a refspec mapping into an unfetched namespace',
+                slug: 'r10b',
+                base: 'one',
+                setup: [
+                  gitStep('config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/mirror/*'),
+                ],
+                name: 'feat',
+              },
+              {
+                label: 'a tracking ref under a namespace no remote maps onto',
+                slug: 'r10d',
+                base: 'one',
+                setup: [gitStep('update-ref', 'refs/remotes/stale/feat2', 'origin/feat')],
+                name: 'feat2',
+              },
+              {
+                label: 'a remote without a fetch refspec',
+                slug: 'r10e',
+                base: 'one',
+                setup: [gitStep('config', '--unset-all', 'remote.origin.fetch')],
+                name: 'feat',
+              },
+              {
+                label: 'a refspec mapping onto local branches',
+                slug: 'r16',
+                base: 'one',
+                setup: [gitStep('config', 'remote.origin.fetch', '+refs/heads/*:refs/heads/*')],
+                name: 'only-up',
+              },
+              {
+                label: 'another case of a packed ref',
+                slug: 'r13',
+                base: 'one',
+                setup: [],
+                name: 'FEAT',
+              },
+              {
+                label: 'another case of a ref packed again',
+                slug: 'r13b',
+                base: 'one',
+                setup: [packRefs],
+                name: 'FEAT',
+              },
+              {
+                label: 'the previous branch deleted, by dash',
+                slug: 'r19',
+                base: 'one',
+                setup: previousBranchDeleted,
+                name: '-',
+              },
+              {
+                label: 'the previous branch deleted, by reflog spelling',
+                slug: 'r19b',
+                base: 'one',
+                setup: previousBranchDeleted,
+                name: '@{-1}',
+              },
+              { label: '@ on an unborn branch', slug: 'h2', base: 'unborn', setup: [], name: '@' },
+            ] satisfies ReadonlyArray<GuessRow>
+          ).map(
+            ({ name, ...row }): GuessRefusalRow => ({
+              ...row,
+              gitArgs: [name],
+              opts: { rev: name },
+              ...pathspecNoMatch(name),
+            }),
+          ),
+          {
+            label: 'a new branch from a name only a remote-tracking ref carries',
+            slug: 'r9a',
+            base: 'one',
+            setup: [],
+            gitArgs: ['-b', 'x', 'feat'],
+            opts: { rev: 'feat', createBranch: { name: 'x' } },
+            ...startPointNotCommit('feat', 'x'),
+          },
+          {
+            label: 'a new branch from a tracked file',
+            slug: 'p6',
+            base: 'one',
+            setup: trackWorkFile('g.txt'),
+            gitArgs: ['-b', 'x', 'g.txt'],
+            opts: { rev: 'g.txt', createBranch: { name: 'x' } },
+            ...startPointNotCommit('g.txt', 'x'),
+          },
+          {
+            label: 'a name nothing answers alongside detach',
+            slug: 'a22a',
+            base: 'one',
+            setup: [],
+            gitArgs: ['--detach', 'missing'],
+            opts: { rev: 'missing', detach: true },
+            ...detachPathArgument('missing'),
+          },
+          {
+            label: 'a tracked file alongside detach',
+            slug: 'a22c',
+            base: 'one',
+            setup: trackWorkFile('g.txt'),
+            gitArgs: ['--detach', 'g.txt'],
+            opts: { rev: 'g.txt', detach: true },
+            ...detachPathArgument('g.txt'),
+          },
+          {
+            label: 'an unmerged file',
+            slug: 'u1',
+            base: 'one',
+            setup: unmergedFile,
+            gitArgs: ['g.txt'],
+            opts: { rev: 'g.txt' },
+            exit: 1,
+            line: "error: path 'g.txt' is unmerged",
+            data: { code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['g.txt'] },
+          },
         ] satisfies ReadonlyArray<GuessRefusalRow>)('When both tools check out $label', (row) => {
           it('Then both refuse with the same reason and leave the same HEAD and branches', async () => {
             // Arrange
@@ -969,6 +1210,88 @@ describe.skipIf(!GIT_AVAILABLE)(
             });
           },
         );
+      });
+
+      describe('Given a switch argument that names paths and no branch', () => {
+        describe.each([
+          {
+            label: 'a tracked file',
+            slug: 'p1',
+            base: 'one',
+            setup: dirtyCommittedPair,
+            gitArgs: ['g.txt'],
+            opts: { rev: 'g.txt' },
+          },
+          {
+            label: 'a glob over tracked files',
+            slug: 'p2',
+            base: 'one',
+            setup: dirtyCommittedPair,
+            gitArgs: ['*.txt'],
+            opts: { rev: '*.txt' },
+          },
+          {
+            label: 'a tracked file, forced',
+            slug: 'p3',
+            base: 'one',
+            setup: dirtyCommittedPair,
+            gitArgs: ['-f', 'g.txt'],
+            opts: { rev: 'g.txt', force: true },
+          },
+          {
+            label: 'a tracked file a remote-tracking ref also names and checkout.guess false',
+            slug: 'p5',
+            base: 'one',
+            setup: [
+              ...dirtyCommittedPair,
+              gitStep('update-ref', 'refs/remotes/origin/g.txt', 'origin/feat'),
+              gitStep('config', 'checkout.guess', 'false'),
+            ],
+            gitArgs: ['g.txt'],
+            opts: { rev: 'g.txt' },
+          },
+          {
+            label: 'a file staged then dirtied on an unborn branch',
+            slug: 'p7',
+            base: 'unborn',
+            setup: [
+              writeText('g.txt', 'g\n'),
+              gitStep('add', 'g.txt'),
+              writeText('g.txt', 'dirty\n'),
+            ],
+            gitArgs: ['g.txt'],
+            opts: { rev: 'g.txt' },
+          },
+        ] satisfies ReadonlyArray<{
+          label: string;
+          slug: string;
+          base: BaseName;
+          setup: ReadonlyArray<Step>;
+          gitArgs: ReadonlyArray<string>;
+          opts: CheckoutOptions;
+        }>)('When both tools check out $label', (row) => {
+          it('Then both restore the same files and leave the same index and HEAD', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await casePair(row.slug, baseOf(row.base), ignoreCase);
+            for (const step of row.setup) {
+              await step(peer);
+              await step(ours);
+            }
+            const sut = checkout;
+
+            // Act
+            const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...row.gitArgs], {
+              env: IDENTITY_ENV,
+            });
+            await sut(ctx, row.opts);
+
+            // Assert
+            expect(peerRun.exitCode).toBe(0);
+            expect(await workFilesOf(ours)).toEqual(await workFilesOf(peer));
+            expect(lsStage(ours)).toBe(lsStage(peer));
+            expect(await headBytes(ours)).toBe(await headBytes(peer));
+          });
+        });
       });
     });
   },

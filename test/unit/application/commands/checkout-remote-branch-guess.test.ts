@@ -124,6 +124,43 @@ describe('checkout remote-branch guess', () => {
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`)).toBe('f');
       });
     });
+
+    describe('When checkout switches to the name with the guess turned off', () => {
+      it('Then no branch is guessed and the name is an unmatched pathspec', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { rev: 'feat', guess: false }));
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'feat', patterns: ['feat'] });
+        expect(await refResolvesForReading(ctx, FEAT)).toBe(false);
+        expect(await headFile(ctx)).toBe('ref: refs/heads/main\n');
+      });
+    });
+
+    describe('When checkout creates a branch from the name with the guess turned on', () => {
+      it('Then no guess is made and the start point is refused', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, { rev: 'feat', guess: true, createBranch: { name: 'x' } }),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CHECKOUT_START_POINT_NOT_COMMIT',
+          revision: 'feat',
+          branch: 'x',
+        });
+        expect(await refResolvesForReading(ctx, FEAT)).toBe(false);
+      });
+    });
   });
 
   describe('Given an unborn HEAD and a name only a remote-tracking ref carries', () => {
@@ -353,6 +390,46 @@ describe('checkout remote-branch guess', () => {
 
         // Assert
         expect(result).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'feat', patterns: ['feat'] });
+      });
+    });
+
+    describe('When checkout switches to the name with the guess turned on', () => {
+      it('Then the branch is guessed and HEAD attaches to it', async () => {
+        // Arrange
+        const { ctx, second } = await seed('[checkout]\n\tguess = false\n');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feat', guess: true });
+
+        // Assert
+        expect(result).toMatchObject({ branch: FEAT, id: second, detached: false });
+        expect(await headFile(ctx)).toBe('ref: refs/heads/feat\n');
+        expect(await branchSection(ctx, 'feat')).toBe(FEAT_SECTION);
+        expect(await lastReflogMessage(ctx, FEAT)).toBe(
+          'branch: Created from refs/remotes/origin/feat',
+        );
+      });
+    });
+  });
+
+  describe('Given a checkout.guess that is not a boolean', () => {
+    describe('When checkout switches to a name with the guess turned off', () => {
+      it('Then it refuses the bad config value and HEAD stays', async () => {
+        // Arrange
+        const { ctx } = await seed('[checkout]\n\tguess = bogus\n');
+        const sut = checkout;
+
+        // Act
+        const result = await refusalOf(() => sut(ctx, { rev: 'feat', guess: false }));
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'checkout.guess',
+          value: 'bogus',
+        });
+        expect(await headFile(ctx)).toBe('ref: refs/heads/main\n');
       });
     });
   });

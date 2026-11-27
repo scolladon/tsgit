@@ -95,6 +95,12 @@ export interface CheckoutSwitchOptions {
   readonly detach?: boolean;
   readonly force?: boolean;
   readonly createBranch?: CheckoutCreateBranch;
+  /**
+   * git's `--[no-]guess`: whether a name no revision answers may create the
+   * local branch one remote tracks under that name. Omitted, `checkout.guess`
+   * decides.
+   */
+  readonly guess?: boolean;
 }
 
 export interface CheckoutPathsOptions {
@@ -226,7 +232,7 @@ const resolveSwitch = async (ctx: Context, opts: TargetedSwitch): Promise<Switch
 
 /** git's `dwim_ok` for a request: `-b` never guesses, and `checkout.guess` turns it off. */
 const guessAllowed = async (ctx: Context, opts: TargetedSwitch): Promise<boolean> =>
-  opts.createBranch === undefined && (await readCheckoutGuess(ctx));
+  opts.createBranch === undefined && (opts.guess ?? (await readCheckoutGuess(ctx)));
 
 /**
  * git's `parse_remote_branch` miss path: a guessed ref rewrites the request into
