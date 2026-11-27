@@ -562,6 +562,12 @@ describe('uniqueTrackingName', () => {
       code: 'CONFIG_MISSING_VALUE',
       key: 'remote.zed.url',
     },
+    {
+      order: 'a valueless remote.pushdefault above a valueless url',
+      entry: '[remote]\n\tpushdefault\n[remote "zed"]\n\turl\n',
+      code: 'CONFIG_MISSING_VALUE',
+      key: 'remote.pushdefault',
+    },
   ])('Given $order', ({ entry, code, key }) => {
     describe('When the name is guessed', () => {
       it('Then it refuses the entry on the lower line', async () => {

@@ -507,6 +507,7 @@ const refuseCommandKey = async (ctx: Context, invalid: InvalidBooleanEntry): Pro
 };
 
 const earlierOf = (command: EagerCandidate, eager: EagerCandidate | undefined): EagerCandidate =>
+  // Stryker disable next-line EqualityOperator: equivalent — the two entries come from distinct config lines, so `<` and `<=` never disagree.
   eager !== undefined && eager.line < command.line ? eager : command;
 
 const assertUsableHeadAndOpenEpoch = async (ctx: Context): Promise<void> => {

@@ -136,6 +136,7 @@ const remoteMatches = async (ctx: Context, name: string): Promise<ReadonlyArray<
   await assertRemoteConfigReadable(ctx);
   const remotes = [...((await readConfig(ctx)).remote ?? [])];
   const matches = await Promise.all(
+    // Stryker disable next-line ArrayDeclaration: equivalent — a remote with no fetch maps nothing, and the mutant's lone refspec holds no `:` destination, so mapSource maps nothing either.
     remotes.map(([remote, entry]) => remoteMatch(ctx, remote, entry.fetch ?? [], name)),
   );
   return matches.filter((match): match is RemoteMatch => match !== undefined);
@@ -187,7 +188,8 @@ export const parseRemoteBranch = async (
   if (hasGlobSpecial(name)) return undefined;
   const { chosen, remotes } = await uniqueTrackingName(ctx, name);
   if (chosen !== undefined && namesPath) throw checkoutPathOrTrackingBranch(name);
-  if (chosen === undefined && remotes.length > 1) {
+  // A lone match is always chosen, so nothing chosen beside any match means several matched.
+  if (chosen === undefined && remotes.length > 0) {
     throw checkoutRemoteBranchAmbiguous(name, remotes);
   }
   return chosen;
