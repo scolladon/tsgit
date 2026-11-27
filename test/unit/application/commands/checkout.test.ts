@@ -1284,11 +1284,8 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given a bare repository', () => {
     describe('When checkout', () => {
-      it('Then throws WORK_TREE_REQUIRED naming the checkout operation (L253 literal)', async () => {
-        // Arrange — a bare repo; requireWorkTree(ctx, 'checkout') must throw
-        // with the operation string 'checkout'. A StringLiteral mutant
-        // emptying the 'checkout' argument would surface an empty operation
-        // in the message.
+      it('Then throws WORK_TREE_REQUIRED naming the checkout operation', async () => {
+        // Arrange — a bare repo: the refusal names the operation as 'checkout'.
         const ctx0 = createMemoryContext();
         await init(ctx0);
         const ctx = asBareContext(ctx0);

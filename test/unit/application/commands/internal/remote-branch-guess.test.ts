@@ -483,6 +483,26 @@ describe('uniqueTrackingName', () => {
     });
   });
 
+  describe.each([
+    { label: 'a remote url', entry: '[remote]\n\turl\n' },
+    { label: 'a branch merge', entry: '[branch]\n\tmerge\n' },
+    { label: 'a URL rewrite', entry: `[url]\n\t${'insteadof'}\n` },
+  ])('Given a valueless $label outside any subsection', ({ entry }) => {
+    describe('When the name is guessed', () => {
+      it('Then reading the remotes ignores it and the ref is chosen', async () => {
+        // Arrange
+        const { ctx, id } = await seed(`${ORIGIN}${entry}`, [ORIGIN_FEAT]);
+        const sut = uniqueTrackingName;
+
+        // Act
+        const result = await sut(ctx, 'feat');
+
+        // Assert
+        expect(result.chosen).toEqual({ ref: ORIGIN_FEAT, id });
+      });
+    });
+  });
+
   describe.each(['mirror', 'skipdefaultupdate', 'skipfetchall', 'prune', 'prunetags'])(
     'Given a valueless boolean remote.zed.%s',
     (key) => {
