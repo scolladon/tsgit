@@ -146,6 +146,16 @@ Exit codes and data match git; only the wording or the named path differs.
   tsgit checkout({ rev: 'feat' })   -> ok, createdBranch feat upstream origin / refs/heads/feat; no warning
   ```
 
+- **(write under a file parent)** `NodeFileSystem.write` (`openForWrite`) and `writeUtf8` refuse a write whose immediate parent is a regular file with `FILE_EXISTS`, because the parent `mkdir -p` meets `EEXIST`. `MemoryFileSystem` refuses the same call with `NOT_A_DIRECTORY`. Under a deeper ancestor both adapters say `NOT_A_DIRECTORY`. Both refuse under the same condition, and the port documents the immediate-parent code as adapter-dependent (`src/ports/file-system.ts`). Every application branch on `FILE_EXISTS` follows `writeExclusive`, never `write`/`writeUtf8`/`writeStream`/`appendUtf8`. The work-tree D/F case matches git 2.56.1. Locus: `src/adapters/node/node-file-system.ts` (`openForWrite`, `writeUtf8`). If it is ever fixed, map the parent `mkdir`'s `EEXIST` to `NOT_A_DIRECTORY` as `writeExclusive` does. Not folded: below the filing bar, message only.
+  ```
+  # file p, then write / writeUtf8 on p/leaf and write on p/a/leaf
+  node   write FILE_EXISTS · writeUtf8 FILE_EXISTS · write deep NOT_A_DIRECTORY
+  memory write NOT_A_DIRECTORY · writeUtf8 NOT_A_DIRECTORY · write deep NOT_A_DIRECTORY
+  # main: p (file), b: p/leaf
+  git checkout b -- p/leaf                              -> exit 0; status D p / A p/leaf
+  tsgit checkout({ source: 'b', paths: ['p/leaf'] })    -> ok, changedPaths 1; status D p / A p/leaf
+  ```
+
 ## Rare configuration and edge input
 
 A well-formed repository, but a configuration, layout or argument shape few callers produce.
