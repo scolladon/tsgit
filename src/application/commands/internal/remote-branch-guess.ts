@@ -24,6 +24,7 @@ import {
   readConfig,
   type ValuelessEntry,
 } from '../../primitives/config-read.js';
+import { pickLowerLine } from '../../primitives/internal/repo-state.js';
 import { findTrackingRef } from './remote-tracking-ref.js';
 import { resolveRevisionExpression } from './revision-expression.js';
 import { resolveRevisionName } from './revision-name.js';
@@ -94,12 +95,6 @@ const missingValue = (entry: ValuelessEntry | undefined): RemoteConfigFault | un
 const badBoolean = (entry: InvalidBooleanEntry | undefined): RemoteConfigFault | undefined =>
   entry && { line: entry.line, error: configBadBooleanValue(entry.key, entry.source, entry.value) };
 
-const lowerLine = (
-  lowest: RemoteConfigFault | undefined,
-  fault: RemoteConfigFault | undefined,
-): RemoteConfigFault | undefined =>
-  fault !== undefined && (lowest === undefined || fault.line < lowest.line) ? fault : lowest;
-
 /**
  * git's `for_each_remote` reads the remotes through `read_config`, whose `handle_config` dies on
  * the first entry, in file order, it cannot read: a string key holding no value (under a remote,
@@ -116,7 +111,7 @@ const assertRemoteConfigReadable = async (ctx: Context): Promise<void> => {
       badBoolean,
     ),
   ]);
-  const first = found.reduce(lowerLine, undefined);
+  const first = found.reduce<RemoteConfigFault | undefined>(pickLowerLine, undefined);
   if (first !== undefined) throw first.error;
 };
 

@@ -78,11 +78,12 @@ const HEAD_REF = RefName.from('HEAD');
 export type HeadState = Exclude<ResolveDirectResult, { readonly kind: 'missing' }>;
 
 /**
- * Smallest-`line` selection shared by every eager gate in this file: distinct
- * keys always occupy distinct physical config lines (the tokenizer emits at
- * most one entry per line), so ties never occur and `<` alone decides.
+ * Smallest-`line` selection shared by every config gate that races entries by
+ * line: distinct keys always occupy distinct physical config lines (the
+ * tokenizer emits at most one entry per line), so ties never occur and `<`
+ * alone decides.
  */
-const pickLowerLine = <T extends { readonly line: number }>(
+export const pickLowerLine = <T extends { readonly line: number }>(
   a: T | undefined,
   b: T | undefined,
 ): T | undefined => {
